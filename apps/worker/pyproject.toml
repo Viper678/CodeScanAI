@@ -1,0 +1,43 @@
+[project]
+name = "codescan-worker"
+version = "0.1.0"
+description = "Celery worker for CodeScan."
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "celery[redis]==5.4.0",
+    "redis==5.2.1",
+]
+
+[dependency-groups]
+dev = [
+    "black==24.10.0",
+    "mypy==1.13.0",
+    "pytest==8.3.4",
+    "ruff==0.8.4",
+]
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RET", "RUF", "S", "SIM", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**/*.py" = ["S101"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+
+[[tool.mypy.overrides]]
+module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

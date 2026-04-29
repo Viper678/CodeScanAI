@@ -1,0 +1,84 @@
+services:
+  web:
+    build:
+      context: ./apps/web
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
+      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-CodeScan}
+    ports:
+      - "3000:3000"
+    depends_on:
+      api:
+        condition: service_healthy
+
+  api:
+    build:
+      context: ./apps/api
+    environment:
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
+      REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+    ports:
+      - "8000:8000"
+    volumes:
+      - data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    build:
+      context: ./apps/worker
+    environment:
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+    volumes:
+      - data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "uv run celery -A worker.celery_app inspect ping -d celery@$$HOSTNAME",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-codescan}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-codescan-dev-only-change-me}
+      POSTGRES_DB: ${POSTGRES_DB:-codescan}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  pgdata:
+  data:

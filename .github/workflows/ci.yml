@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  pull_request:
+
+jobs:
+  lint-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Set up pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10.33.0
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: pnpm
+          cache-dependency-path: apps/web/pnpm-lock.yaml
+
+      - name: Install API dependencies
+        run: uv sync --project apps/api --locked
+
+      - name: Install worker dependencies
+        run: uv sync --project apps/worker --locked
+
+      - name: Install web dependencies
+        run: pnpm --dir apps/web install --frozen-lockfile
+
+      - name: Lint
+        run: make lint
+
+      - name: Test
+        run: make test
