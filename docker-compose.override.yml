@@ -20,6 +20,7 @@ services:
     command: uv run celery -A worker.celery_app worker --loglevel=info
     volumes:
       - ./apps/worker:/app
+      - worker_venv:/app/.venv
 
   postgres:
     ports:
@@ -31,5 +32,6 @@ services:
 
 volumes:
   api_venv:
+  worker_venv:
   web_node_modules:
   web_next:
