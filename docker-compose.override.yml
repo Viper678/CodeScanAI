@@ -9,9 +9,12 @@ services:
       WATCHPACK_POLLING: "true"
 
   api:
-    command: uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+    command: >
+      sh -c "uv run alembic upgrade head &&
+             uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude .venv"
     volumes:
       - ./apps/api:/app
+      - api_venv:/app/.venv
 
   worker:
     command: uv run celery -A worker.celery_app worker --loglevel=info
@@ -27,5 +30,6 @@ services:
       - "127.0.0.1:6379:6379"
 
 volumes:
+  api_venv:
   web_node_modules:
   web_next:

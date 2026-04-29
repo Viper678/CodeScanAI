@@ -20,42 +20,50 @@ Code conventions for CodeScan. Read once; live them.
 ### Module layout (api)
 
 ```
-apps/api/app/
-├── main.py                  # FastAPI app factory
-├── core/
-│   ├── config.py            # Settings via pydantic-settings
-│   ├── db.py                # engine, session, base
-│   ├── security.py          # password, jwt
-│   ├── deps.py              # get_db, get_current_user
-│   ├── exceptions.py        # typed app exceptions
-│   └── logging.py
-├── models/                  # SQLAlchemy
-│   ├── user.py
-│   ├── upload.py
-│   ├── file.py
-│   ├── scan.py
-│   ├── scan_file.py
-│   └── scan_finding.py
-├── schemas/                 # Pydantic input/output
-│   ├── auth.py
-│   ├── upload.py
-│   ├── scan.py
-│   └── finding.py
-├── repositories/            # All DB access goes through these
-│   ├── base.py              # BaseRepo with user_id filter
-│   ├── upload_repo.py
-│   └── ...
-├── services/                # Business logic, no FastAPI imports
-│   ├── auth_service.py
-│   ├── upload_service.py
-│   ├── scan_service.py
-│   └── ...
-├── routers/                 # FastAPI routers (thin)
-│   ├── auth.py
-│   ├── uploads.py
-│   ├── scans.py
-│   └── health.py
-└── tests/
+apps/api/
+├── alembic/
+├── app/
+│   ├── main.py                  # FastAPI app factory
+│   ├── core/
+│   │   ├── config.py            # Settings via pydantic-settings
+│   │   ├── db.py                # engine, session, base
+│   │   ├── security.py          # password, jwt
+│   │   ├── deps.py              # get_db, get_current_user
+│   │   ├── exceptions.py        # typed app exceptions
+│   │   └── logging.py
+│   ├── models/                  # SQLAlchemy
+│   │   ├── user.py
+│   │   ├── upload.py
+│   │   ├── file.py
+│   │   ├── scan.py
+│   │   ├── scan_file.py
+│   │   └── scan_finding.py
+│   ├── schemas/                 # Pydantic
+│   │   ├── auth.py
+│   │   ├── upload.py
+│   │   ├── scan.py
+│   │   └── finding.py
+│   ├── repositories/            # All DB access goes through these
+│   │   ├── base.py              # BaseRepo with user_id filter
+│   │   ├── upload_repo.py
+│   │   └── ...
+│   ├── services/                # Business logic, no FastAPI imports
+│   │   ├── auth_service.py
+│   │   ├── upload_service.py
+│   │   ├── scan_service.py
+│   │   └── ...
+│   └── routers/                 # FastAPI routers (thin)
+│       ├── auth.py
+│       ├── uploads.py
+│       ├── scans.py
+│       └── health.py
+├── tests/
+│   ├── conftest.py
+│   ├── integration/
+│   └── unit/
+├── alembic.ini
+├── pyproject.toml
+└── uv.lock
 ```
 
 ### Module layout (worker)

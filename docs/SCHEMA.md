@@ -1,6 +1,6 @@
 # Database Schema
 
-Postgres 16. Migrations via Alembic. All `id` columns are UUIDv7 (time-ordered) generated server-side.
+Postgres 16. Migrations via Alembic. All `id` columns are UUIDv7 (time-ordered) generated in the application layer.
 
 > **Convention:** every "owned" table carries `user_id` and is filtered by it on every read. This is enforced in a base repository class — never write a query without it.
 
