@@ -15,6 +15,8 @@ RUN apt-get update \
 COPY pyproject.toml uv.lock* ./
 RUN uv sync --frozen --no-dev
 
+COPY alembic.ini ./
+COPY alembic ./alembic
 COPY app ./app
 
 EXPOSE 8000
