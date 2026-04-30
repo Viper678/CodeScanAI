@@ -1,21 +1,28 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections.abc import AsyncIterator, Awaitable, Callable, Generator
 from dataclasses import dataclass
 from pathlib import Path
 from uuid import uuid4
 
+os.environ.setdefault("JWT_SECRET", "x" * 32)
+
+import httpx
 import psycopg
 import pytest
 import pytest_asyncio
 from psycopg import sql
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
+from sqlalchemy.pool import NullPool
 
 from alembic import command
 from alembic.config import Config
 from app.core.config import settings
+from app.core.db import get_session
+from app.main import app
 from app.models.user import User
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -142,7 +149,11 @@ def engine(test_database_urls: DatabaseUrls) -> Generator[AsyncEngine, None, Non
     _reset_database(test_database_urls.database_name)
     _run_migrations(test_database_urls.sync_url, "head")
 
-    async_engine = create_async_engine(test_database_urls.async_url, pool_pre_ping=True)
+    async_engine = create_async_engine(
+        test_database_urls.async_url,
+        pool_pre_ping=True,
+        poolclass=NullPool,
+    )
     try:
         yield async_engine
     finally:
@@ -165,6 +176,30 @@ async def db_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
         finally:
             await session.close()
             await transaction.rollback()
+
+
+@pytest_asyncio.fixture
+async def client(db_session: AsyncSession) -> AsyncIterator[httpx.AsyncClient]:
+    async def override_get_session() -> AsyncIterator[AsyncSession]:
+        yield db_session
+
+    app.dependency_overrides[get_session] = override_get_session
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://testserver") as client:
+        yield client
+    app.dependency_overrides.clear()
+
+
+@pytest_asyncio.fixture
+async def authed_client(client: httpx.AsyncClient) -> httpx.AsyncClient:
+    """Register a sample user and return a client with auth cookies loaded."""
+
+    response = await client.post(
+        "/api/v1/auth/register",
+        json={"email": f"user-{uuid4().hex[:8]}@example.com", "password": "correct-horse"},
+    )
+    assert response.status_code == 201
+    return client
 
 
 @pytest.fixture

@@ -26,6 +26,7 @@ jobs:
       POSTGRES_DB: codescan
       DATABASE_URL: postgresql+asyncpg://codescan:codescan-dev-only-change-me@localhost:5432/codescan
       DATABASE_SYNC_URL: postgresql+psycopg://codescan:codescan-dev-only-change-me@localhost:5432/codescan
+      JWT_SECRET: ci-test-jwt-secret-32-bytes-long
     steps:
       - name: Checkout
         uses: actions/checkout@v4
