@@ -7,5 +7,16 @@
   "plugins": ["@typescript-eslint", "tailwindcss"],
   "rules": {
     "@typescript-eslint/no-explicit-any": "error"
-  }
+  },
+  "overrides": [
+    {
+      "files": ["components/ui/**/*.tsx"],
+      "rules": {
+        "tailwindcss/classnames-order": "off",
+        "tailwindcss/enforces-shorthand": "off",
+        "tailwindcss/no-custom-classname": "off",
+        "tailwindcss/no-unnecessary-arbitrary-value": "off"
+      }
+    }
+  ]
 }
