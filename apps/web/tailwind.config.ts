@@ -34,6 +34,7 @@ const config: Config = {
         'severity-info': colors.zinc[400],
       },
       fontFamily: {
+        sans: ['var(--font-sans)'],
         mono: ['var(--font-mono)'],
       },
     },
