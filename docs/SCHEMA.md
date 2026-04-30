@@ -44,14 +44,17 @@ Indexes: `UNIQUE(email)`.
 | ------------- | ----------- | ---------------------------------------------- |
 | `id`          | UUID PK     |                                                |
 | `user_id`     | UUID FK     | → `users(id)` ON DELETE CASCADE                |
-| `token_hash`  | TEXT        | SHA-256 of refresh JWT — never store raw       |
+| `family_id`   | UUID NULL   | logical refresh-token family for replay revocation |
+| `token_hash`  | TEXT UNIQUE | SHA-256 of refresh JWT — never store raw       |
 | `expires_at`  | TIMESTAMPTZ |                                                |
 | `revoked_at`  | TIMESTAMPTZ NULL | non-null = revoked                        |
 | `created_at`  | TIMESTAMPTZ DEFAULT now() |                                  |
 | `user_agent`  | TEXT NULL   |                                                |
 | `ip`          | INET NULL   |                                                |
 
-Indexes: `(user_id)`, `(token_hash)`.
+Indexes: `(user_id)`, `UNIQUE(token_hash)`, `(user_id, family_id)`.
+
+Tokens created before T1.2 may have `NULL family_id` and are treated as their own family of one.
 
 ### `uploads`
 

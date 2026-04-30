@@ -2,11 +2,11 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import Cookie, Depends
+from fastapi import Cookie, Depends, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.db import get_session
-from app.core.exceptions import InvalidToken, Unauthorized
+from app.core.exceptions import CsrfHeaderInvalid, InvalidToken, Unauthorized
 from app.core.security import decode_access_token
 from app.models.user import User
 from app.repositories.user_repo import UserRepo
@@ -28,3 +28,8 @@ async def get_current_user(
     if user is None or not user.is_active:
         raise Unauthorized
     return user
+
+
+async def require_csrf_header(request: Request) -> None:
+    if request.headers.get("X-Requested-With") != "codescan":
+        raise CsrfHeaderInvalid
