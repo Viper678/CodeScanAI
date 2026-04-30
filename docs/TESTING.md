@@ -16,7 +16,7 @@ Stack: `pytest`, `pytest-asyncio`, `httpx.AsyncClient` for API, `pytest-postgres
 
 Layout:
 ```
-apps/api/app/tests/
+apps/api/tests/
 ├── conftest.py               # fixtures: db_session, client, authed_client, sample_user
 ├── unit/
 │   ├── test_password.py
