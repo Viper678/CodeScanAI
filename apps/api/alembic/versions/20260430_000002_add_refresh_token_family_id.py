@@ -46,14 +46,14 @@ def upgrade() -> None:
         )
         """
     )
-    op.drop_index(op.f("ix_refresh_tokens_token_hash"), table_name="refresh_tokens")
+    op.drop_index("ix_refresh_tokens_token_hash", table_name="refresh_tokens")
     op.create_unique_constraint(
-        op.f("uq_refresh_tokens_token_hash"),
+        "uq_refresh_tokens_token_hash",
         "refresh_tokens",
         ["token_hash"],
     )
     op.create_index(
-        op.f("ix_refresh_tokens_user_id_family_id"),
+        "ix_refresh_tokens_user_id_family_id",
         "refresh_tokens",
         ["user_id", "family_id"],
         unique=False,
@@ -61,14 +61,14 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_index(op.f("ix_refresh_tokens_user_id_family_id"), table_name="refresh_tokens")
+    op.drop_index("ix_refresh_tokens_user_id_family_id", table_name="refresh_tokens")
     op.drop_constraint(
-        op.f("uq_refresh_tokens_token_hash"),
+        "uq_refresh_tokens_token_hash",
         "refresh_tokens",
         type_="unique",
     )
     op.create_index(
-        op.f("ix_refresh_tokens_token_hash"),
+        "ix_refresh_tokens_token_hash",
         "refresh_tokens",
         ["token_hash"],
         unique=False,

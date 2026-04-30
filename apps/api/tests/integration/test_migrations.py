@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import os
+import subprocess
+import sys
 from collections.abc import Callable
 
 import psycopg
-from conftest import DatabaseUrls
+from conftest import API_ROOT, DatabaseUrls
 
 from alembic import command
 from alembic.config import Config
@@ -67,6 +70,22 @@ def _refresh_tokens_unique_constraints(psycopg_url: str) -> set[str]:
         return {row[0] for row in cursor.fetchall()}
 
 
+def _run_alembic_cli(database_urls: DatabaseUrls, *args: str) -> None:
+    env = {
+        **os.environ,
+        "DATABASE_URL": database_urls.async_url,
+        "DATABASE_SYNC_URL": database_urls.sync_url,
+    }
+    subprocess.run(  # noqa: S603 - CLI args are fixed test literals for Alembic verification.
+        [sys.executable, "-m", "alembic", *args],
+        cwd=API_ROOT,
+        env=env,
+        check=True,
+        text=True,
+        capture_output=True,
+    )
+
+
 def test_alembic_upgrade_and_downgrade(
     migration_database_urls: DatabaseUrls,
     alembic_config_factory: Callable[[str], Config],
@@ -84,11 +103,8 @@ def test_alembic_upgrade_and_downgrade(
 
 def test_alembic_refresh_token_family_id_round_trip(
     migration_database_urls: DatabaseUrls,
-    alembic_config_factory: Callable[[str], Config],
 ) -> None:
-    config: Config = alembic_config_factory(migration_database_urls.sync_url)
-
-    command.upgrade(config, "head")
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
     assert "family_id" in _refresh_tokens_columns(migration_database_urls.psycopg_url)
     assert "ix_refresh_tokens_user_id_family_id" in _refresh_tokens_indexes(
         migration_database_urls.psycopg_url
@@ -96,8 +112,11 @@ def test_alembic_refresh_token_family_id_round_trip(
     assert "uq_refresh_tokens_token_hash" in _refresh_tokens_unique_constraints(
         migration_database_urls.psycopg_url
     )
+    assert "ix_refresh_tokens_token_hash" not in _refresh_tokens_indexes(
+        migration_database_urls.psycopg_url
+    )
 
-    command.downgrade(config, "-1")
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")
     assert "family_id" not in _refresh_tokens_columns(migration_database_urls.psycopg_url)
     assert "ix_refresh_tokens_user_id_family_id" not in _refresh_tokens_indexes(
         migration_database_urls.psycopg_url
@@ -109,11 +128,14 @@ def test_alembic_refresh_token_family_id_round_trip(
         migration_database_urls.psycopg_url
     )
 
-    command.upgrade(config, "head")
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
     assert "family_id" in _refresh_tokens_columns(migration_database_urls.psycopg_url)
     assert "ix_refresh_tokens_user_id_family_id" in _refresh_tokens_indexes(
         migration_database_urls.psycopg_url
     )
     assert "uq_refresh_tokens_token_hash" in _refresh_tokens_unique_constraints(
+        migration_database_urls.psycopg_url
+    )
+    assert "ix_refresh_tokens_token_hash" not in _refresh_tokens_indexes(
         migration_database_urls.psycopg_url
     )
