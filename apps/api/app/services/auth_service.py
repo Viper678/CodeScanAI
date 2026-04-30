@@ -191,11 +191,6 @@ class AuthService:
         family_id: UUID | None = None,
     ) -> AuthCookies:
         access_token = create_access_token(user.id)
-        # NOTE: Two refresh calls for the same user within the same wall-clock second
-        # produce identical raw JWTs (iat/exp/sub/type all match) and identical
-        # SHA-256 hashes. Acceptable for v1 — see follow-up issue
-        # https://github.com/Viper678/CodeScanAI/issues/7.
-        # Out of scope for T1.2.
         refresh_token, refresh_hash, refresh_expires_at = create_refresh_token(user.id)
         await self.refresh_tokens.create(
             user_id=user.id,

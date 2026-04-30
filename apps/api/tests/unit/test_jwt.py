@@ -52,3 +52,27 @@ def test_refresh_token_hash_is_sha256_of_raw_jwt() -> None:
 
     assert token_hash == hashlib.sha256(raw_jwt.encode("utf-8")).hexdigest()
     assert expires_at > datetime.now(UTC)
+
+
+def test_refresh_tokens_include_jti_and_are_unique_per_call() -> None:
+    user_id = uuid7()
+
+    first_token, first_hash, _ = create_refresh_token(user_id)
+    second_token, second_hash, _ = create_refresh_token(user_id)
+
+    first_payload = jwt.decode(
+        first_token,
+        settings.jwt_secret.get_secret_value(),
+        algorithms=[JWT_ALGORITHM],
+    )
+    second_payload = jwt.decode(
+        second_token,
+        settings.jwt_secret.get_secret_value(),
+        algorithms=[JWT_ALGORITHM],
+    )
+
+    assert isinstance(first_payload.get("jti"), str)
+    assert isinstance(second_payload.get("jti"), str)
+    assert first_payload["jti"] != second_payload["jti"]
+    assert first_token != second_token
+    assert first_hash != second_hash

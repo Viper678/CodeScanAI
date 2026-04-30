@@ -3,7 +3,6 @@ from __future__ import annotations
 from unittest.mock import patch
 
 import httpx
-import pytest
 from conftest import SampleUserFactory
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -23,11 +22,6 @@ def _refresh_headers(raw_refresh_token: str) -> dict[str, str]:
     }
 
 
-# Blocked on issue #7 until refresh-token minting stops colliding within the same second.
-@pytest.mark.xfail(
-    reason="blocked on issue #7: refresh-token same-second collision",
-    strict=False,
-)
 async def test_legacy_null_family_token_refreshes_once_and_logs_legacy_replay(
     client: httpx.AsyncClient,
     db_session: AsyncSession,

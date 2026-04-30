@@ -54,6 +54,19 @@ def _refresh_tokens_indexes(psycopg_url: str) -> set[str]:
         return {row[0] for row in cursor.fetchall()}
 
 
+def _refresh_tokens_unique_constraints(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'public.refresh_tokens'::regclass
+              AND contype = 'u'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
 def test_alembic_upgrade_and_downgrade(
     migration_database_urls: DatabaseUrls,
     alembic_config_factory: Callable[[str], Config],
@@ -80,15 +93,27 @@ def test_alembic_refresh_token_family_id_round_trip(
     assert "ix_refresh_tokens_user_id_family_id" in _refresh_tokens_indexes(
         migration_database_urls.psycopg_url
     )
+    assert "uq_refresh_tokens_token_hash" in _refresh_tokens_unique_constraints(
+        migration_database_urls.psycopg_url
+    )
 
     command.downgrade(config, "-1")
     assert "family_id" not in _refresh_tokens_columns(migration_database_urls.psycopg_url)
     assert "ix_refresh_tokens_user_id_family_id" not in _refresh_tokens_indexes(
         migration_database_urls.psycopg_url
     )
+    assert "uq_refresh_tokens_token_hash" not in _refresh_tokens_unique_constraints(
+        migration_database_urls.psycopg_url
+    )
+    assert "ix_refresh_tokens_token_hash" in _refresh_tokens_indexes(
+        migration_database_urls.psycopg_url
+    )
 
     command.upgrade(config, "head")
     assert "family_id" in _refresh_tokens_columns(migration_database_urls.psycopg_url)
     assert "ix_refresh_tokens_user_id_family_id" in _refresh_tokens_indexes(
+        migration_database_urls.psycopg_url
+    )
+    assert "uq_refresh_tokens_token_hash" in _refresh_tokens_unique_constraints(
         migration_database_urls.psycopg_url
     )

@@ -10,6 +10,7 @@ import jwt
 
 from app.core.config import settings
 from app.core.exceptions import InvalidToken
+from app.core.uuid7 import uuid7
 
 BCRYPT_COST = 12
 JWT_ALGORITHM = "HS256"
@@ -62,6 +63,7 @@ def create_refresh_token(user_id: UUID) -> tuple[str, str, datetime]:
             "sub": str(user_id),
             "iat": now,
             "exp": expires_at,
+            "jti": str(uuid7()),
             "type": "refresh",
         },
         settings.jwt_secret.get_secret_value(),

@@ -4,7 +4,6 @@ import hashlib
 from unittest.mock import patch
 
 import httpx
-import pytest
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -21,11 +20,6 @@ def _refresh_headers(raw_refresh_token: str) -> dict[str, str]:
     }
 
 
-# Blocked on issue #7 until refresh-token minting stops colliding within the same second.
-@pytest.mark.xfail(
-    reason="blocked on issue #7: refresh-token same-second collision",
-    strict=False,
-)
 async def test_refresh_replay_revokes_family_and_logs_warning(
     client: httpx.AsyncClient,
     db_session: AsyncSession,
