@@ -31,6 +31,12 @@ class InvalidToken(AppError):
     message = "Invalid token"
 
 
+class CsrfHeaderInvalid(AppError):
+    error_code = "forbidden"
+    status_code = 403
+    message = "Forbidden"
+
+
 class Unauthorized(AppError):
     error_code = "unauthorized"
     status_code = 401

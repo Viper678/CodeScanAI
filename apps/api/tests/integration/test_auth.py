@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from http.cookies import SimpleCookie
 from uuid import UUID
 
@@ -49,6 +50,15 @@ async def test_register_happy_path_persists_user_and_sets_cookies(
     user = result.scalar_one()
     assert user.password_hash.startswith("$2b$12$")
 
+    refresh_token = response.cookies.get("cs_refresh")
+    assert refresh_token is not None
+    refresh_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+    stored_refresh = await db_session.scalar(
+        select(RefreshToken).where(RefreshToken.token_hash == refresh_hash)
+    )
+    assert stored_refresh is not None
+    assert stored_refresh.family_id is not None
+
 
 async def test_register_duplicate_email_returns_conflict(client: httpx.AsyncClient) -> None:
     payload = {"email": "user@example.com", "password": "correct-horse"}
@@ -88,6 +98,15 @@ async def test_login_happy_path_sets_cookies_and_inserts_refresh_token(
     assert response.json()["email"] == "user@example.com"
     _assert_auth_cookies(response)
     assert after_count == before_count + 1
+
+    refresh_token = response.cookies.get("cs_refresh")
+    assert refresh_token is not None
+    refresh_hash = hashlib.sha256(refresh_token.encode("utf-8")).hexdigest()
+    stored_refresh = await db_session.scalar(
+        select(RefreshToken).where(RefreshToken.token_hash == refresh_hash)
+    )
+    assert stored_refresh is not None
+    assert stored_refresh.family_id is not None
 
 
 async def test_login_wrong_password_returns_generic_unauthorized(

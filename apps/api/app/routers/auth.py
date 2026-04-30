@@ -7,7 +7,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.db import get_session
-from app.core.deps import get_current_user
+from app.core.deps import get_current_user, require_csrf_header
+from app.core.exceptions import InvalidToken
 from app.models.user import User
 from app.schemas.auth import LoginRequest, RegisterRequest, UserOut
 from app.services.auth_service import AuthCookies, AuthService
@@ -42,6 +43,23 @@ def _set_auth_cookies(response: Response, cookies: AuthCookies) -> None:
 
 def _user_out(user: User) -> UserOut:
     return UserOut(id=user.id, email=user.email)
+
+
+def _clear_auth_cookies(response: Response) -> None:
+    response.delete_cookie(
+        "cs_access",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+        path="/",
+    )
+    response.delete_cookie(
+        "cs_refresh",
+        httponly=True,
+        secure=settings.cookie_secure,
+        samesite=settings.cookie_samesite,
+        path="/",
+    )
 
 
 @router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
@@ -82,3 +100,42 @@ async def login(
 @router.get("/me", response_model=UserOut)
 async def me(current_user: Annotated[User, Depends(get_current_user)]) -> UserOut:
     return _user_out(current_user)
+
+
+@router.post("/refresh", dependencies=[Depends(require_csrf_header)])
+async def refresh(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    raw_refresh_token = request.cookies.get("cs_refresh")
+    if raw_refresh_token is None:
+        raise InvalidToken
+
+    _, cookies = await AuthService(session).refresh(
+        raw_refresh_token=raw_refresh_token,
+        user_agent=request.headers.get("user-agent"),
+        ip=_client_ip(request),
+    )
+    _set_auth_cookies(response, cookies)
+    response.status_code = status.HTTP_200_OK
+    return response
+
+
+@router.post(
+    "/logout",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_csrf_header)],
+)
+async def logout(
+    request: Request,
+    response: Response,
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    raw_refresh_token = request.cookies.get("cs_refresh")
+    if raw_refresh_token is not None:
+        await AuthService(session).logout(raw_refresh_token=raw_refresh_token)
+
+    _clear_auth_cookies(response)
+    response.status_code = status.HTTP_204_NO_CONTENT
+    return response

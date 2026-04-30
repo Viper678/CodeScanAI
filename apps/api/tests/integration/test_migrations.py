@@ -28,6 +28,32 @@ def _has_citext_extension(psycopg_url: str) -> bool:
         return cursor.fetchone() is not None
 
 
+def _refresh_tokens_columns(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT column_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public'
+              AND table_name = 'refresh_tokens'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _refresh_tokens_indexes(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'refresh_tokens'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
 def test_alembic_upgrade_and_downgrade(
     migration_database_urls: DatabaseUrls,
     alembic_config_factory: Callable[[str], Config],
@@ -41,3 +67,28 @@ def test_alembic_upgrade_and_downgrade(
     command.downgrade(config, "base")
     assert _table_names(migration_database_urls.psycopg_url) == set()
     assert _has_citext_extension(migration_database_urls.psycopg_url) is True
+
+
+def test_alembic_refresh_token_family_id_round_trip(
+    migration_database_urls: DatabaseUrls,
+    alembic_config_factory: Callable[[str], Config],
+) -> None:
+    config: Config = alembic_config_factory(migration_database_urls.sync_url)
+
+    command.upgrade(config, "head")
+    assert "family_id" in _refresh_tokens_columns(migration_database_urls.psycopg_url)
+    assert "ix_refresh_tokens_user_id_family_id" in _refresh_tokens_indexes(
+        migration_database_urls.psycopg_url
+    )
+
+    command.downgrade(config, "-1")
+    assert "family_id" not in _refresh_tokens_columns(migration_database_urls.psycopg_url)
+    assert "ix_refresh_tokens_user_id_family_id" not in _refresh_tokens_indexes(
+        migration_database_urls.psycopg_url
+    )
+
+    command.upgrade(config, "head")
+    assert "family_id" in _refresh_tokens_columns(migration_database_urls.psycopg_url)
+    assert "ix_refresh_tokens_user_id_family_id" in _refresh_tokens_indexes(
+        migration_database_urls.psycopg_url
+    )

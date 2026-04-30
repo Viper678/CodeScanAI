@@ -28,6 +28,7 @@ class RefreshToken(Base):
         nullable=False,
         index=True,
     )
+    family_id: Mapped[UUID | None] = mapped_column(PGUUID(as_uuid=True), nullable=True)
     token_hash: Mapped[str] = mapped_column(Text, nullable=False, index=True)
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
     revoked_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
