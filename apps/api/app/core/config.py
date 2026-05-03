@@ -49,6 +49,10 @@ class Settings(BaseSettings):
     # docker-compose so local dev "just works".
     celery_broker_url: str = "redis://redis:6379/1"
 
+    # ---- Scans ----
+    # Cap on file_ids per POST /scans payload. Sourced from docs/API.md §Scans.
+    max_files_per_scan: int = 500
+
     @field_validator("jwt_secret")
     @classmethod
     def validate_jwt_secret(cls, value: SecretStr) -> SecretStr:
