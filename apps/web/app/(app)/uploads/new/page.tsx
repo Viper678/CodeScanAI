@@ -55,13 +55,30 @@ export default function NewUploadPage() {
   const [selection, setSelection] = useState<Set<string>>(new Set());
   const [config, setConfig] = useState<ScanConfigValues | null>(null);
 
-  const handleReady = useCallback((next: Upload) => {
-    setUpload(next);
-    setStep(1);
-  }, []);
+  const handleReady = useCallback(
+    (next: Upload) => {
+      // If the user replaced the upload (different id), reset downstream
+      // state so a stale selection from the old upload doesn't follow them
+      // into step 2.
+      if (upload && upload.id !== next.id) {
+        setSelection(new Set());
+        setConfig(null);
+      }
+      setUpload(next);
+      setStep(1);
+    },
+    [upload],
+  );
 
   const handleSelectionContinue = useCallback(() => {
     setStep(2);
+  }, []);
+
+  const handleSelectFilesBack = useCallback(() => {
+    // Returning to step 1 (Upload). Keep the current upload + selection in
+    // case the user just wanted to peek; UploadStep starts fresh, but a new
+    // upload in handleReady will reset downstream state.
+    setStep(0);
   }, []);
 
   const handleConfigSubmit = useCallback((next: ScanConfigValues) => {
@@ -94,6 +111,7 @@ export default function NewUploadPage() {
           upload={upload}
           selection={selection}
           onSelectionChange={setSelection}
+          onBack={handleSelectFilesBack}
           onContinue={handleSelectionContinue}
         />
       ) : step === 2 ? (
@@ -101,7 +119,12 @@ export default function NewUploadPage() {
           upload={upload}
           selectedFileCount={selection.size}
           initialValues={initialConfig}
-          onBack={() => setStep(1)}
+          onBack={(snapshot) => {
+            // Snapshot in-progress edits so the user doesn't lose them when
+            // they revisit step 3 after going back to tweak file selection.
+            setConfig(snapshot);
+            setStep(1);
+          }}
           onSubmit={handleConfigSubmit}
         />
       ) : config ? (
@@ -120,6 +143,7 @@ type SelectFilesStepProps = {
   upload: Upload;
   selection: Set<string>;
   onSelectionChange: (next: Set<string>) => void;
+  onBack: () => void;
   onContinue: () => void;
 };
 
@@ -127,6 +151,7 @@ function SelectFilesStep({
   upload,
   selection,
   onSelectionChange,
+  onBack,
   onContinue,
 }: Readonly<SelectFilesStepProps>) {
   const { data, isPending, error } = useUploadTree(upload.id);
@@ -211,9 +236,9 @@ function SelectFilesStep({
         ) : null}
 
         <div className="flex items-center justify-between gap-4 border-t border-border/60 pt-4">
-          <p className="text-xs text-muted-foreground">
-            Continue to configure the scan.
-          </p>
+          <Button type="button" variant="outline" onClick={onBack}>
+            Back
+          </Button>
           <Button
             type="button"
             onClick={onContinue}

@@ -21,9 +21,14 @@ import { scanConfigSchema, type ScanConfigValues } from '@/lib/schemas/scan';
 type ScanConfigStepProps = {
   upload: Upload;
   selectedFileCount: number;
-  /** Initial values — used to restore state when the user clicks Back from step 4. */
+  /** Initial values — restored when the user revisits this step from step 4. */
   initialValues: ScanConfigValues;
-  onBack: () => void;
+  /**
+   * Receives the current (possibly invalid) in-progress values so the page can
+   * snapshot them before stepping back. Without this, mid-edit changes
+   * (typed scan name, keyword tweaks) are lost on Back → revisit.
+   */
+  onBack: (snapshot: ScanConfigValues) => void;
   onSubmit: (values: ScanConfigValues) => void;
 };
 
@@ -37,6 +42,7 @@ export function ScanConfigStep({
   const {
     control,
     formState: { errors, isSubmitting },
+    getValues,
     handleSubmit,
     register,
     watch,
@@ -123,7 +129,11 @@ export function ScanConfigStep({
           </div>
 
           <div className="flex items-center justify-between gap-4 border-t border-border/60 pt-4">
-            <Button type="button" variant="outline" onClick={onBack}>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onBack(getValues())}
+            >
               Back
             </Button>
             <Button type="submit" disabled={isSubmitting}>

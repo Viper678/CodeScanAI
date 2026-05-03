@@ -49,6 +49,23 @@ class Settings(BaseSettings):
     # docker-compose so local dev "just works".
     celery_broker_url: str = "redis://redis:6379/1"
 
+    # ---- CORS ----
+    # Browser → API is cross-origin; the frontend uses cookie auth so wildcard
+    # origins are not allowed. Defaults cover both the docker-compose web
+    # (3000) and a local `pnpm dev` instance bumped to 3001 by Next when 3000
+    # is busy. Override via CORS_ALLOW_ORIGINS env (comma-separated) for prod.
+    cors_allow_origins: list[str] = [
+        "http://localhost:3000",
+        "http://localhost:3001",
+    ]
+
+    @field_validator("cors_allow_origins", mode="before")
+    @classmethod
+    def split_cors_origins(cls, value: object) -> object:
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
     # ---- Scans ----
     # Cap on file_ids per POST /scans payload. Sourced from docs/API.md §Scans.
     max_files_per_scan: int = 500
