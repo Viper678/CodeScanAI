@@ -7,7 +7,7 @@ from sqlalchemy import engine_from_config, pool
 from alembic import context
 from app.core.config import settings
 from app.core.db import Base
-from app.models import refresh_token, upload, user  # noqa: F401
+from app.models import file, refresh_token, upload, user  # noqa: F401
 
 config = context.config
 database_url = config.get_main_option("sqlalchemy.url") or settings.database_sync_url

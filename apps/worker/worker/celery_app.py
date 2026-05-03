@@ -10,7 +10,7 @@ celery_app = Celery(
     "worker",
     broker=os.getenv("CELERY_BROKER_URL", DEFAULT_BROKER_URL),
     backend=os.getenv("CELERY_RESULT_BACKEND", DEFAULT_RESULT_BACKEND),
-    include=["worker.tasks.ping"],
+    include=["worker.tasks.ping", "worker.tasks.prepare_upload"],
 )
 
 celery_app.conf.update(

@@ -19,7 +19,33 @@ def _table_names(psycopg_url: str) -> set[str]:
             SELECT tablename
             FROM pg_tables
             WHERE schemaname = 'public'
-              AND tablename IN ('users', 'refresh_tokens', 'uploads')
+              AND tablename IN ('users', 'refresh_tokens', 'uploads', 'files')
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _files_indexes(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'files'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _files_unique_constraints(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'public.files'::regclass
+              AND contype = 'u'
             """,
         )
         return {row[0] for row in cursor.fetchall()}
@@ -107,6 +133,7 @@ def test_alembic_upgrade_and_downgrade(
 
     command.upgrade(config, "head")
     assert _table_names(migration_database_urls.psycopg_url) == {
+        "files",
         "refresh_tokens",
         "uploads",
         "users",
@@ -134,8 +161,9 @@ def test_alembic_refresh_token_family_id_round_trip(
     )
 
     # Round-trip the family-id migration once, then re-upgrade so subsequent
-    # tests in this file see HEAD applied. The uploads migration is layered on
-    # top, so we have to step its downgrade first.
+    # tests in this file see HEAD applied. The uploads + files migrations are
+    # layered on top, so we have to step their downgrades first.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop uploads
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop family_id
     assert "family_id" not in _refresh_tokens_columns(migration_database_urls.psycopg_url)
@@ -167,9 +195,34 @@ def test_alembic_uploads_round_trip(migration_database_urls: DatabaseUrls) -> No
     assert "uploads" in _table_names(migration_database_urls.psycopg_url)
     assert "ix_uploads_user_id_created_at" in _uploads_indexes(migration_database_urls.psycopg_url)
 
-    _run_alembic_cli(migration_database_urls, "downgrade", "-1")
+    # Step past the files migration first so the uploads downgrade can run.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop uploads
     assert "uploads" not in _table_names(migration_database_urls.psycopg_url)
 
     _run_alembic_cli(migration_database_urls, "upgrade", "head")
     assert "uploads" in _table_names(migration_database_urls.psycopg_url)
     assert "ix_uploads_user_id_created_at" in _uploads_indexes(migration_database_urls.psycopg_url)
+
+
+def test_alembic_files_round_trip(migration_database_urls: DatabaseUrls) -> None:
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
+    assert "files" in _table_names(migration_database_urls.psycopg_url)
+    indexes = _files_indexes(migration_database_urls.psycopg_url)
+    assert "ix_files_upload_id_path" in indexes
+    assert "ix_files_upload_id_parent_path" in indexes
+    assert "uq_files_upload_id_path" in _files_unique_constraints(
+        migration_database_urls.psycopg_url
+    )
+
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")
+    assert "files" not in _table_names(migration_database_urls.psycopg_url)
+
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
+    assert "files" in _table_names(migration_database_urls.psycopg_url)
+    indexes = _files_indexes(migration_database_urls.psycopg_url)
+    assert "ix_files_upload_id_path" in indexes
+    assert "ix_files_upload_id_parent_path" in indexes
+    assert "uq_files_upload_id_path" in _files_unique_constraints(
+        migration_database_urls.psycopg_url
+    )
