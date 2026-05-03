@@ -60,5 +60,14 @@ class Settings(BaseSettings):
     gemma_model: str = "gemma-4-31b-it"
     prompt_version: str = "v1"
 
+    # ---- Scans ----
+    scan_concurrency: int = 4
+    # Per-call token budget; sourced from docs/SCAN_RULES.md §"Token budget &
+    # chunking". Files whose char/4 estimate exceeds this are skipped pending
+    # the chunker follow-up.
+    gemma_max_input_tokens: int = 120_000
+    # Re-poll scan.status every N completed files to honor cancellation.
+    cancel_check_interval_files: int = 4
+
 
 settings = Settings()
