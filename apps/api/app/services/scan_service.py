@@ -40,6 +40,9 @@ from app.repositories.upload_repo import UploadRepo
 from app.schemas.scan import (
     ScanCreateRequest,
     ScanDetail,
+    ScanFileItem,
+    ScanFilesResponse,
+    ScanFileStatus,
     ScanListResponse,
     ScanStatus,
     ScanSummary,
@@ -166,6 +169,44 @@ class ScanService:
             summary = await self._build_summary(scan_id=row.id)
             items.append(_scan_to_detail(row, summary))
         return ScanListResponse(items=items, next_cursor=None, total=total)
+
+    async def list_recent_scan_files(
+        self,
+        *,
+        scan_id: UUID,
+        user_id: UUID,
+        limit: int,
+    ) -> ScanFilesResponse:
+        """Return the most-recently-finalized ``scan_files`` rows for a scan.
+
+        Loads the scan first to enforce ownership-to-404 (so a stranger sees
+        the same response shape as a missing row), then delegates to the repo.
+        """
+
+        scan = await self.scans.get_by_id(scan_id, user_id=user_id)
+        if scan is None:
+            raise NotFound("Scan not found")
+        rows = await self.scan_files.list_recent_for_scan(
+            scan_id=scan.id,
+            user_id=user_id,
+            limit=limit,
+        )
+        items = [
+            ScanFileItem(
+                id=row.id,
+                file_id=row.file_id,
+                path=path,
+                status=cast(ScanFileStatus, row.status),
+                error=row.error,
+                tokens_in=row.tokens_in,
+                tokens_out=row.tokens_out,
+                latency_ms=row.latency_ms,
+                started_at=row.started_at,
+                finished_at=row.finished_at,
+            )
+            for row, path in rows
+        ]
+        return ScanFilesResponse(items=items)
 
     async def cancel_scan(self, *, scan_id: UUID, user_id: UUID) -> ScanDetail:
         scan = await self.scans.get_by_id(scan_id, user_id=user_id)

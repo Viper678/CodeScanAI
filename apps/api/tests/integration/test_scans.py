@@ -28,7 +28,12 @@ from app.models.scan import (
     SCAN_STATUS_RUNNING,
     Scan,
 )
-from app.models.scan_file import ScanFile
+from app.models.scan_file import (
+    SCAN_FILE_STATUS_DONE,
+    SCAN_FILE_STATUS_FAILED,
+    SCAN_FILE_STATUS_PENDING,
+    ScanFile,
+)
 from app.models.upload import UPLOAD_KIND_ZIP, UPLOAD_STATUS_READY, Upload
 from app.models.user import User
 
@@ -870,3 +875,205 @@ async def test_delete_scan_404_for_other_user(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# GET /api/v1/scans/{id}/files — recent-files tail (T3.6)
+# ---------------------------------------------------------------------------
+
+
+async def _seed_scan_with_scan_files(
+    db_session: AsyncSession,
+    *,
+    user_id: UUID,
+    file_count: int = 4,
+) -> tuple[Scan, list[File], list[ScanFile]]:
+    """Stage an upload + files + a scan + matching scan_files (all PENDING).
+
+    Tests then mutate `scan_files` rows in-place to set finished_at/etc.
+    """
+
+    upload, files = await _seed_upload_with_files(
+        db_session, user_id=user_id, file_count=file_count
+    )
+    scan = Scan(
+        id=uuid7(),
+        user_id=user_id,
+        upload_id=upload.id,
+        name="tail",
+        scan_types=["security"],
+        keywords={},
+        status=SCAN_STATUS_RUNNING,
+        progress_done=0,
+        progress_total=len(files),
+        model_settings={},
+    )
+    db_session.add(scan)
+    await db_session.flush()
+    scan_files = [
+        ScanFile(
+            id=uuid7(),
+            scan_id=scan.id,
+            file_id=f.id,
+            status=SCAN_FILE_STATUS_PENDING,
+        )
+        for f in files
+    ]
+    db_session.add_all(scan_files)
+    await db_session.commit()
+    for sf in scan_files:
+        await db_session.refresh(sf)
+    await db_session.refresh(scan)
+    return scan, files, scan_files
+
+
+async def test_list_recent_scan_files_404_for_other_user(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    register_a = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "owner-tail@example.com", "password": "correct-horse"},
+    )
+    assert register_a.status_code == 201
+    user_a = await _current_user(client)
+    scan, _files, _scan_files = await _seed_scan_with_scan_files(db_session, user_id=user_a.id)
+
+    client.cookies.clear()
+    register_b = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "intruder-tail@example.com", "password": "correct-horse"},
+    )
+    assert register_b.status_code == 201
+
+    response = await client.get(f"/api/v1/scans/{scan.id}/files")
+
+    # 404 — same no-enumeration pattern as the other ownership checks.
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_list_recent_scan_files_rejects_limit_zero(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan, _files, _scan_files = await _seed_scan_with_scan_files(db_session, user_id=user.id)
+
+    response = await authed_client.get(f"/api/v1/scans/{scan.id}/files?limit=0")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_list_recent_scan_files_rejects_limit_too_high(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan, _files, _scan_files = await _seed_scan_with_scan_files(db_session, user_id=user.id)
+
+    response = await authed_client.get(f"/api/v1/scans/{scan.id}/files?limit=51")
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
+async def test_list_recent_scan_files_orders_finished_at_desc_nulls_last(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan, files, scan_files = await _seed_scan_with_scan_files(
+        db_session, user_id=user.id, file_count=4
+    )
+
+    # Three rows finalized at staggered timestamps; one stays pending.
+    base = datetime(2026, 5, 3, 12, 0, 0, tzinfo=UTC)
+    scan_files[0].status = SCAN_FILE_STATUS_DONE
+    scan_files[0].finished_at = base.replace(hour=12, minute=0)
+    scan_files[1].status = SCAN_FILE_STATUS_DONE
+    scan_files[1].finished_at = base.replace(hour=12, minute=5)
+    scan_files[2].status = SCAN_FILE_STATUS_DONE
+    scan_files[2].finished_at = base.replace(hour=12, minute=10)
+    # scan_files[3] stays pending — no finished_at.
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/scans/{scan.id}/files?limit=10")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 4
+    # Newest finalized first, then older finalized, then pending (NULL last).
+    assert items[0]["id"] == str(scan_files[2].id)
+    assert items[1]["id"] == str(scan_files[1].id)
+    assert items[2]["id"] == str(scan_files[0].id)
+    assert items[3]["id"] == str(scan_files[3].id)
+    assert items[3]["finished_at"] is None
+    assert items[3]["status"] == "pending"
+
+
+async def test_list_recent_scan_files_returns_path_and_file_fields(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan, files, scan_files = await _seed_scan_with_scan_files(
+        db_session, user_id=user.id, file_count=2
+    )
+    finished_at = datetime(2026, 5, 3, 9, 30, 0, tzinfo=UTC)
+    scan_files[0].status = SCAN_FILE_STATUS_DONE
+    scan_files[0].finished_at = finished_at
+    scan_files[0].started_at = finished_at
+    scan_files[0].tokens_in = 1234
+    scan_files[0].tokens_out = 567
+    scan_files[0].latency_ms = 4200
+    scan_files[1].status = SCAN_FILE_STATUS_FAILED
+    scan_files[1].finished_at = finished_at.replace(minute=29)
+    scan_files[1].error = "rate_limited"
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/scans/{scan.id}/files?limit=10")
+
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert len(items) == 2
+    # Newest first → scan_files[0].
+    first = items[0]
+    paths_by_file_id = {str(f.id): f.path for f in files}
+    assert first["path"] == paths_by_file_id[str(scan_files[0].file_id)]
+    assert first["status"] == "done"
+    assert first["tokens_in"] == 1234
+    assert first["tokens_out"] == 567
+    assert first["latency_ms"] == 4200
+    assert first["error"] is None
+    second = items[1]
+    assert second["status"] == "failed"
+    assert second["error"] == "rate_limited"
+    assert second["path"] == paths_by_file_id[str(scan_files[1].file_id)]
+
+
+async def test_list_recent_scan_files_respects_limit(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Sanity check that ``limit=2`` truncates the result to 2 newest rows."""
+
+    user = await _current_user(authed_client)
+    scan, _files, scan_files = await _seed_scan_with_scan_files(
+        db_session, user_id=user.id, file_count=4
+    )
+    base = datetime(2026, 5, 3, 12, 0, 0, tzinfo=UTC)
+    for i, sf in enumerate(scan_files):
+        sf.status = SCAN_FILE_STATUS_DONE
+        sf.finished_at = base.replace(minute=i)
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/scans/{scan.id}/files?limit=2")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body["items"]) == 2
+    # Newest two = scan_files[3], scan_files[2].
+    assert body["items"][0]["id"] == str(scan_files[3].id)
+    assert body["items"][1]["id"] == str(scan_files[2].id)

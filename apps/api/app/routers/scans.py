@@ -23,6 +23,7 @@ from app.schemas.scan import (
     ScanCreateRequest,
     ScanCreateResponse,
     ScanDetail,
+    ScanFilesResponse,
     ScanListResponse,
     ScanStatus,
 )
@@ -101,6 +102,23 @@ async def get_scan(
 ) -> ScanDetail:
     service = ScanService(session)
     return await service.get_scan_detail(scan_id=scan_id, user_id=current_user.id)
+
+
+@router.get("/{scan_id}/files", response_model=ScanFilesResponse)
+async def list_recent_scan_files(
+    scan_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    limit: int = 10,
+) -> ScanFilesResponse:
+    if limit < 1 or limit > 50:
+        raise InvalidScanRequest("limit must be between 1 and 50")
+    service = ScanService(session)
+    return await service.list_recent_scan_files(
+        scan_id=scan_id,
+        user_id=current_user.id,
+        limit=limit,
+    )
 
 
 @router.post(

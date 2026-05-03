@@ -17,6 +17,7 @@ from pydantic import BaseModel, ConfigDict, Field
 ScanType = Literal["security", "bugs", "keywords"]
 ScanStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
 Severity = Literal["critical", "high", "medium", "low", "info"]
+ScanFileStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
 
 class KeywordsConfig(BaseModel):
@@ -126,3 +127,31 @@ class ScanFindingsResponse(BaseModel):
     items: list[ScanFindingItem] = Field(default_factory=list)
     next_cursor: str | None = None
     total: int = 0
+
+
+class ScanFileItem(BaseModel):
+    """One row in ``GET /api/v1/scans/{id}/files`` — the recent-files tail.
+
+    Powers the live "tail log" surface on ``/scans/{id}`` (T3.6). ``path`` is
+    joined from the ``files`` table so the UI doesn't need a second round trip
+    per row.
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    file_id: UUID
+    path: str
+    status: ScanFileStatus
+    error: str | None = None
+    tokens_in: int | None = None
+    tokens_out: int | None = None
+    latency_ms: int | None = None
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class ScanFilesResponse(BaseModel):
+    """Response body for ``GET /api/v1/scans/{id}/files``."""
+
+    items: list[ScanFileItem] = Field(default_factory=list)
