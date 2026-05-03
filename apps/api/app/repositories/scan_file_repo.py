@@ -16,6 +16,7 @@ from uuid import UUID
 from sqlalchemy import select
 
 from app.core.uuid7 import uuid7
+from app.models.file import File
 from app.models.scan import Scan
 from app.models.scan_file import SCAN_FILE_STATUS_PENDING, ScanFile
 from app.repositories.base import BaseRepo
@@ -64,6 +65,37 @@ class ScanFileRepo(BaseRepo[ScanFile]):
             .order_by(ScanFile.file_id)
         )
         return list(result.scalars().all())
+
+    async def list_recent_for_scan(
+        self,
+        *,
+        scan_id: UUID,
+        user_id: UUID,
+        limit: int,
+    ) -> list[tuple[ScanFile, str]]:
+        """Return the N most-recently-finalized rows for a scan.
+
+        Joined to ``files`` so the caller has the path alongside each row.
+        Ordered by ``finished_at DESC NULLS LAST, ScanFile.id DESC`` so freshly
+        finalized rows lead and pending/running rows trail. Ownership is
+        enforced via the JOIN onto ``scans`` (per the BaseRepo contract).
+
+        Returns a list of ``(ScanFile, path)`` tuples. The router caps
+        ``limit`` to a sane ceiling — repo trusts the caller.
+        """
+
+        result = await self.session.execute(
+            select(ScanFile, File.path)
+            .join(Scan, Scan.id == ScanFile.scan_id)
+            .join(File, File.id == ScanFile.file_id)
+            .where(ScanFile.scan_id == scan_id, Scan.user_id == user_id)
+            .order_by(
+                ScanFile.finished_at.desc().nullslast(),
+                ScanFile.id.desc(),
+            )
+            .limit(limit)
+        )
+        return [(row, path) for row, path in result.all()]
 
     async def bulk_create(
         self,

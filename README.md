@@ -122,14 +122,14 @@ If you are an AI agent picking up work on this project, read in this order:
 
 ## Status
 
-🟡 In active development. Currently mid-Phase 3 — see `docs/TASKS.md` for the full plan.
+🟡 In active development. Phase 3 (scans + UI) ships in T3.6; next is Phase 4 — findings table, file viewer, and exports.
 
 Shipped:
 
 - Auth: register / login / me, refresh-token rotation + family-based stolen-token revocation
 - Upload: `.zip` and loose-file ingest, server-side extraction with zip-bomb / path-traversal / nesting-depth guards, materialized file tree
-- Scans API: create / get / list / cancel / delete (`/api/v1/scans`), file-ownership validation, `MAX_FILES_PER_SCAN` cap
+- Scans API: create / get / list / cancel / delete + recent-files tail (`/scans/{id}/files`); file-ownership validation, `MAX_FILES_PER_SCAN` cap
 - Worker: Gemma client (`google-genai`) with retry policy + Pydantic validation; scanner orchestrator (`run_scan` Celery task) with bounded thread pool, cancellation, and per-file findings persistence
-- Web: auth pages, upload wizard step 1 (dropzone + progress) and step 2 (virtualized directory tree with tri-state selection)
+- Web: auth pages, full new-scan wizard (upload → file selection → scan config → confirm), and the live `/scans/{id}` progress page (status-aware polling, determinate progress + ETA, severity counters, recent-files tail, cancel button)
 
-Next up: wizard steps 3–4 (scan config + confirm) and progress UI (T3.5 / T3.6), findings + export (T3.7+).
+Next up: Phase 4 — findings table, file viewer, exports.

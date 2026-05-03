@@ -62,8 +62,12 @@ services:
     build:
       context: ./apps/worker
     environment:
+      DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
       CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+      DATA_DIR: ${DATA_DIR:-/data}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:?GOOGLE_AI_API_KEY is required for the worker (security/bugs scanners call Gemma)}
+      GEMMA_MODEL: ${GEMMA_MODEL:-gemma-4-31b-it}
     volumes:
       - data:/data
     depends_on:

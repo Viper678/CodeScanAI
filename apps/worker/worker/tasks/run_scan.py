@@ -188,7 +188,23 @@ def _run(
                 eligible.append(plan)
         session.commit()
 
-    registry = scanner_registry_factory(scan_types, keywords_cfg)
+    # Construct the scanner registry. If this fails (e.g. GOOGLE_AI_API_KEY
+    # is missing for an LLM scan, network blip while building the SDK client),
+    # the scan would otherwise sit stuck in `running` because the task raised
+    # AFTER we flipped to `running` but BEFORE the dispatch loop owns the
+    # finalize. Catch and mark `failed` with a clear error.
+    try:
+        registry = scanner_registry_factory(scan_types, keywords_cfg)
+    except Exception as exc:
+        logger.exception("run_scan: failed to build scanner registry for %s", scan_id)
+        with maker() as session:
+            scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
+            if scan is not None:
+                scan.status = SCAN_STATUS_FAILED
+                scan.error = f"scanner_init_failed: {exc}"[:500]
+                scan.finished_at = datetime.now(UTC)
+                session.commit()
+        raise
 
     cancelled = False
     if eligible:
