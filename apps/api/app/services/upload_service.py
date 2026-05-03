@@ -14,7 +14,7 @@ import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Protocol, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -22,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.exceptions import (
     InvalidUploadRequest,
+    NotFound,
     PayloadTooLarge,
     QueueUnavailable,
     UnsupportedFileType,
@@ -32,10 +33,13 @@ from app.models.upload import (
     UPLOAD_KIND_LOOSE,
     UPLOAD_KIND_ZIP,
     UPLOAD_STATUS_FAILED,
+    UPLOAD_STATUS_READY,
     UPLOAD_STATUS_RECEIVED,
     Upload,
 )
+from app.repositories.file_repo import FileRepo
 from app.repositories.upload_repo import UploadRepo
+from app.schemas.upload import TreeFile, TreeResponse, UploadStatus
 from app.services.celery_client import enqueue_prepare_upload
 
 logger = logging.getLogger(__name__)
@@ -87,8 +91,42 @@ class UploadService:
     ) -> None:
         self.session = session
         self.uploads = UploadRepo(session)
+        self.files = FileRepo(session)
         self._enqueue = enqueuer or enqueue_prepare_upload
         self._data_dir = data_dir or settings.data_dir
+
+    async def get_tree(self, *, upload_id: UUID, user_id: UUID) -> TreeResponse:
+        """Return the materialized file tree for an upload.
+
+        Raises ``NotFound`` when the upload doesn't exist or belongs to
+        someone else (the API never distinguishes the two — see
+        docs/SECURITY.md §3 and the AC for T2.3). When the upload is still
+        being processed (``received`` / ``extracting``) or has failed,
+        returns an empty ``files`` list with the current ``status`` echoed
+        so the frontend can poll without a second call to ``GET /uploads/{id}``.
+        """
+
+        upload = await self.uploads.get_by_id(upload_id, user_id=user_id)
+        if upload is None:
+            raise NotFound("Upload not found")
+
+        root_name = _derive_root_name(upload)
+        status_literal = cast(UploadStatus, upload.status)
+        if upload.status != UPLOAD_STATUS_READY:
+            return TreeResponse(
+                upload_id=upload.id,
+                root_name=root_name,
+                status=status_literal,
+                files=[],
+            )
+
+        rows = await self.files.list_for_upload(upload_id=upload.id, user_id=user_id)
+        return TreeResponse(
+            upload_id=upload.id,
+            root_name=root_name,
+            status=status_literal,
+            files=[TreeFile.model_validate(row) for row in rows],
+        )
 
     async def create_zip_upload(
         self,
@@ -221,6 +259,22 @@ class UploadService:
             upload.error = "queue_unavailable"
             await self.session.commit()
             raise QueueUnavailable() from None
+
+
+def _derive_root_name(upload: Upload) -> str:
+    """Pick a human label for the tree root.
+
+    For zips we strip the trailing ``.zip`` so the UI shows "myrepo" instead
+    of "myrepo.zip". For loose uploads we pass the original name through
+    unchanged — single-file uploads keep their filename, multi-file uploads
+    already carry the synthetic ``loose-<uuid>`` label produced at upload
+    time. The frontend doesn't depend on either form being canonical.
+    """
+
+    name = upload.original_name
+    if upload.kind == UPLOAD_KIND_ZIP and name.lower().endswith(".zip"):
+        return name[: -len(".zip")]
+    return name
 
 
 def _zip_content_type_ok(content_type: str | None) -> bool:
