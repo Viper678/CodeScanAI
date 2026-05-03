@@ -40,8 +40,12 @@ export default function ScanProgressPage({
   const scan = scanQuery.data ?? null;
   const isTerminal = scan ? TERMINAL.has(scan.status) : false;
 
+  // Gate the recent-files poll on a successful scan fetch. If the scan
+  // request 404s or errors, !isTerminal is still true (no data → not a
+  // terminal status), which would otherwise leave us hammering
+  // /scans/{id}/files every 3s while the error panel renders.
   const filesQuery = useRecentScanFiles(scanId, {
-    enabled: !isTerminal,
+    enabled: scanQuery.isSuccess && !isTerminal,
     limit: 10,
   });
   const cancelMutation = useCancelScanMutation(scanId);
