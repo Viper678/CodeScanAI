@@ -238,3 +238,34 @@ def test_aggregate_usage_keywords_only_zero_calls() -> None:
 def test_aggregate_usage_only_security_selected() -> None:
     usage = _aggregate_usage_from_rows(50, 60, files_with_calls=2, scan_types=["security"])
     assert usage == {"total_tokens_in": 50, "total_tokens_out": 60, "calls": 2}
+
+
+# ---- Default scanner registry -----------------------------------------------
+
+
+def test_default_registry_keywords_only_does_not_construct_gemma_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Keyword-only scans must not require GOOGLE_AI_API_KEY (codex P2 on PR #20)."""
+
+    from worker.tasks.run_scan import _default_scanner_registry
+
+    monkeypatch.setattr(settings, "google_ai_api_key", None)
+
+    registry = _default_scanner_registry(["keywords"], None)
+
+    assert set(registry.keys()) == {"keywords"}
+
+
+def test_default_registry_only_security_constructs_security_only(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from pydantic import SecretStr
+
+    from worker.tasks.run_scan import _default_scanner_registry
+
+    monkeypatch.setattr(settings, "google_ai_api_key", SecretStr("fake"))
+
+    registry = _default_scanner_registry(["security"], None)
+
+    assert set(registry.keys()) == {"security"}

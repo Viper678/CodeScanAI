@@ -372,7 +372,7 @@ def _insert_scan(
 # ---- Fake scanner factory ---------------------------------------------------
 
 
-def _fake_registry_factory(keywords_cfg):  # type: ignore[no-untyped-def]
+def _fake_registry_factory(scan_types, keywords_cfg):  # type: ignore[no-untyped-def]
     """Build a registry that uses fake security/bugs scanners + the real keyword scanner."""
 
     from worker.scanners.base import Finding, ScanCallResult, ScanContext
@@ -404,11 +404,14 @@ def _fake_registry_factory(keywords_cfg):  # type: ignore[no-untyped-def]
         return _Canned()
 
     del keywords_cfg
-    return {
-        "security": _make_canned("security", "high"),
-        "bugs": _make_canned("bugs", "medium"),
-        "keywords": KeywordScanner(),
-    }
+    registry = {}
+    if "security" in scan_types:
+        registry["security"] = _make_canned("security", "high")
+    if "bugs" in scan_types:
+        registry["bugs"] = _make_canned("bugs", "medium")
+    if "keywords" in scan_types:
+        registry["keywords"] = KeywordScanner()
+    return registry
 
 
 # ---- The AC test ------------------------------------------------------------
@@ -532,7 +535,7 @@ def test_run_scan_idempotent_when_already_completed(
 
     from worker.tasks.run_scan import _run
 
-    def _boom_factory(_kw):  # type: ignore[no-untyped-def]
+    def _boom_factory(_types, _kw):  # type: ignore[no-untyped-def]
         raise AssertionError("scanner_registry_factory must not be invoked")
 
     result = _run(
@@ -541,3 +544,113 @@ def test_run_scan_idempotent_when_already_completed(
         session_maker=new_maker,
     )
     assert result["status"] == "completed"
+
+
+def test_run_scan_re_entry_skips_already_finalized_scan_files(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Codex P1 on PR #20: re-delivery of a partially-completed scan must not
+    re-process scan_files that already finalized — that would duplicate
+    scan_findings and bump scan.progress_done past progress_total."""
+
+    sync_url, _ = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id, file_ids = _insert_upload_and_files(
+            session, user_id=user_id, extract_root=extract_root
+        )
+        scan_id = _insert_scan(session, user_id=user_id, upload_id=upload_id, file_ids=file_ids)
+
+    from datetime import UTC
+    from datetime import datetime as dt
+
+    from worker.core.models import Scan, ScanFile, ScanFinding
+
+    # Pre-finalize the .py file (file_ids[0]) as if a previous delivery did it,
+    # and leave the scan in `running`. Bump progress_done to 1 to mirror the
+    # bookkeeping the orchestrator would have done.
+    with _engine_session(sync_url) as session:
+        scan = session.scalar(select(Scan).where(Scan.id == scan_id))
+        assert scan is not None
+        scan.status = "running"
+        scan.started_at = dt.now(UTC)
+        scan.progress_done = 1
+        sf = session.scalar(
+            select(ScanFile).where(ScanFile.scan_id == scan_id, ScanFile.file_id == file_ids[0])
+        )
+        assert sf is not None
+        sf.status = "done"
+        sf.finished_at = dt.now(UTC)
+        sf.tokens_in = 999
+        sf.tokens_out = 111
+        # Pretend the previous delivery already wrote one finding for this file.
+        session.add(
+            ScanFinding(
+                scan_id=scan_id,
+                file_id=file_ids[0],
+                scan_type="security",
+                severity="high",
+                title="prior finding",
+                message="from previous delivery",
+                recommendation=None,
+                line_start=1,
+                line_end=1,
+                snippet=None,
+                rule_id="R-prior",
+                confidence=None,
+                meta={},
+            )
+        )
+        session.commit()
+
+    from worker.tasks.run_scan import _run
+
+    result = _run(
+        str(scan_id),
+        scanner_registry_factory=_fake_registry_factory,
+        session_maker=new_maker,
+    )
+
+    assert result["status"] == "completed"
+
+    with _engine_session(sync_url) as session:
+        scan = session.scalar(select(Scan).where(Scan.id == scan_id))
+        assert scan is not None
+        # progress_done must NOT exceed progress_total — re-entry skipped the
+        # already-done file so we end at 3, not 4.
+        assert scan.progress_done == scan.progress_total == 3
+
+        # The previously-done .py file kept its prior finding, was NOT re-scanned.
+        py_findings = list(
+            session.scalars(
+                select(ScanFinding).where(
+                    ScanFinding.scan_id == scan_id, ScanFinding.file_id == file_ids[0]
+                )
+            )
+        )
+        # Only the prior finding survives; no duplicate inserts from re-delivery.
+        assert len(py_findings) == 1
+        assert py_findings[0].title == "prior finding"
+
+        # The .md file got freshly scanned this delivery.
+        md_findings = list(
+            session.scalars(
+                select(ScanFinding).where(
+                    ScanFinding.scan_id == scan_id, ScanFinding.file_id == file_ids[1]
+                )
+            )
+        )
+        assert len(md_findings) >= 1

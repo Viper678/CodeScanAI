@@ -70,7 +70,7 @@ from worker.scanners.security import SecurityScanner
 logger = logging.getLogger(__name__)
 
 ScannerRegistry = dict[str, Scanner]
-ScannerRegistryFactory = Callable[[KeywordsConfig | None], ScannerRegistry]
+ScannerRegistryFactory = Callable[[list[str], KeywordsConfig | None], ScannerRegistry]
 
 
 # ---- Per-file plan ----------------------------------------------------------
@@ -137,7 +137,7 @@ def _run(
 
     Args:
         scan_id: scan UUID as string.
-        scanner_registry_factory: callable ``(scan_keywords) -> ScannerRegistry``.
+        scanner_registry_factory: callable ``(scan_types, keywords_cfg) -> ScannerRegistry``.
             Tests inject a fake here to avoid touching the network.
         session_maker: override for ``worker.core.db.SessionMaker``; tests use
             this so per-thread sessions hit the integration DB.
@@ -188,7 +188,7 @@ def _run(
                 eligible.append(plan)
         session.commit()
 
-    registry = scanner_registry_factory(keywords_cfg)
+    registry = scanner_registry_factory(scan_types, keywords_cfg)
 
     cancelled = False
     if eligible:
@@ -229,35 +229,62 @@ def _run(
 # ---- Default registry -------------------------------------------------------
 
 
-def _default_scanner_registry(keywords_cfg: KeywordsConfig | None) -> ScannerRegistry:
-    """Construct the production scanner set once per task invocation.
+def _default_scanner_registry(
+    scan_types: list[str], keywords_cfg: KeywordsConfig | None
+) -> ScannerRegistry:
+    """Construct only the scanners the scan actually needs.
 
-    ``keywords_cfg`` is unused here (the keyword scanner reads it via
-    ``ScanContext`` per call) but accepted for signature parity with test
-    factories that may need it.
+    Building ``GemmaClient`` requires ``GOOGLE_AI_API_KEY``; constructing it
+    eagerly would crash keyword-only scans on installs that don't have the
+    key set, leaving the scan stuck in ``running``. Build LLM scanners only
+    when the scan selected ``security`` or ``bugs``.
+
+    ``keywords_cfg`` is accepted for signature parity with test factories;
+    the keyword scanner reads it via ``ScanContext`` per call.
     """
 
     del keywords_cfg
-    api_key_secret = settings.google_ai_api_key
-    api_key = api_key_secret.get_secret_value() if api_key_secret else ""
-    client = GemmaClient(api_key=api_key, model=settings.gemma_model)
-    return {
-        SCAN_TYPE_SECURITY: SecurityScanner(client),
-        SCAN_TYPE_BUGS: BugsScanner(client),
-        SCAN_TYPE_KEYWORDS: KeywordScanner(),
-    }
+    registry: ScannerRegistry = {}
+    needs_llm = any(t in (SCAN_TYPE_SECURITY, SCAN_TYPE_BUGS) for t in scan_types)
+    if needs_llm:
+        api_key_secret = settings.google_ai_api_key
+        api_key = api_key_secret.get_secret_value() if api_key_secret else ""
+        client = GemmaClient(api_key=api_key, model=settings.gemma_model)
+        if SCAN_TYPE_SECURITY in scan_types:
+            registry[SCAN_TYPE_SECURITY] = SecurityScanner(client)
+        if SCAN_TYPE_BUGS in scan_types:
+            registry[SCAN_TYPE_BUGS] = BugsScanner(client)
+    if SCAN_TYPE_KEYWORDS in scan_types:
+        registry[SCAN_TYPE_KEYWORDS] = KeywordScanner()
+    return registry
 
 
 # ---- Plan construction ------------------------------------------------------
 
 
 def _build_plans(session: Session, scan_id: UUID, extract_root: Path) -> list[_FilePlan]:
-    """Load scan_files joined to files and materialize per-file plans."""
+    """Load scan_files joined to files and materialize per-file plans.
+
+    Only non-terminal rows (``pending`` / ``running``) are returned. On Celery
+    re-delivery after partial completion, already-finalized rows
+    (``done`` / ``skipped`` / ``failed``) keep their findings and stay out of
+    the worklist — re-running them would duplicate ``scan_findings`` inserts
+    and bump ``scan.progress_done`` past ``progress_total``.
+    """
 
     rows = session.execute(
         select(ScanFile, File)
         .join(File, ScanFile.file_id == File.id)
-        .where(ScanFile.scan_id == scan_id)
+        .where(
+            ScanFile.scan_id == scan_id,
+            ScanFile.status.notin_(
+                (
+                    SCAN_FILE_STATUS_DONE,
+                    SCAN_FILE_STATUS_SKIPPED,
+                    SCAN_FILE_STATUS_FAILED,
+                )
+            ),
+        )
         .order_by(File.path)
     ).all()
     plans: list[_FilePlan] = []
