@@ -19,7 +19,15 @@ def _table_names(psycopg_url: str) -> set[str]:
             SELECT tablename
             FROM pg_tables
             WHERE schemaname = 'public'
-              AND tablename IN ('users', 'refresh_tokens', 'uploads', 'files')
+              AND tablename IN (
+                'users',
+                'refresh_tokens',
+                'uploads',
+                'files',
+                'scans',
+                'scan_files',
+                'scan_findings'
+              )
             """,
         )
         return {row[0] for row in cursor.fetchall()}
@@ -59,6 +67,58 @@ def _uploads_indexes(psycopg_url: str) -> set[str]:
             FROM pg_indexes
             WHERE schemaname = 'public'
               AND tablename = 'uploads'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _scans_indexes(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'scans'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _scan_files_indexes(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'scan_files'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _scan_files_unique_constraints(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT conname
+            FROM pg_constraint
+            WHERE conrelid = 'public.scan_files'::regclass
+              AND contype = 'u'
+            """,
+        )
+        return {row[0] for row in cursor.fetchall()}
+
+
+def _scan_findings_indexes(psycopg_url: str) -> set[str]:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT indexname
+            FROM pg_indexes
+            WHERE schemaname = 'public'
+              AND tablename = 'scan_findings'
             """,
         )
         return {row[0] for row in cursor.fetchall()}
@@ -135,6 +195,9 @@ def test_alembic_upgrade_and_downgrade(
     assert _table_names(migration_database_urls.psycopg_url) == {
         "files",
         "refresh_tokens",
+        "scan_files",
+        "scan_findings",
+        "scans",
         "uploads",
         "users",
     }
@@ -161,8 +224,9 @@ def test_alembic_refresh_token_family_id_round_trip(
     )
 
     # Round-trip the family-id migration once, then re-upgrade so subsequent
-    # tests in this file see HEAD applied. The uploads + files migrations are
-    # layered on top, so we have to step their downgrades first.
+    # tests in this file see HEAD applied. Later migrations are layered on top,
+    # so we have to step their downgrades first.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop scans+scan_files+findings
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop uploads
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop family_id
@@ -195,7 +259,8 @@ def test_alembic_uploads_round_trip(migration_database_urls: DatabaseUrls) -> No
     assert "uploads" in _table_names(migration_database_urls.psycopg_url)
     assert "ix_uploads_user_id_created_at" in _uploads_indexes(migration_database_urls.psycopg_url)
 
-    # Step past the files migration first so the uploads downgrade can run.
+    # Step past later migrations first so the uploads downgrade can run.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop scans+scan_files+findings
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop uploads
     assert "uploads" not in _table_names(migration_database_urls.psycopg_url)
@@ -215,7 +280,9 @@ def test_alembic_files_round_trip(migration_database_urls: DatabaseUrls) -> None
         migration_database_urls.psycopg_url
     )
 
-    _run_alembic_cli(migration_database_urls, "downgrade", "-1")
+    # Step past the scans migration first so the files downgrade can run.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop scans+scan_files+findings
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
     assert "files" not in _table_names(migration_database_urls.psycopg_url)
 
     _run_alembic_cli(migration_database_urls, "upgrade", "head")
@@ -226,3 +293,49 @@ def test_alembic_files_round_trip(migration_database_urls: DatabaseUrls) -> None
     assert "uq_files_upload_id_path" in _files_unique_constraints(
         migration_database_urls.psycopg_url
     )
+
+
+def test_alembic_scans_round_trip(migration_database_urls: DatabaseUrls) -> None:
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
+    tables = _table_names(migration_database_urls.psycopg_url)
+    assert {"scans", "scan_files", "scan_findings"} <= tables
+
+    scans_indexes = _scans_indexes(migration_database_urls.psycopg_url)
+    assert "ix_scans_user_id_created_at" in scans_indexes
+    assert "ix_scans_upload_id" in scans_indexes
+    assert "ix_scans_status" in scans_indexes
+
+    scan_files_indexes = _scan_files_indexes(migration_database_urls.psycopg_url)
+    assert "ix_scan_files_scan_id_status" in scan_files_indexes
+    assert "uq_scan_files_scan_id_file_id" in _scan_files_unique_constraints(
+        migration_database_urls.psycopg_url
+    )
+
+    scan_findings_indexes = _scan_findings_indexes(migration_database_urls.psycopg_url)
+    assert "ix_scan_findings_scan_id_severity" in scan_findings_indexes
+    assert "ix_scan_findings_scan_id_scan_type" in scan_findings_indexes
+    assert "ix_scan_findings_scan_id_file_id" in scan_findings_indexes
+
+    # Scans / scan_files / scan_findings live in one migration — one step is enough.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")
+    tables = _table_names(migration_database_urls.psycopg_url)
+    assert "scans" not in tables
+    assert "scan_files" not in tables
+    assert "scan_findings" not in tables
+
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
+    tables = _table_names(migration_database_urls.psycopg_url)
+    assert {"scans", "scan_files", "scan_findings"} <= tables
+    scans_indexes = _scans_indexes(migration_database_urls.psycopg_url)
+    assert "ix_scans_user_id_created_at" in scans_indexes
+    assert "ix_scans_upload_id" in scans_indexes
+    assert "ix_scans_status" in scans_indexes
+    scan_files_indexes = _scan_files_indexes(migration_database_urls.psycopg_url)
+    assert "ix_scan_files_scan_id_status" in scan_files_indexes
+    assert "uq_scan_files_scan_id_file_id" in _scan_files_unique_constraints(
+        migration_database_urls.psycopg_url
+    )
+    scan_findings_indexes = _scan_findings_indexes(migration_database_urls.psycopg_url)
+    assert "ix_scan_findings_scan_id_severity" in scan_findings_indexes
+    assert "ix_scan_findings_scan_id_scan_type" in scan_findings_indexes
+    assert "ix_scan_findings_scan_id_file_id" in scan_findings_indexes
