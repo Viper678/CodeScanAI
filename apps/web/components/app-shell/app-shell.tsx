@@ -6,7 +6,7 @@ import type { ReactNode } from 'react';
 import { PanelLeft, Plus } from 'lucide-react';
 
 import { APP_NAV_ITEMS } from '@/components/app-shell/nav-items';
-import { ThemeToggleMenu } from '@/components/app-shell/theme-toggle-menu';
+import { UserMenu } from '@/components/app-shell/user-menu';
 import { buttonVariants } from '@/components/ui/button';
 import { useShellStore } from '@/lib/stores/use-shell-store';
 import { cn } from '@/lib/utils';
@@ -135,7 +135,7 @@ export function AppShell({ children }: Readonly<AppShellProps>) {
               </p>
               <h1 className="text-sm font-semibold">Static shell preview</h1>
             </div>
-            <ThemeToggleMenu />
+            <UserMenu />
           </header>
           <main className="flex-1 px-4 py-6 lg:p-8">{children}</main>
         </div>
