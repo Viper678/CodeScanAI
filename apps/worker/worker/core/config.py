@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +51,14 @@ class Settings(BaseSettings):
     max_nesting_depth: int = 20
     # Compression-ratio cutoff for the zip-bomb heuristic (uncompressed/compressed).
     max_compression_ratio: int = 100
+
+    # ---- LLM ----
+    # Required at runtime to instantiate the default Gemma transport. ``None``-able
+    # so unit tests can construct ``GemmaClient(api_key="fake", transport=fake)``
+    # without touching the environment.
+    google_ai_api_key: SecretStr | None = None
+    gemma_model: str = "gemma-4-31b-it"
+    prompt_version: str = "v1"
 
 
 settings = Settings()
