@@ -46,6 +46,10 @@ class EntryTooLarge(SafetyError):
     """A single entry's uncompressed size exceeds the cap."""
 
 
+class PathTooDeep(SafetyError):
+    """An entry's path nesting depth exceeds the configured cap."""
+
+
 class CorruptArchiveError(SafetyError):
     """The archive could not be parsed by ``zipfile``."""
 
@@ -135,6 +139,7 @@ def inspect_archive(
     max_total_uncompressed_bytes: int,
     max_entry_uncompressed_bytes: int,
     max_compression_ratio: int,
+    max_nesting_depth: int,
 ) -> SafeArchive:
     """Open ``zip_path`` and verify every entry against the configured caps.
 
@@ -154,8 +159,14 @@ def inspect_archive(
     try:
         for info in archive.infolist():
             # Path safety: reject before counting so we fail fast on malicious
-            # entries.
-            normalize_entry_path(info.filename)
+            # entries. Capture the normalized form for the depth check below.
+            normalized = normalize_entry_path(info.filename)
+            depth = normalized.count("/") + 1
+            if depth > max_nesting_depth:
+                raise PathTooDeep(
+                    f"entry {info.filename!r} nesting depth {depth} "
+                    f"exceeds cap of {max_nesting_depth}"
+                )
             if info.is_dir():
                 dir_count += 1
                 if dir_count > max_dirs:

@@ -23,6 +23,7 @@ CAPS_BASE: dict[str, int] = {
     "max_total_uncompressed_bytes": 10 * 1024 * 1024,
     "max_entry_uncompressed_bytes": 5 * 1024 * 1024,
     "max_compression_ratio": 1_000_000,  # disable bomb check for these tests
+    "max_nesting_depth": 1_000,  # effectively disable depth check for these tests
 }
 
 

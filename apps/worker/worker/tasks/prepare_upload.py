@@ -83,8 +83,13 @@ def prepare_upload(self: Task, upload_id: str) -> dict[str, int | str]:
         session.commit()
 
         extract_root = _extract_root_for(parsed_id)
+        # The whole pipeline (materialize → persist → commit) is wrapped so a
+        # commit-time error (FK violation, deadlock, retry collision) cannot
+        # leave the upload stuck in ``extracting``.
         try:
-            metas = _materialize(upload, extract_root)
+            materialized_root, metas = _materialize(upload, extract_root)
+            _persist(session, upload, materialized_root, metas)
+            session.commit()
         except SafetyError as exc:
             return _fail(session, upload, extract_root, str(exc))
         except Exception as exc:
@@ -92,9 +97,6 @@ def prepare_upload(self: Task, upload_id: str) -> dict[str, int | str]:
             # rather than leaving it stuck in ``extracting`` forever.
             logger.exception("prepare_upload: unexpected error for %s", upload_id)
             return _fail(session, upload, extract_root, f"unexpected error: {exc}")
-
-        _persist(session, upload, extract_root, metas)
-        session.commit()
 
         return {
             "status": upload.status,
@@ -106,7 +108,7 @@ def prepare_upload(self: Task, upload_id: str) -> dict[str, int | str]:
 # ---- Pipeline steps ---------------------------------------------------------
 
 
-def _materialize(upload: Upload, extract_root: Path) -> list[FileMeta]:
+def _materialize(upload: Upload, extract_root: Path) -> tuple[Path, list[FileMeta]]:
     """Run extraction (zip) or walk (loose) and classify the resulting files.
 
     Args:
@@ -115,7 +117,11 @@ def _materialize(upload: Upload, extract_root: Path) -> list[FileMeta]:
             kind=loose the existing ``loose/`` subdir is walked in place.
 
     Returns:
-        A list of ``FileMeta`` for every regular file in the tree.
+        A tuple of ``(root_used, metas)``. The root is the directory the
+        meta paths are relative to — equal to ``extract_root`` for zip,
+        equal to ``<storage_path>/loose`` for loose. Persisting the wrong
+        root would break any downstream reader that joins
+        ``upload.extract_path / file.path``.
     """
 
     if upload.kind == UPLOAD_KIND_ZIP:
@@ -127,15 +133,16 @@ def _materialize(upload: Upload, extract_root: Path) -> list[FileMeta]:
             max_total_uncompressed_bytes=settings.max_uncompressed_total_mb * 1024 * 1024,
             max_entry_uncompressed_bytes=settings.max_entry_uncompressed_mb * 1024 * 1024,
             max_compression_ratio=settings.max_compression_ratio,
+            max_nesting_depth=settings.max_nesting_depth,
         )
         safe_extract(Path(upload.storage_path), extract_root)
-        return _walk_and_classify(extract_root)
+        return extract_root, _walk_and_classify(extract_root)
 
     if upload.kind == UPLOAD_KIND_LOOSE:
         loose_dir = Path(upload.storage_path) / LOOSE_SUBDIR
         if not loose_dir.is_dir():
             raise SafetyError(f"loose upload missing {LOOSE_SUBDIR!r} directory")
-        return _walk_and_classify(loose_dir)
+        return loose_dir, _walk_and_classify(loose_dir)
 
     raise SafetyError(f"unknown upload kind: {upload.kind!r}")
 

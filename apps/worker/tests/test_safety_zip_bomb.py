@@ -17,6 +17,7 @@ CAPS = {
     "max_total_uncompressed_bytes": 10 * 1024 * 1024,
     "max_entry_uncompressed_bytes": 5 * 1024 * 1024,
     "max_compression_ratio": 100,
+    "max_nesting_depth": 1_000,
 }
 
 

@@ -371,6 +371,19 @@ def test_prepare_upload_loose_kind_walks_loose_subdir(
     assert result["file_count"] == 2
     assert result["scannable_count"] == 2
 
+    # Loose uploads must persist the actual walked root, not the (empty) zip
+    # extract dir, otherwise downstream readers can't resolve files.path.
+    with _engine_session(sync_url) as session:
+        from worker.core.models import Upload
+
+        upload = session.scalar(select(Upload).where(Upload.id == upload_id))
+        assert upload is not None
+        assert upload.extract_path == str(loose)
+        assert Path(upload.extract_path).is_dir()
+        # And the would-be zip extract dir must NOT have been created.
+        zip_extract_dir = tmp_path / "extracts" / str(upload_id)
+        assert not zip_extract_dir.exists()
+
 
 def test_prepare_upload_marks_failed_on_zip_bomb(
     test_db: tuple[str, str],
@@ -427,3 +440,64 @@ def test_prepare_upload_marks_failed_on_zip_bomb(
         # Extract dir cleaned up.
         extract_root = tmp_path / "extracts" / str(upload_id)
         assert not extract_root.exists()
+
+
+def test_prepare_upload_marks_failed_when_persist_raises(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A failure in _persist (or the final commit) must still flip the row to failed.
+
+    Previously the try/except only wrapped _materialize, so a transient
+    DB error during persist left the upload stuck in 'extracting'.
+    """
+
+    sync_url, _ = test_db
+
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    upload_dir = tmp_path / "uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    zip_path = upload_dir / "ok.zip"
+    _make_zip(zip_path)
+
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id = _insert_upload(
+            session,
+            user_id=user_id,
+            storage_path=zip_path,
+            size_bytes=zip_path.stat().st_size,
+            kind="zip",
+            original_name="ok.zip",
+        )
+
+    # Force _persist to raise; the wrapper must mark the row failed.
+    from worker.tasks import prepare_upload as task_module
+
+    def boom(*_args: object, **_kwargs: object) -> None:
+        raise RuntimeError("simulated FK violation")
+
+    monkeypatch.setattr(task_module, "_persist", boom)
+
+    with pytest.raises(Exception, match="simulated FK violation|unexpected error"):
+        task_module.prepare_upload.run(str(upload_id))
+
+    with _engine_session(sync_url) as session:
+        from worker.core.models import File, Upload
+
+        upload = session.scalar(select(Upload).where(Upload.id == upload_id))
+        assert upload is not None
+        assert upload.status == "failed", "row must NOT be left stuck in 'extracting'"
+        assert upload.error and "simulated FK violation" in upload.error
+        files = list(session.scalars(select(File).where(File.upload_id == upload_id)))
+        assert files == []
