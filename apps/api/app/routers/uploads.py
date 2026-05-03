@@ -20,6 +20,7 @@ from app.models.upload import UPLOAD_KIND_LOOSE, UPLOAD_KIND_ZIP, Upload
 from app.models.user import User
 from app.repositories.upload_repo import UploadRepo
 from app.schemas.upload import (
+    TreeResponse,
     UploadCreateResponse,
     UploadDetail,
     UploadKind,
@@ -127,3 +128,22 @@ async def get_upload(
         # upload owned by someone else. See docs/SECURITY.md §3.
         raise NotFound("Upload not found")
     return _detail_response(upload)
+
+
+@router.get("/{upload_id}/tree", response_model=TreeResponse)
+async def get_upload_tree(
+    upload_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> TreeResponse:
+    """Return the materialized tree (flat list) for an upload.
+
+    See docs/API.md §Uploads. Returns ``files=[]`` while the upload is being
+    processed; the response includes the upload's current ``status`` so the
+    UI can poll without a second request to ``GET /uploads/{id}``.
+    """
+
+    service = UploadService(session)
+    # NotFound is raised inside the service when the upload is missing or
+    # belongs to another user — handler maps it to 404 (never 403).
+    return await service.get_tree(upload_id=upload_id, user_id=current_user.id)

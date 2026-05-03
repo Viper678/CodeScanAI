@@ -57,3 +57,39 @@ class UploadListResponse(BaseModel):
     items: list[UploadDetail] = Field(default_factory=list)
     next_cursor: str | None = None
     total: int = 0
+
+
+class TreeFile(BaseModel):
+    """One materialized row from the ``files`` table.
+
+    Mirrors docs/API.md §Uploads ``GET /uploads/{id}/tree``. The frontend
+    builds the visual tree from ``parent_path`` relationships; see
+    docs/FILE_HANDLING.md §"Tree presentation contract".
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+    id: UUID
+    path: str
+    parent_path: str
+    name: str
+    size_bytes: int
+    language: str | None = None
+    is_binary: bool
+    is_excluded_by_default: bool
+    excluded_reason: str | None = None
+
+
+class TreeResponse(BaseModel):
+    """Response body for ``GET /api/v1/uploads/{id}/tree``.
+
+    ``status`` is included so clients can poll while the worker is still
+    extracting (``received``/``extracting``) without a second request to
+    ``GET /uploads/{id}``. When ``status != 'ready'`` the ``files`` list is
+    empty.
+    """
+
+    upload_id: UUID
+    root_name: str
+    status: UploadStatus
+    files: list[TreeFile] = Field(default_factory=list)
