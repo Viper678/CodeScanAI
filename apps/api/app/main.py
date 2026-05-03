@@ -16,6 +16,7 @@ from app.core.db import engine
 from app.core.exceptions import AppError
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
+from app.routers.uploads import router as uploads_router
 
 logger = logging.getLogger(__name__)
 
@@ -26,6 +27,7 @@ HTTP_ERROR_CODES = {
     404: "not_found",
     409: "conflict",
     413: "payload_too_large",
+    415: "unsupported_media_type",
     422: "validation_error",
     429: "rate_limited",
 }
@@ -108,6 +110,7 @@ def create_app() -> FastAPI:
     app.add_exception_handler(HTTPException, http_exception_handler)
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(uploads_router)
     return app
 
 

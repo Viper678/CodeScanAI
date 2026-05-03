@@ -35,6 +35,20 @@ class Settings(BaseSettings):
     cookie_secure: bool = False
     cookie_samesite: Literal["lax", "strict", "none"] = "lax"
 
+    # ---- Storage ----
+    # Default mirrors docker-compose's mounted /data volume so the API and
+    # worker can read/write the same artifacts.
+    data_dir: Path = Path("/data")
+    # Limits sourced from docs/FILE_HANDLING.md §"Upload limits".
+    max_upload_size_mb: int = 100
+    max_loose_files: int = 50
+    max_loose_file_size_mb: int = 50
+
+    # ---- Celery ----
+    # The API only enqueues; consumption lives in apps/worker. Default mirrors
+    # docker-compose so local dev "just works".
+    celery_broker_url: str = "redis://redis:6379/1"
+
     @field_validator("jwt_secret")
     @classmethod
     def validate_jwt_secret(cls, value: SecretStr) -> SecretStr:

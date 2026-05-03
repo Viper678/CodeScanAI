@@ -33,6 +33,11 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+      DATA_DIR: ${DATA_DIR:-/data}
+      MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-100}
+      MAX_LOOSE_FILES: ${MAX_LOOSE_FILES:-50}
+      MAX_LOOSE_FILE_SIZE_MB: ${MAX_LOOSE_FILE_SIZE_MB:-50}
       API_WORKERS: ${API_WORKERS:-2}
     command: >
       sh -c "uv run alembic upgrade head &&
