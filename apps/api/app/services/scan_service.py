@@ -92,6 +92,11 @@ class ScanService:
             raise InvalidScanRequest("file_ids must be non-empty")
         if len(request.file_ids) > max_files_per_scan:
             raise InvalidScanRequest(f"Too many files; max {max_files_per_scan} per scan")
+        # SQL ``IN (...)`` collapses duplicates, so a payload like
+        # [same_id, same_id] would shrink ``owned_count`` and surface as a 403.
+        # Reject duplicates as a 422 instead — they're a client bug, not auth.
+        if len(set(request.file_ids)) != len(request.file_ids):
+            raise InvalidScanRequest("file_ids must not contain duplicates")
 
         upload = await self.uploads.get_by_id(request.upload_id, user_id=user_id)
         if upload is None:

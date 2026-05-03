@@ -393,6 +393,28 @@ async def test_post_scan_rejects_over_cap_file_ids(
     mock_enqueue_run_scan.assert_not_called()
 
 
+async def test_post_scan_rejects_duplicate_file_ids(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    user = await _current_user(authed_client)
+    upload, files = await _seed_upload_with_files(db_session, user_id=user.id, file_count=1)
+    duplicated = [files[0].id, files[0].id]
+
+    response = await authed_client.post(
+        "/api/v1/scans",
+        headers=CSRF_HEADERS,
+        json=_scan_payload(upload_id=upload.id, file_ids=duplicated),
+    )
+
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    assert "duplicates" in body["error"]["message"]
+    mock_enqueue_run_scan.assert_not_called()
+
+
 async def test_post_scan_marks_failed_when_broker_unavailable(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
