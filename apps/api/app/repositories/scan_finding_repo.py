@@ -58,12 +58,15 @@ class ScanFindingRepo(BaseRepo[ScanFinding]):
         offset: int = 0,
     ) -> Sequence[ScanFinding]:
         # Cross-scan listing is provided for symmetry with BaseRepo; routers
-        # use ``list_for_scan`` instead. Capped by ``limit``.
+        # use ``list_for_scan`` instead. Capped by ``limit``. Severity ordering
+        # uses ``_SEVERITY_RANK`` to stay consistent with ``list_for_scan`` —
+        # raw column ordering would be alphabetical (info < low < medium ...),
+        # which is not the documented severity priority.
         result = await self.session.execute(
             select(ScanFinding)
             .join(Scan, Scan.id == ScanFinding.scan_id)
             .where(Scan.user_id == user_id)
-            .order_by(ScanFinding.scan_id, ScanFinding.severity, ScanFinding.file_id)
+            .order_by(ScanFinding.scan_id, _SEVERITY_RANK, ScanFinding.file_id)
             .limit(limit)
             .offset(offset)
         )
