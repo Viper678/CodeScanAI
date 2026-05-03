@@ -7,6 +7,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.uuid7 import uuid7
 from app.models.file import File
+from app.models.scan import Scan
 from app.models.scan_finding import (
     SEVERITY_CRITICAL,
     SEVERITY_HIGH,
@@ -16,6 +17,7 @@ from app.models.scan_finding import (
     ScanFinding,
 )
 from app.models.upload import UPLOAD_KIND_ZIP, UPLOAD_STATUS_RECEIVED
+from app.models.user import User
 from app.repositories.scan_finding_repo import ScanFindingRepo
 from app.repositories.scan_repo import ScanRepo
 from app.repositories.upload_repo import UploadRepo
@@ -43,7 +45,7 @@ async def _make_file(session: AsyncSession, *, upload_id: UUID, name: str) -> Fi
 async def _setup_scan(
     session: AsyncSession,
     sample_user_factory: SampleUserFactory,
-) -> tuple[object, File, object]:
+) -> tuple[User, File, Scan]:
     user = await sample_user_factory()
     upload = await UploadRepo(session).create(
         user_id=user.id,
@@ -60,7 +62,7 @@ async def _setup_scan(
         name="t",
         scan_types=["security"],
     )
-    return user, file, scan  # type: ignore[return-value]
+    return user, file, scan
 
 
 def _make_finding(
@@ -87,13 +89,11 @@ async def test_list_for_scan_returns_inserted_rows(
     sample_user_factory: SampleUserFactory,
 ) -> None:
     user, file, scan = await _setup_scan(db_session, sample_user_factory)
-    db_session.add(
-        _make_finding(scan_id=scan.id, file_id=file.id, severity=SEVERITY_HIGH)  # type: ignore[attr-defined]
-    )
+    db_session.add(_make_finding(scan_id=scan.id, file_id=file.id, severity=SEVERITY_HIGH))
     await db_session.flush()
 
     rows = await ScanFindingRepo(db_session).list_for_scan(
-        scan_id=scan.id,  # type: ignore[attr-defined]
+        scan_id=scan.id,
         user_id=user.id,
     )
 
@@ -111,7 +111,7 @@ async def test_list_for_scan_orders_by_severity(
     for severity in scrambled:
         db_session.add(
             _make_finding(
-                scan_id=scan.id,  # type: ignore[attr-defined]
+                scan_id=scan.id,
                 file_id=file.id,
                 severity=severity,
                 title=severity,
@@ -120,7 +120,7 @@ async def test_list_for_scan_orders_by_severity(
     await db_session.flush()
 
     rows = await ScanFindingRepo(db_session).list_for_scan(
-        scan_id=scan.id,  # type: ignore[attr-defined]
+        scan_id=scan.id,
         user_id=user.id,
     )
 
@@ -142,19 +142,19 @@ async def test_list_for_scan_filters(
     db_session.add_all(
         [
             _make_finding(
-                scan_id=scan.id,  # type: ignore[attr-defined]
+                scan_id=scan.id,
                 file_id=file.id,
                 severity=SEVERITY_HIGH,
                 scan_type="security",
             ),
             _make_finding(
-                scan_id=scan.id,  # type: ignore[attr-defined]
+                scan_id=scan.id,
                 file_id=file.id,
                 severity=SEVERITY_LOW,
                 scan_type="bugs",
             ),
             _make_finding(
-                scan_id=scan.id,  # type: ignore[attr-defined]
+                scan_id=scan.id,
                 file_id=other_file.id,
                 severity=SEVERITY_HIGH,
                 scan_type="keywords",
@@ -166,7 +166,7 @@ async def test_list_for_scan_filters(
     repo = ScanFindingRepo(db_session)
 
     high_rows = await repo.list_for_scan(
-        scan_id=scan.id,  # type: ignore[attr-defined]
+        scan_id=scan.id,
         user_id=user.id,
         severity=SEVERITY_HIGH,
     )
@@ -174,7 +174,7 @@ async def test_list_for_scan_filters(
     assert all(row.severity == SEVERITY_HIGH for row in high_rows)
 
     bugs_rows = await repo.list_for_scan(
-        scan_id=scan.id,  # type: ignore[attr-defined]
+        scan_id=scan.id,
         user_id=user.id,
         scan_type="bugs",
     )
@@ -182,7 +182,7 @@ async def test_list_for_scan_filters(
     assert bugs_rows[0].scan_type == "bugs"
 
     file_rows = await repo.list_for_scan(
-        scan_id=scan.id,  # type: ignore[attr-defined]
+        scan_id=scan.id,
         user_id=user.id,
         file_id=other_file.id,
     )
@@ -196,13 +196,11 @@ async def test_list_for_scan_scoped_to_owner(
 ) -> None:
     _, file, scan = await _setup_scan(db_session, sample_user_factory)
     intruder = await sample_user_factory()
-    db_session.add(
-        _make_finding(scan_id=scan.id, file_id=file.id, severity=SEVERITY_HIGH)  # type: ignore[attr-defined]
-    )
+    db_session.add(_make_finding(scan_id=scan.id, file_id=file.id, severity=SEVERITY_HIGH))
     await db_session.flush()
 
     rows = await ScanFindingRepo(db_session).list_for_scan(
-        scan_id=scan.id,  # type: ignore[attr-defined]
+        scan_id=scan.id,
         user_id=intruder.id,
     )
 
@@ -215,7 +213,7 @@ async def test_get_by_id_owner_vs_other(
 ) -> None:
     user, file, scan = await _setup_scan(db_session, sample_user_factory)
     intruder = await sample_user_factory()
-    finding = _make_finding(scan_id=scan.id, file_id=file.id, severity=SEVERITY_HIGH)  # type: ignore[attr-defined]
+    finding = _make_finding(scan_id=scan.id, file_id=file.id, severity=SEVERITY_HIGH)
     db_session.add(finding)
     await db_session.flush()
 

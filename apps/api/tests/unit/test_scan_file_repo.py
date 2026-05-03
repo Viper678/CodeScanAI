@@ -7,8 +7,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.uuid7 import uuid7
 from app.models.file import File
+from app.models.scan import Scan
 from app.models.scan_file import SCAN_FILE_STATUS_PENDING
 from app.models.upload import UPLOAD_KIND_ZIP, UPLOAD_STATUS_RECEIVED
+from app.models.user import User
 from app.repositories.scan_file_repo import ScanFileRepo
 from app.repositories.scan_repo import ScanRepo
 from app.repositories.upload_repo import UploadRepo
@@ -38,7 +40,7 @@ async def _scan_with_files(
     sample_user_factory: SampleUserFactory,
     *,
     file_count: int = 3,
-) -> tuple[object, list[File]]:
+) -> tuple[User, list[File], Scan]:
     user = await sample_user_factory()
     upload = await UploadRepo(session).create(
         user_id=user.id,
@@ -59,7 +61,7 @@ async def _scan_with_files(
         scan_types=["security"],
         progress_total=file_count,
     )
-    return user, files, scan  # type: ignore[return-value]
+    return user, files, scan
 
 
 async def test_bulk_create_inserts_pending_rows(
@@ -69,12 +71,12 @@ async def test_bulk_create_inserts_pending_rows(
     _, files, scan = await _scan_with_files(db_session, sample_user_factory)
     repo = ScanFileRepo(db_session)
 
-    rows = await repo.bulk_create(scan_id=scan.id, file_ids=[f.id for f in files])  # type: ignore[attr-defined]
+    rows = await repo.bulk_create(scan_id=scan.id, file_ids=[f.id for f in files])
 
     assert len(rows) == len(files)
     assert {row.file_id for row in rows} == {f.id for f in files}
     assert all(row.status == SCAN_FILE_STATUS_PENDING for row in rows)
-    assert all(row.scan_id == scan.id for row in rows)  # type: ignore[attr-defined]
+    assert all(row.scan_id == scan.id for row in rows)
 
 
 async def test_list_for_scan_returns_owner_rows(
@@ -83,9 +85,9 @@ async def test_list_for_scan_returns_owner_rows(
 ) -> None:
     user, files, scan = await _scan_with_files(db_session, sample_user_factory)
     repo = ScanFileRepo(db_session)
-    await repo.bulk_create(scan_id=scan.id, file_ids=[f.id for f in files])  # type: ignore[attr-defined]
+    await repo.bulk_create(scan_id=scan.id, file_ids=[f.id for f in files])
 
-    rows = await repo.list_for_scan(scan_id=scan.id, user_id=user.id)  # type: ignore[attr-defined]
+    rows = await repo.list_for_scan(scan_id=scan.id, user_id=user.id)
 
     assert len(rows) == len(files)
     assert {row.file_id for row in rows} == {f.id for f in files}
@@ -98,9 +100,9 @@ async def test_list_for_scan_hides_rows_from_non_owner(
     _, files, scan = await _scan_with_files(db_session, sample_user_factory)
     intruder = await sample_user_factory()
     repo = ScanFileRepo(db_session)
-    await repo.bulk_create(scan_id=scan.id, file_ids=[f.id for f in files])  # type: ignore[attr-defined]
+    await repo.bulk_create(scan_id=scan.id, file_ids=[f.id for f in files])
 
-    rows = await repo.list_for_scan(scan_id=scan.id, user_id=intruder.id)  # type: ignore[attr-defined]
+    rows = await repo.list_for_scan(scan_id=scan.id, user_id=intruder.id)
 
     assert rows == []
 
@@ -113,7 +115,7 @@ async def test_get_by_id_owner_vs_other(
     intruder = await sample_user_factory()
     repo = ScanFileRepo(db_session)
     [row] = await repo.bulk_create(
-        scan_id=scan.id,  # type: ignore[attr-defined]
+        scan_id=scan.id,
         file_ids=[files[0].id],
     )
 

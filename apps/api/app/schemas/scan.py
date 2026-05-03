@@ -22,6 +22,8 @@ Severity = Literal["critical", "high", "medium", "low", "info"]
 class KeywordsConfig(BaseModel):
     """Keyword scan configuration as documented in docs/API.md §Scans."""
 
+    model_config = ConfigDict(extra="forbid")
+
     items: list[str] = Field(default_factory=list)
     case_sensitive: bool = False
     regex: bool = False
@@ -34,6 +36,8 @@ class ScanCreateRequest(BaseModel):
     ``"keywords" in scan_types``, ``file_ids`` non-empty + ownership, file
     count cap) are enforced in the T3.2 service layer.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     upload_id: UUID
     name: str | None = None
