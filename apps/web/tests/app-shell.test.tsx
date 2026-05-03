@@ -1,4 +1,5 @@
 import React from 'react';
+import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { render, screen } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ScanLine } from 'lucide-react';
@@ -10,7 +11,32 @@ import { ThemeProvider } from '@/components/theme-provider';
 
 vi.mock('next/navigation', () => ({
   usePathname: () => '/scans',
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
+
+vi.mock('@/lib/api/auth/client', () => ({
+  fetchMe: vi.fn().mockResolvedValue({
+    email: 'user@example.com',
+    id: 'user-1',
+  }),
+  login: vi.fn(),
+  logout: vi.fn(),
+  register: vi.fn(),
+}));
+
+function withProviders(children: React.ReactNode) {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false } },
+  });
+  return (
+    <QueryClientProvider client={client}>
+      <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+        {children}
+      </ThemeProvider>
+    </QueryClientProvider>
+  );
+}
 
 describe('AppShell', () => {
   beforeEach(() => {
@@ -19,11 +45,11 @@ describe('AppShell', () => {
 
   it('renders the primary navigation items', () => {
     render(
-      <ThemeProvider attribute="class" defaultTheme="system" enableSystem>
+      withProviders(
         <AppShell>
           <div>Page content</div>
-        </AppShell>
-      </ThemeProvider>,
+        </AppShell>,
+      ),
     );
 
     expect(
