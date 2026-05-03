@@ -1,12 +1,17 @@
-"""Allowed source-code-like extensions for ``kind=loose`` uploads.
+"""Copy of ``apps/api/app/core/file_types.py``.
 
-This is the single source of truth for which loose-file uploads we accept.
-The worker imports the same module in T2.2 to derive ``is_excluded_by_default``
-when classifying files inside an extracted archive (see docs/FILE_HANDLING.md).
+The api package is the canonical source of truth (see docs/FILE_HANDLING.md
+"one source of truth, also imported by worker"). The worker keeps a copy
+because:
 
-Extensions are stored lowercase **without** the leading dot. Special filenames
-without an extension (e.g. ``Dockerfile``) are matched against
-``ALLOWED_LOOSE_FILENAMES``.
+- the worker Docker image only includes ``apps/worker`` in its build context,
+  so a ``path = "../api"`` editable dep would break the docker build;
+- the worker runs synchronously and shouldn't pull in api's async
+  SQLAlchemy / FastAPI machinery just to read a frozen set.
+
+Drift is prevented by ``apps/worker/tests/test_file_types_parity.py`` which
+reads both files at runtime and asserts ``frozenset`` equality. If you change
+one, change the other in the same PR.
 """
 
 from __future__ import annotations
@@ -69,7 +74,7 @@ ALLOWED_LOOSE_EXTENSIONS: frozenset[str] = frozenset(
         "less",
         "vue",
         "svelte",
-        # Config / data (env intentionally allowed; security scanner inspects it)
+        # Config / data
         "json",
         "yaml",
         "yml",
@@ -87,7 +92,6 @@ ALLOWED_LOOSE_EXTENSIONS: frozenset[str] = frozenset(
     }
 )
 
-# Filenames without a recognized extension that we still accept.
 ALLOWED_LOOSE_FILENAMES: frozenset[str] = frozenset(
     {
         "dockerfile",
@@ -95,37 +99,6 @@ ALLOWED_LOOSE_FILENAMES: frozenset[str] = frozenset(
     }
 )
 
-
-def _split_basename(name: str) -> tuple[str, str]:
-    """Return (lowercased basename, lowercased extension w/o leading dot)."""
-
-    base = os.path.basename(name).lower()
-    _, ext = os.path.splitext(base)
-    if ext.startswith("."):
-        ext = ext[1:]
-    return base, ext
-
-
-def is_allowed_loose_extension(name: str) -> bool:
-    """Return True iff ``name`` is acceptable for a ``kind=loose`` upload.
-
-    Decision is made purely from the basename. Path components are intentionally
-    ignored so the caller is responsible for sanitizing path traversal first.
-    """
-
-    if not name:
-        return False
-    base, ext = _split_basename(name)
-    if ext and ext in ALLOWED_LOOSE_EXTENSIONS:
-        return True
-    return base in ALLOWED_LOOSE_FILENAMES
-
-
-# Extension → language label used by the worker's classifier and surfaced to
-# the UI / scanner prompts. Lowercase ext (no dot) → canonical language slug.
-# Keep in sync with ALLOWED_LOOSE_EXTENSIONS — extensions not in the whitelist
-# can still be detected (e.g. inside a zip) but only the ones the user can
-# upload loose are guaranteed coverage.
 EXTENSION_TO_LANGUAGE: dict[str, str] = {
     # Python
     "py": "python",
@@ -198,20 +171,33 @@ EXTENSION_TO_LANGUAGE: dict[str, str] = {
     "hcl": "hcl",
 }
 
-# Filenames (no extension) → language label.
 FILENAME_TO_LANGUAGE: dict[str, str] = {
     "dockerfile": "dockerfile",
     "makefile": "makefile",
 }
 
 
-def detect_language(name: str) -> str | None:
-    """Return the language slug for ``name`` or ``None`` if unknown.
+def _split_basename(name: str) -> tuple[str, str]:
+    base = os.path.basename(name).lower()
+    _, ext = os.path.splitext(base)
+    if ext.startswith("."):
+        ext = ext[1:]
+    return base, ext
 
-    Resolution order:
-    1. Filename match (``Dockerfile``, ``Makefile``).
-    2. Extension match.
-    """
+
+def is_allowed_loose_extension(name: str) -> bool:
+    """Return True iff ``name`` is acceptable for a ``kind=loose`` upload."""
+
+    if not name:
+        return False
+    base, ext = _split_basename(name)
+    if ext and ext in ALLOWED_LOOSE_EXTENSIONS:
+        return True
+    return base in ALLOWED_LOOSE_FILENAMES
+
+
+def detect_language(name: str) -> str | None:
+    """Return the language slug for ``name`` or ``None`` if unknown."""
 
     if not name:
         return None
