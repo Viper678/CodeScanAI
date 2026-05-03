@@ -27,8 +27,8 @@ VALID_BODY = json.dumps(
                 "message": "literal password in source",
                 "recommendation": "use a secrets manager",
                 "severity": "high",
-                "line_start": 2,
-                "line_end": 2,
+                "line_start": 1,
+                "line_end": 1,
                 "rule_id": "CWE-798",
                 "confidence": 0.9,
             }
@@ -309,3 +309,83 @@ def test_retry_policy_passed_through_to_call_with_retry() -> None:
 def test_constructing_default_transport_requires_api_key() -> None:
     with pytest.raises(ValueError, match="api_key is required"):
         GemmaClient(api_key="")
+
+
+def test_drops_findings_with_line_end_past_eof() -> None:
+    body = json.dumps(
+        {
+            "findings": [
+                {
+                    "title": "in bounds",
+                    "message": "ok",
+                    "recommendation": None,
+                    "severity": "low",
+                    "line_start": 1,
+                    "line_end": 2,
+                    "rule_id": None,
+                    "confidence": 0.5,
+                },
+                {
+                    "title": "past EOF",
+                    "message": "Gemma hallucinated a line beyond the file",
+                    "recommendation": None,
+                    "severity": "high",
+                    "line_start": 5,
+                    "line_end": 9,
+                    "rule_id": None,
+                    "confidence": 0.5,
+                },
+            ]
+        }
+    )
+    transport = FakeTransport(responses=[RawResponse(text=body, tokens_in=10, tokens_out=5)])
+    client = _make_client(transport)
+
+    result = client.scan_file(
+        scan_type="security",
+        relative_path="x.py",
+        language="python",
+        content="a\nb\nc\n",  # 3 lines
+    )
+
+    assert [f.title for f in result.findings] == ["in bounds"]
+
+
+def test_drops_all_findings_when_content_is_empty() -> None:
+    body = json.dumps(
+        {
+            "findings": [
+                {
+                    "title": "phantom",
+                    "message": "no file content but Gemma still reported a line",
+                    "recommendation": None,
+                    "severity": "info",
+                    "line_start": 1,
+                    "line_end": 1,
+                    "rule_id": None,
+                    "confidence": 0.1,
+                }
+            ]
+        }
+    )
+    transport = FakeTransport(responses=[RawResponse(text=body, tokens_in=5, tokens_out=1)])
+    client = _make_client(transport)
+
+    result = client.scan_file(
+        scan_type="security",
+        relative_path="empty.py",
+        language="python",
+        content="",
+    )
+
+    assert result.findings == []
+
+
+def test_prompt_version_is_threaded_through_to_load_prompt() -> None:
+    transport = FakeTransport(responses=[RawResponse(text=VALID_BODY, tokens_in=1, tokens_out=1)])
+
+    with pytest.raises(ValueError, match="version"):
+        client = _make_client(transport, prompt_version="v999")
+        client.scan_file(
+            scan_type="security", relative_path="x.py", language="python", content="x\n"
+        )

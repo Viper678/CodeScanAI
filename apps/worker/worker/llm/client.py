@@ -23,6 +23,7 @@ never accidentally hit the network.
 from __future__ import annotations
 
 import json
+import logging
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -30,7 +31,7 @@ from typing import Literal, Protocol
 
 from pydantic import ValidationError
 
-from worker.llm.prompts import load_prompt
+from worker.llm.prompts import PROMPT_VERSION, load_prompt
 from worker.llm.retry import (
     DEFAULT_RETRY_POLICY,
     GemmaClientError,
@@ -46,6 +47,8 @@ from worker.llm.schemas import FindingsResponse, LlmFinding
 TEMPERATURE = 0.0
 MAX_OUTPUT_TOKENS = 4096
 REPAIR_SUFFIX = "\n\nYour previous response was not valid JSON. Respond ONLY with the JSON object."
+
+_logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -98,12 +101,14 @@ class GemmaClient:
         *,
         api_key: str,
         model: str = "gemma-4-31b-it",
+        prompt_version: str = PROMPT_VERSION,
         transport: GemmaTransport | None = None,
         retry_policy: RetryPolicy = DEFAULT_RETRY_POLICY,
         sleep: Callable[[float], None] = time.sleep,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self._model = model
+        self._prompt_version = prompt_version
         self._retry_policy = retry_policy
         self._sleep = sleep
         self._clock = clock
@@ -127,10 +132,11 @@ class GemmaClient:
     ) -> ScanResult:
         """Scan one file. Times the call and returns a structured result."""
 
-        system_prompt = load_prompt(scan_type)
+        system_prompt = load_prompt(scan_type, version=self._prompt_version)
         user_prompt = _build_user_prompt(
             relative_path=relative_path, language=language, content=content
         )
+        total_lines = _count_lines(content)
 
         start = self._clock()
         raw = self._call(system_prompt=system_prompt, user_prompt=user_prompt)
@@ -152,8 +158,14 @@ class GemmaClient:
             tokens_in, tokens_out = repaired[1], repaired[2]
 
         end = self._clock()
+        # SCAN_RULES.md §"Output validation": drop findings whose line range
+        # falls outside the scanned file. Common LLM failure mode is reporting
+        # line_end past EOF; persisting impossible locations would mislead the
+        # UI and triage. Filter silently with a warning rather than failing
+        # the whole file for one bad finding.
+        kept = _filter_in_bounds(parsed.findings, total_lines=total_lines)
         return ScanResult(
-            findings=list(parsed.findings),
+            findings=kept,
             tokens_in=tokens_in,
             tokens_out=tokens_out,
             latency_ms=int((end - start) * 1000),
@@ -211,6 +223,35 @@ def _number_lines(content: str) -> str:
         lines = lines[:-1]
     rendered = "\n".join(f"{i:>4d} │ {line}" for i, line in enumerate(lines, start=1))
     return rendered + ("\n" if trailing_newline else "")
+
+
+def _count_lines(content: str) -> int:
+    """Count lines the same way ``_number_lines`` does so bounds match the prompt."""
+
+    if not content:
+        return 0
+    lines = content.split("\n")
+    if lines[-1] == "":
+        lines = lines[:-1]
+    return len(lines)
+
+
+def _filter_in_bounds(findings: list[LlmFinding], *, total_lines: int) -> list[LlmFinding]:
+    """Drop findings whose line range is outside the scanned file."""
+
+    kept: list[LlmFinding] = []
+    for finding in findings:
+        if total_lines == 0 or finding.line_end > total_lines or finding.line_start < 1:
+            _logger.warning(
+                "dropping out-of-bounds finding: lines %d-%d, file has %d lines (title=%r)",
+                finding.line_start,
+                finding.line_end,
+                total_lines,
+                finding.title,
+            )
+            continue
+        kept.append(finding)
+    return kept
 
 
 # ---- Default transport (only path that imports google.genai) ---------------
