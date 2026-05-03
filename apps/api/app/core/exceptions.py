@@ -73,3 +73,11 @@ class InvalidUploadRequest(AppError):
     error_code = "validation_error"
     status_code = 422
     message = "Invalid upload request"
+
+
+class QueueUnavailable(AppError):
+    """Broker (Redis/Celery) is unreachable; the upload was marked failed."""
+
+    error_code = "queue_unavailable"
+    status_code = 503
+    message = "Queue temporarily unavailable"

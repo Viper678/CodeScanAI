@@ -403,3 +403,64 @@ async def test_list_uploads_unauthenticated_returns_401(
     response = await client.get("/api/v1/uploads")
 
     assert response.status_code == 401
+
+
+async def test_post_zip_upload_marks_failed_when_broker_unavailable(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    upload_data_dir: Path,
+) -> None:
+    body = _zip_bytes()
+    failing_enqueue = MagicMock(side_effect=ConnectionError("broker down"))
+
+    with patch(
+        "app.services.upload_service.enqueue_prepare_upload",
+        new=failing_enqueue,
+    ):
+        response = await authed_client.post(
+            "/api/v1/uploads",
+            headers=CSRF_HEADERS,
+            files={"file": ("repo.zip", body, "application/zip")},
+            data={"kind": "zip"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "queue_unavailable"
+
+    failing_enqueue.assert_called_once()
+    upload_id = failing_enqueue.call_args.args[0]
+
+    await db_session.commit()  # release any open snapshot before re-reading
+    row = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
+    assert row is not None
+    assert row.status == "failed"
+    assert row.error == "queue_unavailable"
+
+
+async def test_post_loose_upload_marks_failed_when_broker_unavailable(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    upload_data_dir: Path,
+) -> None:
+    failing_enqueue = MagicMock(side_effect=RuntimeError("kombu boom"))
+
+    with patch(
+        "app.services.upload_service.enqueue_prepare_upload",
+        new=failing_enqueue,
+    ):
+        response = await authed_client.post(
+            "/api/v1/uploads",
+            headers=CSRF_HEADERS,
+            files={"file": ("snippet.py", b"x = 1\n", "text/x-python")},
+            data={"kind": "loose"},
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "queue_unavailable"
+
+    upload_id = failing_enqueue.call_args.args[0]
+    await db_session.commit()
+    row = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
+    assert row is not None
+    assert row.status == "failed"
+    assert row.error == "queue_unavailable"

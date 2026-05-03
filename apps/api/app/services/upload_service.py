@@ -23,6 +23,7 @@ from app.core.config import settings
 from app.core.exceptions import (
     InvalidUploadRequest,
     PayloadTooLarge,
+    QueueUnavailable,
     UnsupportedFileType,
 )
 from app.core.file_types import is_allowed_loose_extension
@@ -30,6 +31,7 @@ from app.core.uuid7 import uuid7
 from app.models.upload import (
     UPLOAD_KIND_LOOSE,
     UPLOAD_KIND_ZIP,
+    UPLOAD_STATUS_FAILED,
     UPLOAD_STATUS_RECEIVED,
     Upload,
 )
@@ -130,7 +132,7 @@ class UploadService:
         )
         await self.session.commit()
         await self.session.refresh(upload)
-        self._enqueue(upload.id)
+        await self._enqueue_or_mark_failed(upload)
         return upload
 
     async def create_loose_upload(
@@ -195,11 +197,30 @@ class UploadService:
         )
         await self.session.commit()
         await self.session.refresh(upload)
-        self._enqueue(upload.id)
+        await self._enqueue_or_mark_failed(upload)
         return upload
 
     def _upload_dir(self, upload_id: UUID) -> Path:
         return self._data_dir / "uploads" / str(upload_id)
+
+    async def _enqueue_or_mark_failed(self, upload: Upload) -> None:
+        # If the broker is down, _enqueue raises before the worker ever sees the
+        # upload. Without this guard the row sits in `received` forever and
+        # clients retry, producing orphans. Reflect reality in the DB and surface
+        # a 503 the client can react to. (T5.2 cleanup is age-based and won't
+        # rescue a stuck row in the meantime.)
+        # justify: kombu/redis raise unrelated types; catch any broker failure.
+        try:
+            self._enqueue(upload.id)
+        except Exception:
+            logger.exception(
+                "failed to enqueue prepare_upload for upload %s; marking failed",
+                upload.id,
+            )
+            upload.status = UPLOAD_STATUS_FAILED
+            upload.error = "queue_unavailable"
+            await self.session.commit()
+            raise QueueUnavailable() from None
 
 
 def _zip_content_type_ok(content_type: str | None) -> bool:
