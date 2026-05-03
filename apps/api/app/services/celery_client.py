@@ -16,6 +16,7 @@ from celery import Celery
 from app.core.config import settings
 
 PREPARE_UPLOAD_TASK_NAME = "worker.tasks.prepare_upload.prepare_upload"
+RUN_SCAN_TASK_NAME = "worker.tasks.run_scan.run_scan"
 DEFAULT_QUEUE = "codescan"
 
 
@@ -37,5 +38,15 @@ def enqueue_prepare_upload(upload_id: UUID) -> None:
     _celery_app().send_task(
         PREPARE_UPLOAD_TASK_NAME,
         args=[str(upload_id)],
+        queue=DEFAULT_QUEUE,
+    )
+
+
+def enqueue_run_scan(scan_id: UUID) -> None:
+    """Send a ``run_scan`` task to the worker queue."""
+
+    _celery_app().send_task(
+        RUN_SCAN_TASK_NAME,
+        args=[str(scan_id)],
         queue=DEFAULT_QUEUE,
     )

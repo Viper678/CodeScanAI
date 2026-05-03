@@ -81,3 +81,27 @@ class QueueUnavailable(AppError):
     error_code = "queue_unavailable"
     status_code = 503
     message = "Queue temporarily unavailable"
+
+
+class InvalidScanRequest(AppError):
+    """Validation error specific to scan composition (e.g. empty scan_types)."""
+
+    error_code = "validation_error"
+    status_code = 422
+    message = "Invalid scan request"
+
+
+class ScanFilesForbidden(AppError):
+    """Caller supplied file_ids that don't all belong to them + upload_id."""
+
+    error_code = "forbidden"
+    status_code = 403
+    message = "Some file_ids are not accessible"
+
+
+class ScanCancelConflict(AppError):
+    """Cancel attempted on a scan in a terminal (completed/failed) state."""
+
+    error_code = "conflict"
+    status_code = 409
+    message = "Cannot cancel scan in current state"

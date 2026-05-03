@@ -13,7 +13,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from uuid import UUID
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from app.models.file import File
 from app.models.upload import Upload
@@ -48,6 +48,35 @@ class FileRepo(BaseRepo[File]):
             .offset(offset)
         )
         return list(result.scalars().all())
+
+    async def count_for_upload_owned_by_user(
+        self,
+        *,
+        file_ids: Sequence[UUID],
+        upload_id: UUID,
+        user_id: UUID,
+    ) -> int:
+        """Count how many ``file_ids`` belong to ``upload_id`` and ``user_id``.
+
+        Used by the scan service to validate file ownership in a single query
+        rather than N+1 lookups — keeping it as one round-trip is load-bearing
+        for POST /scans latency on large batches (cap is 500 files), so do not
+        refactor this into per-id ``get_by_id`` calls.
+        """
+
+        if not file_ids:
+            return 0
+        result = await self.session.execute(
+            select(func.count())
+            .select_from(File)
+            .join(Upload, Upload.id == File.upload_id)
+            .where(
+                File.id.in_(list(file_ids)),
+                File.upload_id == upload_id,
+                Upload.user_id == user_id,
+            )
+        )
+        return int(result.scalar_one())
 
     async def list_for_upload(
         self,
