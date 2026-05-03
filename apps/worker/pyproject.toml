@@ -5,6 +5,7 @@ description = "Celery worker for CodeScan."
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "celery[redis]==5.4.0",
+    "google-genai==1.74.0",
     "psycopg[binary]==3.2.3",
     "pydantic-settings==2.7.0",
     "redis==5.2.1",
@@ -39,6 +40,10 @@ strict = true
 
 [[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["google.genai", "google.genai.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]
