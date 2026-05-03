@@ -130,6 +130,6 @@ Shipped:
 - Upload: `.zip` and loose-file ingest, server-side extraction with zip-bomb / path-traversal / nesting-depth guards, materialized file tree
 - Scans API: create / get / list / cancel / delete (`/api/v1/scans`), file-ownership validation, `MAX_FILES_PER_SCAN` cap
 - Worker: Gemma client (`google-genai`) with retry policy + Pydantic validation; scanner orchestrator (`run_scan` Celery task) with bounded thread pool, cancellation, and per-file findings persistence
-- Web: auth pages, upload wizard step 1 (dropzone + progress) and step 2 (virtualized directory tree with tri-state selection)
+- Web: auth pages and the full new-scan wizard — upload (step 1), file selection (step 2), scan configuration with keyword regex validation (step 3), and confirm-and-start that POSTs `/scans` (step 4)
 
-Next up: wizard steps 3–4 (scan config + confirm) and progress UI (T3.5 / T3.6), findings + export (T3.7+).
+Next up: progress / results page (T3.6), findings + export (T3.7+).
