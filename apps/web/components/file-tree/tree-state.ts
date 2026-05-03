@@ -171,7 +171,35 @@ export function buildTree(files: ReadonlyArray<TreeFile>): TreeNode {
   }
   sortRecursive(root);
 
+  // Per docs/FILE_HANDLING.md §"Tree presentation contract": a directory's
+  // default-excluded state is derived from its leaf descendants — true iff
+  // every leaf is excluded by default. Surfaced excluded dirs that have no
+  // children at all (e.g. the API.md `node_modules` example) keep the
+  // explicit metadata they were created with.
+  deriveDirExclusion(root);
+
   return root;
+}
+
+function deriveDirExclusion(node: TreeNode): void {
+  if (node.kind !== 'dir' || !node.children) return;
+  for (const child of node.children) deriveDirExclusion(child);
+
+  const leaves = collectLeaves(node);
+  if (leaves.length === 0) return; // keep surfaced meta for childless dirs
+
+  const allExcluded = leaves.every((leaf) => leaf.is_excluded_by_default);
+  if (allExcluded) {
+    node.is_excluded_by_default = true;
+    // Prefer a surfaced reason (e.g. 'vendor_dir' on node_modules); else
+    // synthesize from the first leaf so the badge has something to display.
+    node.excluded_reason ??= leaves[0]?.excluded_reason ?? null;
+  } else {
+    // Per spec, descendants win: a dir with any non-excluded leaf is not
+    // "default excluded", regardless of surfaced metadata.
+    node.is_excluded_by_default = false;
+    node.excluded_reason = null;
+  }
 }
 
 /** Walk a node and yield every leaf descendant. */

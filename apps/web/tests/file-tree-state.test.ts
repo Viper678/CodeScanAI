@@ -108,6 +108,68 @@ describe('buildTree', () => {
       .sort();
     expect(aLeaves).toEqual(bLeaves);
   });
+
+  it('marks an inferred dir excluded when all its leaves are excluded', () => {
+    // Per docs/FILE_HANDLING.md: a directory's default-excluded state is
+    // derived from its leaf descendants — true iff every leaf is excluded.
+    // `node_modules/foo` is inferred from its single excluded leaf, so it
+    // should render muted even though no API row exists for that exact path.
+    const root = buildTree(SAMPLE);
+    const node_modules = root.children!.find((n) => n.name === 'node_modules')!;
+    const foo = node_modules.children!.find((n) => n.name === 'foo')!;
+    expect(foo.kind).toBe('dir');
+    expect(foo.is_excluded_by_default).toBe(true);
+    expect(foo.excluded_reason).toBe('vendor_dir');
+  });
+
+  it('does not mark a dir excluded when any leaf is included', () => {
+    const tree = buildTree([
+      file('mix-1', 'mix/keep.py'),
+      file('mix-2', 'mix/drop.png', {
+        is_excluded_by_default: true,
+        excluded_reason: 'image',
+        is_binary: true,
+        language: null,
+      }),
+    ]);
+    const mix = tree.children!.find((n) => n.name === 'mix')!;
+    expect(mix.is_excluded_by_default).toBe(false);
+    expect(mix.excluded_reason).toBeNull();
+  });
+
+  it('keeps surfaced metadata on an excluded dir that has zero children', () => {
+    const tree = buildTree([
+      file('childless', 'cache', {
+        parent_path: '',
+        size_bytes: 0,
+        language: null,
+        is_excluded_by_default: true,
+        excluded_reason: 'vendor_dir',
+      }),
+    ]);
+    const cache = tree.children!.find((n) => n.name === 'cache')!;
+    expect(cache.kind).toBe('dir');
+    expect(cache.is_excluded_by_default).toBe(true);
+    expect(cache.excluded_reason).toBe('vendor_dir');
+  });
+
+  it('propagates excluded state up multiple inferred levels', () => {
+    const tree = buildTree([
+      file('deep-leaf', 'a/b/c/d.bin', {
+        is_excluded_by_default: true,
+        excluded_reason: 'binary',
+        is_binary: true,
+        language: null,
+      }),
+    ]);
+    const a = tree.children!.find((n) => n.name === 'a')!;
+    const b = a.children!.find((n) => n.name === 'b')!;
+    const c = b.children!.find((n) => n.name === 'c')!;
+    expect(a.is_excluded_by_default).toBe(true);
+    expect(b.is_excluded_by_default).toBe(true);
+    expect(c.is_excluded_by_default).toBe(true);
+    expect(a.excluded_reason).toBe('binary');
+  });
 });
 
 describe('getDirState', () => {
