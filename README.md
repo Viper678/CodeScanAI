@@ -122,4 +122,13 @@ If you are an AI agent picking up work on this project, read in this order:
 
 ## Status
 
-🟡 Planning / pre-implementation. No code committed yet.
+🟡 In active development. Currently mid-Phase 3 — see `docs/TASKS.md` for the full plan.
+
+Shipped:
+
+- Auth: register / login / me, refresh-token rotation + family-based stolen-token revocation
+- Upload: `.zip` and loose-file ingest, server-side extraction with zip-bomb / path-traversal / nesting-depth guards, materialized file tree
+- Scans API: create / get / list / cancel / delete (`/api/v1/scans`), file-ownership validation, `MAX_FILES_PER_SCAN` cap
+- Web: auth pages, upload wizard step 1 (dropzone + progress) and step 2 (virtualized directory tree with tri-state selection)
+
+Next up: Gemma client + worker scan orchestration (T3.3 / T3.4), wizard steps 3–4 and progress UI (T3.5 / T3.6), findings + export (T3.7+).
