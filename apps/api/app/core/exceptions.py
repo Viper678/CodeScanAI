@@ -41,3 +41,43 @@ class Unauthorized(AppError):
     error_code = "unauthorized"
     status_code = 401
     message = "Unauthorized"
+
+
+class NotFound(AppError):
+    error_code = "not_found"
+    status_code = 404
+    message = "Not found"
+
+
+class PayloadTooLarge(AppError):
+    error_code = "payload_too_large"
+    status_code = 413
+    message = "Payload too large"
+
+
+class UnsupportedFileType(AppError):
+    error_code = "unsupported_media_type"
+    status_code = 415
+    message = "Unsupported file type"
+
+
+class UnprocessableArchive(AppError):
+    error_code = "unprocessable_archive"
+    status_code = 422
+    message = "Unprocessable archive"
+
+
+class InvalidUploadRequest(AppError):
+    """Validation error specific to upload composition (e.g. wrong file count)."""
+
+    error_code = "validation_error"
+    status_code = 422
+    message = "Invalid upload request"
+
+
+class QueueUnavailable(AppError):
+    """Broker (Redis/Celery) is unreachable; the upload was marked failed."""
+
+    error_code = "queue_unavailable"
+    status_code = 503
+    message = "Queue temporarily unavailable"
