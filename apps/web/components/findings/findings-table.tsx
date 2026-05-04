@@ -13,7 +13,39 @@ import type { Finding, FindingsFilters } from '@/lib/api/findings/types';
 type FindingsTableProps = {
   scanId: string;
   filters: FindingsFilters;
+  /**
+   * Upload id, threaded down so each row can build a fully-qualified link
+   * to the file viewer (`/uploads/{upload_id}/files/{file_id}?...`). Comes
+   * from the parent scan detail (`scan.upload_id`); kept as a prop so this
+   * component stays free of scan-fetch state.
+   */
+  uploadId: string;
 };
+
+/**
+ * Build the file-viewer href for a finding. Includes the originating
+ * `scan_id` so the viewer's sidebar can scope the per-file findings list,
+ * and `line` so it can scroll to the offending position on mount. We only
+ * append `line` when `line_start` is non-null — the viewer treats an
+ * absent param as "open at the top".
+ */
+function buildFileHref({
+  uploadId,
+  scanId,
+  fileId,
+  lineStart,
+}: {
+  uploadId: string;
+  scanId: string;
+  fileId: string;
+  lineStart: number | null;
+}): string {
+  const search = new URLSearchParams({ scan_id: scanId });
+  if (lineStart !== null) {
+    search.set('line', String(lineStart));
+  }
+  return `/uploads/${uploadId}/files/${fileId}?${search.toString()}`;
+}
 
 /**
  * Findings table with cursor-paginated infinite scroll, expandable rows, and
@@ -27,6 +59,7 @@ type FindingsTableProps = {
 export function FindingsTable({
   scanId,
   filters,
+  uploadId,
 }: Readonly<FindingsTableProps>) {
   const query = useFindingsInfinite(scanId, filters);
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -80,6 +113,12 @@ export function FindingsTable({
             onToggle={() =>
               setExpandedId((prev) => (prev === finding.id ? null : finding.id))
             }
+            fileHref={buildFileHref({
+              fileId: finding.file.id,
+              lineStart: finding.line_start,
+              scanId,
+              uploadId,
+            })}
           />
         ))}
       </div>

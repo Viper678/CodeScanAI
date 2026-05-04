@@ -10,7 +10,9 @@ const { useFindingsInfiniteMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('@/lib/api/findings/use-findings', () => ({
+  FINDINGS_FOR_FILE_QUERY_KEY: 'findings-for-file',
   FINDINGS_QUERY_KEY: 'findings',
+  useFindingsForFile: vi.fn(),
   useFindingsInfinite: () => useFindingsInfiniteMock(),
 }));
 
@@ -32,17 +34,40 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
   };
 }
 
+function renderTable(
+  props: {
+    scanId?: string;
+    uploadId?: string;
+    filters?: { severity: []; scan_type: []; file_id: null };
+  } = {},
+) {
+  return render(
+    <FindingsTable
+      scanId={props.scanId ?? 'scan-1'}
+      uploadId={props.uploadId ?? 'upload-1'}
+      filters={props.filters ?? { file_id: null, scan_type: [], severity: [] }}
+    />,
+  );
+}
+
 describe('<FindingsTable />', () => {
-  it('renders rows from a paginated response and links to the file viewer', () => {
+  it('renders rows from a paginated response and links each path to the file viewer', () => {
     useFindingsInfiniteMock.mockReturnValue({
       data: {
         pages: [
           {
             items: [
-              makeFinding({ id: 'f-1', title: 'A' }),
+              makeFinding({
+                id: 'f-1',
+                line_start: 42,
+                title: 'A',
+              }),
               makeFinding({
                 file: { id: 'file-2', path: 'src/db.py' },
                 id: 'f-2',
+                // line_start: null exercises the "no &line=" branch.
+                line_start: null,
+                line_end: null,
                 title: 'B',
               }),
             ],
@@ -60,22 +85,26 @@ describe('<FindingsTable />', () => {
       refetch: vi.fn(),
     });
 
-    render(
-      <FindingsTable
-        scanId="scan-1"
-        filters={{ file_id: null, scan_type: [], severity: [] }}
-      />,
-    );
+    renderTable();
 
     expect(screen.getByText('A')).toBeInTheDocument();
     expect(screen.getByText('B')).toBeInTheDocument();
-    // File paths render as plain text — the file viewer route lands in T4.3.
-    expect(screen.getByText('src/api/users.py').tagName).toBe('SPAN');
-    expect(screen.getByText('src/db.py').tagName).toBe('SPAN');
+
+    const linkA = screen.getByRole('link', { name: 'src/api/users.py' });
+    expect(linkA).toHaveAttribute(
+      'href',
+      '/uploads/upload-1/files/file-1?scan_id=scan-1&line=42',
+    );
+    // line_start=null → href omits the `line` param entirely.
+    const linkB = screen.getByRole('link', { name: 'src/db.py' });
+    expect(linkB).toHaveAttribute(
+      'href',
+      '/uploads/upload-1/files/file-2?scan_id=scan-1',
+    );
+
     expect(screen.getByTestId('findings-count-summary')).toHaveTextContent(
       'Showing 2 of 2 findings',
     );
-    // No "Load more" when hasNextPage is false.
     expect(screen.queryByTestId('findings-load-more')).not.toBeInTheDocument();
   });
 
@@ -100,12 +129,7 @@ describe('<FindingsTable />', () => {
       refetch: vi.fn(),
     });
 
-    render(
-      <FindingsTable
-        scanId="scan-1"
-        filters={{ file_id: null, scan_type: [], severity: [] }}
-      />,
-    );
+    renderTable();
 
     expect(screen.getByTestId('findings-count-summary')).toHaveTextContent(
       'Showing 1 of 87 findings',
@@ -125,12 +149,7 @@ describe('<FindingsTable />', () => {
       refetch: vi.fn(),
     });
 
-    render(
-      <FindingsTable
-        scanId="scan-1"
-        filters={{ file_id: null, scan_type: [], severity: [] }}
-      />,
-    );
+    renderTable();
 
     expect(screen.getByText('Loading findings…')).toBeInTheDocument();
   });
@@ -147,12 +166,7 @@ describe('<FindingsTable />', () => {
       refetch,
     });
 
-    render(
-      <FindingsTable
-        scanId="scan-1"
-        filters={{ file_id: null, scan_type: [], severity: [] }}
-      />,
-    );
+    renderTable();
 
     expect(screen.getByText('Could not load findings.')).toBeInTheDocument();
     expect(screen.getByText('Boom.')).toBeInTheDocument();
@@ -174,12 +188,13 @@ describe('<FindingsTable />', () => {
       refetch: vi.fn(),
     });
 
-    render(
-      <FindingsTable
-        scanId="scan-1"
-        filters={{ file_id: null, scan_type: [], severity: ['critical'] }}
-      />,
-    );
+    renderTable({
+      filters: {
+        file_id: null,
+        scan_type: [],
+        severity: ['critical'],
+      } as never,
+    });
 
     expect(
       screen.getByText('No findings match these filters.'),
@@ -200,12 +215,7 @@ describe('<FindingsTable />', () => {
       refetch: vi.fn(),
     });
 
-    render(
-      <FindingsTable
-        scanId="scan-1"
-        filters={{ file_id: null, scan_type: [], severity: [] }}
-      />,
-    );
+    renderTable();
 
     expect(screen.getByText('No findings.')).toBeInTheDocument();
   });

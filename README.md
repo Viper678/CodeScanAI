@@ -122,7 +122,7 @@ If you are an AI agent picking up work on this project, read in this order:
 
 ## Status
 
-🟡 In active development. Phase 4 underway — findings list/export API (T4.1) and the results page (T4.2) are in; file viewer (T4.3) + dashboard polish (T4.4) are next.
+🟡 In active development. Phase 4 nearly done — findings list/export API (T4.1), results page (T4.2), and the in-app file viewer (T4.3) are in; only dashboard polish (T4.4) remains.
 
 Shipped:
 
@@ -131,6 +131,7 @@ Shipped:
 - Scans API: create / get / list / cancel / delete + recent-files tail (`/scans/{id}/files`); file-ownership validation, `MAX_FILES_PER_SCAN` cap
 - Findings API: cursor-paginated `GET /scans/{id}/findings` with severity / scan_type / file_id filters and `GET /scans/{id}/export?fmt=json|csv` streaming exports
 - Worker: Gemma client (`google-genai`) with retry policy + Pydantic validation; scanner orchestrator (`run_scan` Celery task) with bounded thread pool, cancellation, and per-file findings persistence
-- Web: auth pages, full new-scan wizard (upload → file selection → scan config → confirm), the live `/scans/{id}` progress page (status-aware polling, determinate progress + ETA, severity counters, recent-files tail, cancel button), and the post-completion findings table (filter chips synced to URL, expandable rows with snippet + recommendation, JSON/CSV export menu)
+- Web: auth pages, full new-scan wizard (upload → file selection → scan config → confirm), the live `/scans/{id}` progress page (status-aware polling, determinate progress + ETA, severity counters, recent-files tail, cancel button), the post-completion findings table (filter chips synced to URL, expandable rows with snippet + recommendation, JSON/CSV export menu), and the read-only file viewer at `/uploads/{upload_id}/files/{file_id}` (lazy-loaded CodeMirror 6 with language autodetect, severity-colored gutter markers, sidebar list, scroll-to-line on link-through from findings)
+- File-content API: `GET /uploads/{upload_id}/files/{file_id}/content` streams text with size cap + binary guard + path-traversal defense in depth
 
-Next up: T4.3 file viewer with inline findings, then T4.4 dashboard polish.
+Next up: T4.4 dashboard polish (`/scans` filters + re-run action) closes out Phase 4.

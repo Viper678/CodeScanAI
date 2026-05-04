@@ -11,8 +11,10 @@ from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.db import get_session
 from app.core.deps import get_current_user, require_csrf_header
 from app.core.exceptions import InvalidUploadRequest, NotFound
@@ -27,6 +29,7 @@ from app.schemas.upload import (
     UploadListResponse,
     UploadStatus,
 )
+from app.services.file_content_service import FileContentService
 from app.services.upload_service import UploadService
 
 router = APIRouter(
@@ -147,3 +150,46 @@ async def get_upload_tree(
     # NotFound is raised inside the service when the upload is missing or
     # belongs to another user — handler maps it to 404 (never 403).
     return await service.get_tree(upload_id=upload_id, user_id=current_user.id)
+
+
+@router.get("/{upload_id}/files/{file_id}/content")
+async def get_file_content(
+    upload_id: UUID,
+    file_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> StreamingResponse:
+    """Stream the raw bytes of a file inside an upload (T4.3).
+
+    Resolves ``upload.extract_path / file.path``, asserts the result
+    stays under ``extract_path`` (defense-in-depth — see
+    docs/SECURITY.md §4), refuses files larger than
+    ``MAX_VIEWABLE_FILE_SIZE_MB`` with 413, and refuses binary content
+    with 415. Returns a plain-text body so the frontend's CodeMirror
+    component can render it without any further negotiation.
+
+    Auth + ownership: 404 (never 403) for any miss — see
+    docs/SECURITY.md §3.
+    """
+
+    service = FileContentService(
+        session,
+        max_size_bytes=settings.max_viewable_file_size_mb * 1024 * 1024,
+    )
+    content = await service.load_file_for_viewer(
+        upload_id=upload_id,
+        file_id=file_id,
+        user_id=current_user.id,
+    )
+    return StreamingResponse(
+        content.stream,
+        media_type="text/plain; charset=utf-8",
+        headers={
+            "Content-Length": str(content.size_bytes),
+            # Cache-Control: file content is immutable per (upload, file)
+            # — once an extract is on disk it doesn't change. We keep this
+            # short rather than ``immutable`` because we'd rather a stale
+            # disk eviction surface as a fresh 404 than a cached body.
+            "Cache-Control": "private, max-age=60",
+        },
+    )

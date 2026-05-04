@@ -70,6 +70,15 @@ class Settings(BaseSettings):
     # Cap on file_ids per POST /scans payload. Sourced from docs/API.md §Scans.
     max_files_per_scan: int = 500
 
+    # ---- File viewer (T4.3) ----
+    # Maximum size of a file we will stream back as text via
+    # ``GET /uploads/{id}/files/{file_id}/content``. Anything larger gets a
+    # 413 — the viewer is read-only source-code preview, not a download
+    # service. 2 MiB comfortably covers source files; the worker already
+    # excludes anything > 1 MiB from scans (docs/FILE_HANDLING.md), so the
+    # gap leaves headroom for "I uploaded it loose, let me look at it".
+    max_viewable_file_size_mb: int = 2
+
     @field_validator("jwt_secret")
     @classmethod
     def validate_jwt_secret(cls, value: SecretStr) -> SecretStr:
