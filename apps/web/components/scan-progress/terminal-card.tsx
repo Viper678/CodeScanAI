@@ -33,7 +33,7 @@ const TERMINAL_DESCRIPTIONS = {
  * Final-state card shown once a scan reaches `completed` / `failed` /
  * `cancelled`. Counters are frozen by the caller (we just render whatever
  * `scan.summary` carries at the time we mount). Findings table is the
- * Phase 4 / T3.7 deliverable — placeholder for now.
+ * Phase 4 / T4.2 deliverable — placeholder for now.
  */
 export function TerminalCard({ scan }: Readonly<TerminalCardProps>) {
   if (
@@ -59,7 +59,7 @@ export function TerminalCard({ scan }: Readonly<TerminalCardProps>) {
         ) : null}
         <div className="rounded-2xl border border-dashed border-border/80 bg-card/60 p-6 text-center">
           <p className="text-sm font-medium text-foreground">
-            Findings table coming with T3.7
+            Findings table coming with T4.2
           </p>
           <p className="mt-1 text-xs text-muted-foreground">
             The table view, file viewer, and exports land in Phase 4.

@@ -4,6 +4,8 @@ import type {
   ScanCreateResponse,
   ScanDetail,
   ScanFilesResponse,
+  ScanListResponse,
+  ScanStatus,
 } from '@/lib/api/scans/types';
 
 /**
@@ -58,5 +60,41 @@ export async function cancelScan(scanId: string): Promise<ScanDetail> {
   return apiFetch<ScanDetail>(`/scans/${scanId}/cancel`, {
     csrf: true,
     method: 'POST',
+  });
+}
+
+type FetchScansParams = {
+  limit?: number;
+  offset?: number;
+  status?: ScanStatus;
+  upload_id?: string;
+};
+
+/**
+ * GET `/scans?limit=&offset=&status=&upload_id=` — paginated index of the
+ * current user's scans. Filter params are plumbed through but no UI uses
+ * them yet; they exist so the next iteration (filter chips) can wire up
+ * without re-touching the client. Server caps `limit` to 1..100.
+ */
+export async function fetchScans(
+  {
+    limit = 20,
+    offset = 0,
+    status,
+    upload_id,
+  }: FetchScansParams = {},
+  signal?: AbortSignal,
+): Promise<ScanListResponse> {
+  const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+  const safeOffset = Math.max(0, Math.trunc(offset));
+  const params = new URLSearchParams({
+    limit: String(safeLimit),
+    offset: String(safeOffset),
+  });
+  if (status) params.set('status', status);
+  if (upload_id) params.set('upload_id', upload_id);
+  return apiFetch<ScanListResponse>(`/scans?${params.toString()}`, {
+    method: 'GET',
+    signal,
   });
 }

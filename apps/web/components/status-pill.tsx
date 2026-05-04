@@ -2,11 +2,16 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 export type Status =
+  // Scan lifecycle (apps/api/app/schemas/scan.py)
   | 'pending'
   | 'running'
   | 'completed'
   | 'failed'
-  | 'cancelled';
+  | 'cancelled'
+  // Upload lifecycle (apps/api/app/schemas/upload.py); 'failed' is shared.
+  | 'received'
+  | 'extracting'
+  | 'ready';
 
 const STATUS_STYLES: Record<Status, string> = {
   pending: 'border-zinc-500/30 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300',
@@ -16,6 +21,12 @@ const STATUS_STYLES: Record<Status, string> = {
   failed: 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300',
   cancelled:
     'border-orange-500/30 bg-orange-500/10 text-orange-600 dark:text-orange-300',
+  received:
+    'border-zinc-500/30 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300',
+  extracting:
+    'border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300',
+  ready:
+    'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300',
 };
 
 type StatusPillProps = {

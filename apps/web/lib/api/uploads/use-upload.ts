@@ -6,6 +6,7 @@ import { useMutation, useQuery } from '@tanstack/react-query';
 import { ApiError } from '@/lib/api/client';
 import {
   fetchUpload,
+  fetchUploads,
   uploadFile,
   type UploadProgressCallback,
 } from '@/lib/api/uploads/client';
@@ -13,9 +14,11 @@ import type {
   CreateUploadResponse,
   Upload,
   UploadKind,
+  UploadListResponse,
 } from '@/lib/api/uploads/types';
 
 export const UPLOAD_QUERY_KEY = 'upload' as const;
+export const UPLOADS_LIST_QUERY_KEY = 'uploads-list' as const;
 
 /** Variables passed into the upload mutation. */
 export type UploadMutationInput = {
@@ -90,4 +93,28 @@ export function useUploadPolling(
   }, [query.data, onReady, onFailed]);
 
   return query;
+}
+
+type UseUploadsQueryParams = {
+  limit?: number;
+  offset?: number;
+};
+
+/**
+ * One-shot fetch for `GET /uploads`. The `/uploads` index renders a single
+ * page of rows; pagination controls are out of scope for this iteration so
+ * the hook does not poll or refetch on focus. Mirrors the surface of the
+ * other read hooks in this file (`staleTime: 0`, `retry: false`).
+ */
+export function useUploadsQuery({
+  limit = 20,
+  offset = 0,
+}: UseUploadsQueryParams = {}) {
+  return useQuery<UploadListResponse, ApiError>({
+    queryFn: ({ signal }) => fetchUploads({ limit, offset }, signal),
+    queryKey: [UPLOADS_LIST_QUERY_KEY, limit, offset],
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 0,
+  });
 }
