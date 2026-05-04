@@ -18,6 +18,13 @@ type FindingsSidebarProps = {
    * doesn't refilter, so the parent owns the order (severity rank ASC).
    */
   findings: Finding[];
+  /**
+   * Server-reported total for this file. When greater than `findings.length`
+   * we render a truncation hint so the user isn't silently looking at a
+   * partial list (the per-file query is single-page, capped at 200 — see
+   * `useFindingsForFile`).
+   */
+  total: number | null;
   /** ID of the currently-selected finding (for the active row state). */
   selectedId: string | null;
   /** Click / keyboard activation hands the line back to the editor. */
@@ -41,6 +48,7 @@ type FindingsSidebarProps = {
  */
 export function FindingsSidebar({
   findings,
+  total,
   selectedId,
   onSelect,
   isLoading,
@@ -75,7 +83,8 @@ export function FindingsSidebar({
       className="flex h-full flex-col border-l border-border/60 bg-card/40"
     >
       <header className="border-b border-border/60 px-4 py-3 text-xs font-medium uppercase tracking-wide text-muted-foreground">
-        Findings ({findings.length})
+        Findings ({findings.length}
+        {total !== null && total > findings.length ? ` of ${total}` : ''})
       </header>
       {findings.length === 0 ? (
         <div className="px-4 py-6 text-sm text-muted-foreground">

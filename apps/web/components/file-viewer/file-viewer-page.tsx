@@ -68,7 +68,16 @@ export function FileViewerPage({
   // imperatively each time the user picks a different one in the
   // sidebar — the URL `?line=` only seeds the *initial* position.
   const [selectedFinding, setSelectedFinding] = useState<Finding | null>(null);
-  const [imperativeLine, setImperativeLine] = useState<number | null>(null);
+  // Imperative scroll target: an object so re-selecting the same finding
+  // still triggers the editor's effect. Setting `setImperativeScroll` to
+  // `{ line: same, nonce: prev.nonce + 1 }` produces a fresh object identity
+  // → React re-renders with new prop → editor's `useEffect` deps change →
+  // scroll fires. A bare `setImperativeLine(line.line_start)` would be
+  // Object.is-equal on repeat clicks and React would skip the update.
+  const [imperativeScroll, setImperativeScroll] = useState<{
+    line: number;
+    nonce: number;
+  } | null>(null);
 
   const markers = useMemo<FindingMarker[]>(
     () =>
@@ -100,14 +109,19 @@ export function FileViewerPage({
   const handleSidebarSelect = useCallback((finding: Finding) => {
     setSelectedFinding(finding);
     if (finding.line_start !== null) {
-      // Force a re-scroll even when re-selecting the same finding —
-      // ``useEffect`` in the editor would no-op on identical dep, so we
-      // wrap the line in a fresh number reference each click.
-      setImperativeLine(finding.line_start);
+      const lineStart = finding.line_start;
+      setImperativeScroll((prev) => ({
+        line: lineStart,
+        nonce: (prev?.nonce ?? 0) + 1,
+      }));
     }
   }, []);
 
-  const scrollLine = imperativeLine ?? initialLine;
+  // Initial mount uses the URL `?line=` value (nonce 0). After that, every
+  // sidebar click bumps nonce → editor sees a new object identity → scrolls.
+  const scrollTarget =
+    imperativeScroll ??
+    (initialLine !== null ? { line: initialLine, nonce: 0 } : null);
 
   // The header path: file_path comes from a finding row. If we have at
   // least one finding, prefer that; otherwise fall back to a UUID hint
@@ -126,13 +140,14 @@ export function FileViewerPage({
             isLoading={contentQuery.isPending}
             filename={headerPath}
             markers={markers}
-            scrollToLine={scrollLine}
+            scrollTarget={scrollTarget}
             onMarkerClick={handleGutterClick}
           />
         </div>
         <div className="min-h-0 border-t border-border/60">
           <FindingsSidebar
             findings={findings}
+            total={findingsQuery.data?.total ?? null}
             isLoading={findingsQuery.isPending && scanId !== null}
             hasScanContext={scanId !== null}
             selectedId={selectedFinding?.id ?? null}
@@ -182,7 +197,7 @@ type ViewerBodyProps = {
   isLoading: boolean;
   filename: string;
   markers: FindingMarker[];
-  scrollToLine: number | null;
+  scrollTarget: { line: number; nonce: number } | null;
   onMarkerClick: (findingId: string) => void;
 };
 
@@ -192,7 +207,7 @@ function ViewerBody({
   isLoading,
   filename,
   markers,
-  scrollToLine,
+  scrollTarget,
   onMarkerClick,
 }: Readonly<ViewerBodyProps>) {
   if (isLoading) {
@@ -212,7 +227,7 @@ function ViewerBody({
       filename={filename}
       markers={markers}
       onMarkerClick={onMarkerClick}
-      scrollToLine={scrollToLine}
+      scrollTarget={scrollTarget}
     />
   );
 }

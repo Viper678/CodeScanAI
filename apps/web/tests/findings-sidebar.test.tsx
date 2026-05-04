@@ -27,6 +27,7 @@ describe('<FindingsSidebar />', () => {
     render(
       <FindingsSidebar
         findings={[]}
+        total={0}
         selectedId={null}
         onSelect={vi.fn()}
         isLoading={false}
@@ -44,6 +45,7 @@ describe('<FindingsSidebar />', () => {
     render(
       <FindingsSidebar
         findings={[]}
+        total={0}
         selectedId={null}
         onSelect={vi.fn()}
         isLoading={true}
@@ -56,6 +58,7 @@ describe('<FindingsSidebar />', () => {
   it('lists findings with title, scan type label, and line', () => {
     render(
       <FindingsSidebar
+        total={2}
         findings={[
           makeFinding({ id: 'f-a', line_start: 10, title: 'A' }),
           makeFinding({
@@ -82,6 +85,7 @@ describe('<FindingsSidebar />', () => {
     render(
       <FindingsSidebar
         findings={[]}
+        total={0}
         selectedId={null}
         onSelect={vi.fn()}
         isLoading={false}
@@ -100,6 +104,7 @@ describe('<FindingsSidebar />', () => {
     render(
       <FindingsSidebar
         findings={findings}
+        total={findings.length}
         selectedId="f-a"
         onSelect={onSelect}
         isLoading={false}
@@ -120,10 +125,43 @@ describe('<FindingsSidebar />', () => {
     expect(onSelect.mock.calls[0]?.[0]).toMatchObject({ id: 'f-b' });
   });
 
+  it('shows a "of total" hint when the list is truncated', () => {
+    // Server cap is 200 per request (see fetchFindings); a file with more
+    // findings than that lands here as `findings.length < total`. The
+    // sidebar must surface that so the user isn't silently looking at a
+    // partial list.
+    render(
+      <FindingsSidebar
+        findings={[makeFinding({ id: 'f-a', title: 'A' })]}
+        total={47}
+        selectedId={null}
+        onSelect={vi.fn()}
+        isLoading={false}
+        hasScanContext={true}
+      />,
+    );
+    expect(screen.getByText('Findings (1 of 47)')).toBeInTheDocument();
+  });
+
+  it('omits the "of total" hint when not truncated', () => {
+    render(
+      <FindingsSidebar
+        findings={[makeFinding({ id: 'f-a', title: 'A' })]}
+        total={1}
+        selectedId={null}
+        onSelect={vi.fn()}
+        isLoading={false}
+        hasScanContext={true}
+      />,
+    );
+    expect(screen.getByText('Findings (1)')).toBeInTheDocument();
+  });
+
   it('renders an em-dash when line_start is null', () => {
     render(
       <FindingsSidebar
         findings={[makeFinding({ line_end: null, line_start: null })]}
+        total={1}
         selectedId={null}
         onSelect={vi.fn()}
         isLoading={false}

@@ -50,7 +50,7 @@ describe('fetchFindings', () => {
     expect(search.get('limit')).toBe('25');
   });
 
-  it('drops empty filter buckets and clamps limit to 1..100', async () => {
+  it('drops empty filter buckets and clamps limit to 1..200', async () => {
     const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
     fetchMock.mockResolvedValueOnce(
       jsonResponse({ items: [], next_cursor: null, total: 0 }),
@@ -58,7 +58,9 @@ describe('fetchFindings', () => {
 
     await fetchFindings('scan-1', {
       file_id: null,
-      // 250 should clamp to 100, not blow up the API.
+      // 250 should clamp to 200 (the actual server max from T4.1), not blow
+      // up the API. The earlier 100 cap silently truncated the per-file
+      // sidebar to half its intended window — see codex P1 on T4.3.
       limit: 250,
       scan_type: [],
       severity: [],
@@ -70,7 +72,7 @@ describe('fetchFindings', () => {
     expect(search.has('scan_type')).toBe(false);
     expect(search.has('file_id')).toBe(false);
     expect(search.has('cursor')).toBe(false);
-    expect(search.get('limit')).toBe('100');
+    expect(search.get('limit')).toBe('200');
   });
 });
 

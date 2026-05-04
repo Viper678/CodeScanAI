@@ -32,8 +32,11 @@ type FetchFindingsParams = FindingsFilters & {
 
 /**
  * GET `/scans/{scanId}/findings` with optional filters + cursor pagination.
- * Server caps `limit` to 1..100 — we mirror that cap client-side so a typo
- * in a caller can't issue an obviously bad request.
+ * Server caps `limit` to 1..200 (see apps/api/app/routers/scans.py); we
+ * mirror that cap client-side so a typo can't issue an obviously bad
+ * request. The earlier 100 clamp was wrong — it silently truncated
+ * `useFindingsForFile`'s single-page sidebar request to half its intended
+ * window (codex P1 on T4.3).
  */
 export async function fetchFindings(
   scanId: string,
@@ -42,7 +45,7 @@ export async function fetchFindings(
 ): Promise<FindingsListResponse> {
   const { cursor, limit = 50, ...filters } = params;
   const search = buildFilterParams(filters);
-  const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+  const safeLimit = Math.min(200, Math.max(1, Math.trunc(limit)));
   search.set('limit', String(safeLimit));
   if (cursor) {
     search.set('cursor', cursor);

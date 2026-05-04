@@ -1,4 +1,4 @@
-import { render, screen } from '@testing-library/react';
+import { fireEvent, render, screen } from '@testing-library/react';
 import { describe, expect, it, vi } from 'vitest';
 
 import { ApiError } from '@/lib/api/client';
@@ -34,10 +34,18 @@ vi.mock('next/dynamic', () => ({
   __esModule: true,
   default: (loader: () => Promise<unknown>) => {
     function DynamicMock(props: Record<string, unknown>) {
+      const target = props.scrollTarget as
+        | { line: number; nonce: number }
+        | null
+        | undefined;
       return (
-        <div data-testid="code-editor-mock">
+        <div
+          data-testid="code-editor-mock"
+          data-scroll-line={target ? String(target.line) : 'null'}
+          data-scroll-nonce={target ? String(target.nonce) : 'null'}
+        >
           {String(props.content ?? '')}
-          (line={String(props.scrollToLine ?? 'null')})
+          (line={target ? String(target.line) : 'null'})
         </div>
       );
     }
@@ -196,5 +204,50 @@ describe('<FileViewerPage />', () => {
     );
 
     expect(screen.getByTestId('editor-loading')).toBeInTheDocument();
+  });
+
+  it('bumps scroll nonce on every sidebar click — even repeats (codex P2)', () => {
+    // Clicking the same finding twice in a row must still re-fire the
+    // editor's scroll effect. The bug: storing only `line: number` made
+    // React skip the state update on identical primitives, so the editor
+    // never re-scrolled after manual scrolling away. Fix: pair the line
+    // with a per-click nonce so object identity changes every time.
+    const finding = {
+      confidence: null,
+      file: { id: 'file-1', path: 'src/main.py' },
+      id: 'f-1',
+      line_end: 10,
+      line_start: 10,
+      message: 'm',
+      recommendation: null,
+      rule_id: null,
+      scan_type: 'security',
+      severity: 'high',
+      snippet: null,
+      title: 'A finding',
+    };
+    setMocks({ content: 'def main(): pass\n', findings: [finding] });
+
+    render(
+      <FileViewerPage
+        uploadId="u-1"
+        fileId="file-1"
+        scanId="scan-1"
+        initialLine={null}
+      />,
+    );
+
+    const editor = screen.getByTestId('code-editor-mock');
+    expect(editor.dataset.scrollNonce).toBe('null');
+
+    fireEvent.click(screen.getByTestId('sidebar-item-f-1'));
+    expect(editor.dataset.scrollLine).toBe('10');
+    const firstNonce = Number.parseInt(editor.dataset.scrollNonce ?? '0', 10);
+    expect(firstNonce).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByTestId('sidebar-item-f-1'));
+    const secondNonce = Number.parseInt(editor.dataset.scrollNonce ?? '0', 10);
+    expect(secondNonce).toBeGreaterThan(firstNonce);
+    expect(editor.dataset.scrollLine).toBe('10');
   });
 });

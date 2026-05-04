@@ -20,10 +20,13 @@ type CodeEditorProps = {
   /** Findings on this file, surfaced as gutter markers. */
   markers: FindingMarker[];
   /**
-   * 1-indexed line to scroll into view on mount + whenever it changes.
+   * 1-indexed line to scroll into view + a per-click nonce. Object identity
+   * (not the line number alone) drives the scroll effect — re-selecting the
+   * same finding bumps `nonce` so React sees a fresh prop and re-runs the
+   * effect, which it would skip on a bare `number` repeat.
    * `null` leaves the cursor at the top.
    */
-  scrollToLine: number | null;
+  scrollTarget: { line: number; nonce: number } | null;
   /** Sidebar handshake: a clicked gutter dot fires this with the finding id. */
   onMarkerClick: (findingId: string) => void;
 };
@@ -48,7 +51,7 @@ export function CodeEditor({
   content,
   filename,
   markers,
-  scrollToLine,
+  scrollTarget,
   onMarkerClick,
 }: Readonly<CodeEditorProps>) {
   const { resolvedTheme } = useTheme();
@@ -75,18 +78,21 @@ export function CodeEditor({
   // positions the line in the middle of the viewport (best UX for
   // jumping into the middle of a long file).
   useEffect(() => {
-    if (scrollToLine === null) return;
+    if (scrollTarget === null) return;
     const view = viewRef.current;
     if (!view) return;
     const doc = view.state.doc;
-    if (scrollToLine < 1 || scrollToLine > doc.lines) return;
-    const line = doc.line(scrollToLine);
+    const targetLine = scrollTarget.line;
+    if (targetLine < 1 || targetLine > doc.lines) return;
+    const line = doc.line(targetLine);
     view.dispatch({
       effects: EditorView.scrollIntoView(line.from, { y: 'center' }),
       selection: { anchor: line.from },
     });
     flashLine(view, line.from);
-  }, [scrollToLine, content]);
+    // Depend on the whole `scrollTarget` object so re-selecting the same
+    // line (with a bumped nonce) still re-fires this effect.
+  }, [scrollTarget, content]);
 
   return (
     <div data-testid="code-editor" className="h-full overflow-hidden">

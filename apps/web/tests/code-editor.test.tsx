@@ -57,7 +57,7 @@ describe('<CodeEditor />', () => {
         filename="hello.py"
         markers={[]}
         onMarkerClick={vi.fn()}
-        scrollToLine={null}
+        scrollTarget={null}
       />,
     );
     expect(screen.getByTestId('cm-mock')).toHaveTextContent("print('hi')");
@@ -76,7 +76,7 @@ describe('<CodeEditor />', () => {
         filename="src/foo.py"
         markers={[]}
         onMarkerClick={vi.fn()}
-        scrollToLine={null}
+        scrollTarget={null}
       />,
     );
     const pyCount = Number.parseInt(
@@ -90,7 +90,7 @@ describe('<CodeEditor />', () => {
         filename="src/foo.unknownext"
         markers={[]}
         onMarkerClick={vi.fn()}
-        scrollToLine={null}
+        scrollTarget={null}
       />,
     );
     const noLangCount = Number.parseInt(
