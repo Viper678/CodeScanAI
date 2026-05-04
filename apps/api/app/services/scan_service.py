@@ -283,5 +283,6 @@ def _scan_to_detail(scan: Scan, summary: ScanSummary) -> ScanDetail:
         progress_total=scan.progress_total,
         started_at=scan.started_at,
         finished_at=scan.finished_at,
+        created_at=scan.created_at,
         summary=summary,
     )

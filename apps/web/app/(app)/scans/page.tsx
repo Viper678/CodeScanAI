@@ -110,10 +110,7 @@ function ScanRow({ scan }: Readonly<ScanRowProps>) {
   const progressText = isTerminal
     ? '—'
     : `${scan.progress_done} / ${scan.progress_total}`;
-  // ScanDetail does not yet ship `created_at`; fall back to started/finished
-  // so the right-hand timestamp still has something meaningful.
-  const dateIso =
-    scan.created_at ?? scan.started_at ?? scan.finished_at ?? null;
+  const dateIso = scan.created_at;
 
   return (
     <Link

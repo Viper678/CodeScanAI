@@ -70,13 +70,7 @@ export type ScanDetail = {
   progress_total: number;
   started_at: string | null;
   finished_at: string | null;
-  /**
-   * Set when the API includes the row's creation timestamp. The current
-   * `apps/api/app/schemas/scan.py` `ScanDetail` does not yet expose this
-   * field, but the model carries it; treat as optional and fall back to
-   * `started_at` / `finished_at` for display.
-   */
-  created_at?: string | null;
+  created_at: string;
   summary: ScanSummary;
   /** Surfaced when status='failed'. */
   error?: string | null;
