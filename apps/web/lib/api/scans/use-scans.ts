@@ -9,17 +9,20 @@ import {
   createScan,
   fetchScan,
   fetchScanFiles,
+  fetchScans,
 } from '@/lib/api/scans/client';
 import type {
   ScanCreateRequest,
   ScanCreateResponse,
   ScanDetail,
   ScanFilesResponse,
+  ScanListResponse,
   ScanStatus,
 } from '@/lib/api/scans/types';
 
 export const SCAN_QUERY_KEY = 'scan' as const;
 export const SCAN_FILES_QUERY_KEY = 'scan-files' as const;
+export const SCANS_LIST_QUERY_KEY = 'scans-list' as const;
 
 const TERMINAL_STATUSES: ReadonlySet<ScanStatus> = new Set([
   'completed',
@@ -141,5 +144,40 @@ export function useCancelScanMutation(scanId: string | null) {
         queryKey: [SCAN_QUERY_KEY, scanId],
       });
     },
+  });
+}
+
+type UseScansQueryParams = {
+  limit?: number;
+  offset?: number;
+  status?: ScanStatus;
+  upload_id?: string;
+};
+
+/**
+ * One-shot fetch for `GET /scans`. The `/scans` index renders a single page
+ * of rows; pagination + filter UI is the next iteration. The hook does not
+ * poll. Mirrors the surface of the other read hooks in this file
+ * (`staleTime: 0`, `retry: false`, no focus refetch).
+ */
+export function useScansQuery({
+  limit = 20,
+  offset = 0,
+  status,
+  upload_id,
+}: UseScansQueryParams = {}) {
+  return useQuery<ScanListResponse, ApiError>({
+    queryFn: ({ signal }) =>
+      fetchScans({ limit, offset, status, upload_id }, signal),
+    queryKey: [
+      SCANS_LIST_QUERY_KEY,
+      limit,
+      offset,
+      status ?? null,
+      upload_id ?? null,
+    ],
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 0,
   });
 }

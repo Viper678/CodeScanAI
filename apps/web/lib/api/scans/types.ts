@@ -70,9 +70,17 @@ export type ScanDetail = {
   progress_total: number;
   started_at: string | null;
   finished_at: string | null;
+  created_at: string;
   summary: ScanSummary;
   /** Surfaced when status='failed'. */
   error?: string | null;
+};
+
+/** Response body for `GET /scans`. Mirrors `ScanListResponse` in the API. */
+export type ScanListResponse = {
+  items: ScanDetail[];
+  next_cursor: string | null;
+  total: number;
 };
 
 /** One row in the recent-files tail. */

@@ -20,6 +20,7 @@ import {
 } from '@/components/ui/card';
 import { Progress } from '@/components/ui/progress';
 import { StatusPill } from '@/components/status-pill';
+import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
 type UploadStepProps = {
@@ -28,15 +29,6 @@ type UploadStepProps = {
 };
 
 type Phase = 'idle' | 'uploading' | 'extracting' | 'failed';
-
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  const kb = bytes / 1024;
-  if (kb < 1024) return `${kb.toFixed(1)} KB`;
-  const mb = kb / 1024;
-  if (mb < 1024) return `${mb.toFixed(1)} MB`;
-  return `${(mb / 1024).toFixed(2)} GB`;
-}
 
 /** Step 1 of the upload wizard. */
 export function UploadStep({ onReady }: Readonly<UploadStepProps>) {

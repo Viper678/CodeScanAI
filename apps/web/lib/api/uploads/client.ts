@@ -10,6 +10,7 @@ import type {
   CreateUploadResponse,
   Upload,
   UploadKind,
+  UploadListResponse,
 } from '@/lib/api/uploads/types';
 
 /**
@@ -150,4 +151,27 @@ export async function fetchUpload(
   signal?: AbortSignal,
 ): Promise<Upload> {
   return apiFetch<Upload>(`/uploads/${id}`, { method: 'GET', signal });
+}
+
+type FetchUploadsParams = {
+  limit?: number;
+  offset?: number;
+};
+
+/**
+ * GET `/uploads?limit=&offset=` — paginated index of the current user's
+ * uploads. Mirrors the contract in `apps/api/app/routers/uploads.py`. The
+ * server caps `limit` to 1..100 and rejects negative offsets, so we clamp
+ * sensibly here too.
+ */
+export async function fetchUploads(
+  { limit = 20, offset = 0 }: FetchUploadsParams = {},
+  signal?: AbortSignal,
+): Promise<UploadListResponse> {
+  const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
+  const safeOffset = Math.max(0, Math.trunc(offset));
+  return apiFetch<UploadListResponse>(
+    `/uploads?limit=${safeLimit}&offset=${safeOffset}`,
+    { method: 'GET', signal },
+  );
 }

@@ -36,3 +36,22 @@ export type Upload = {
   created_at: string;
   error: string | null;
 };
+
+/**
+ * Alias preferred by callers that mirror the API schema names directly
+ * (`UploadDetail` matches `apps/api/app/schemas/upload.py`). The shape is
+ * identical to `Upload` — kept around so we don't churn the existing
+ * upload-wizard imports.
+ */
+export type UploadDetail = Upload;
+
+/**
+ * Response body for `GET /uploads`. Mirrors `UploadListResponse` from
+ * `apps/api/app/schemas/upload.py`. `next_cursor` is reserved but not yet
+ * populated — pagination is limit/offset for this resource today.
+ */
+export type UploadListResponse = {
+  items: UploadDetail[];
+  next_cursor: string | null;
+  total: number;
+};

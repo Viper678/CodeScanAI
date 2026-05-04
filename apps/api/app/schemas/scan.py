@@ -80,6 +80,7 @@ class ScanDetail(BaseModel):
     progress_total: int
     started_at: datetime | None = None
     finished_at: datetime | None = None
+    created_at: datetime
     summary: ScanSummary = Field(default_factory=ScanSummary)
 
 
