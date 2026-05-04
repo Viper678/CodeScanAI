@@ -12,6 +12,7 @@ from typing import Annotated, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, Response, status
+from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -24,8 +25,14 @@ from app.schemas.scan import (
     ScanCreateResponse,
     ScanDetail,
     ScanFilesResponse,
+    ScanFindingsResponse,
     ScanListResponse,
     ScanStatus,
+)
+from app.services.findings_service import (
+    FindingsService,
+    parse_scan_type_param,
+    parse_severity_param,
 )
 from app.services.scan_service import ScanService
 
@@ -118,6 +125,80 @@ async def list_recent_scan_files(
         scan_id=scan_id,
         user_id=current_user.id,
         limit=limit,
+    )
+
+
+@router.get("/{scan_id}/findings", response_model=ScanFindingsResponse)
+async def list_scan_findings(
+    scan_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    severity: str | None = None,
+    scan_type: str | None = None,
+    file_id: UUID | None = None,
+    cursor: str | None = None,
+    limit: int = 50,
+) -> ScanFindingsResponse:
+    if limit < 1 or limit > 200:
+        raise InvalidScanRequest("limit must be between 1 and 200")
+    severities = parse_severity_param(severity)
+    scan_types = parse_scan_type_param(scan_type)
+    service = FindingsService(session)
+    return await service.list_findings(
+        scan_id=scan_id,
+        user_id=current_user.id,
+        severities=severities,
+        scan_types=scan_types,
+        file_id=file_id,
+        cursor=cursor,
+        limit=limit,
+    )
+
+
+@router.get("/{scan_id}/export")
+async def export_scan_findings(
+    scan_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+    fmt: str = "json",
+    severity: str | None = None,
+    scan_type: str | None = None,
+    file_id: UUID | None = None,
+) -> StreamingResponse:
+    if fmt not in {"json", "csv"}:
+        raise InvalidScanRequest("fmt must be one of: json, csv")
+    severities = parse_severity_param(severity)
+    scan_types = parse_scan_type_param(scan_type)
+    service = FindingsService(session)
+    # Resolve ownership BEFORE constructing the StreamingResponse: raising
+    # inside the body generator happens after 200/headers are flushed.
+    await service.assert_scan_visible(scan_id=scan_id, user_id=current_user.id)
+    if fmt == "csv":
+        return StreamingResponse(
+            service.stream_export_csv(
+                scan_id=scan_id,
+                user_id=current_user.id,
+                severities=severities,
+                scan_types=scan_types,
+                file_id=file_id,
+            ),
+            media_type="text/csv; charset=utf-8",
+            headers={
+                "Content-Disposition": (f'attachment; filename="scan-{scan_id}-findings.csv"'),
+            },
+        )
+    return StreamingResponse(
+        service.stream_export_json(
+            scan_id=scan_id,
+            user_id=current_user.id,
+            severities=severities,
+            scan_types=scan_types,
+            file_id=file_id,
+        ),
+        media_type="application/json",
+        headers={
+            "Content-Disposition": (f'attachment; filename="scan-{scan_id}-findings.json"'),
+        },
     )
 
 
