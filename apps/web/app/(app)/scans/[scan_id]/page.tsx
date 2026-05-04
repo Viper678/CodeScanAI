@@ -4,6 +4,9 @@ import Link from 'next/link';
 import { useMemo } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 
+import { ExportMenu } from '@/components/findings/export-menu';
+import { FindingsFilterBar } from '@/components/findings/findings-filter-bar';
+import { FindingsTable } from '@/components/findings/findings-table';
 import { ProgressBar } from '@/components/scan-progress/progress-bar';
 import { ProgressHeader } from '@/components/scan-progress/progress-header';
 import { RecentFilesTail } from '@/components/scan-progress/recent-files-tail';
@@ -12,6 +15,7 @@ import { TerminalCard } from '@/components/scan-progress/terminal-card';
 import { buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ApiError } from '@/lib/api/client';
+import { useFindingsFilters } from '@/lib/api/findings/use-findings-filters';
 import {
   useCancelScanMutation,
   useRecentScanFiles,
@@ -49,6 +53,8 @@ export default function ScanProgressPage({
     limit: 10,
   });
   const cancelMutation = useCancelScanMutation(scanId);
+  const { filters, toggleSeverity, toggleScanType, clearAll } =
+    useFindingsFilters();
 
   // Latencies feed the rolling-average ETA. Filter to finalized rows only.
   const etaMs = useMemo(() => {
@@ -114,8 +120,34 @@ export default function ScanProgressPage({
         </>
       ) : (
         <>
-          <SeverityCounters summary={scan.summary} />
+          <div className="flex items-center justify-between gap-3">
+            <SeverityCounters summary={scan.summary} />
+          </div>
           <TerminalCard scan={scan} />
+          {scan.status === 'completed' ? (
+            <section
+              data-testid="findings-section"
+              className="space-y-4 border-t border-border/60 pt-6"
+            >
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-lg font-semibold">Findings</h2>
+                  <p className="text-sm text-muted-foreground">
+                    Filter by severity or scan type, then click a row to expand
+                    the snippet.
+                  </p>
+                </div>
+                <ExportMenu scanId={scan.id} filters={filters} />
+              </div>
+              <FindingsFilterBar
+                filters={filters}
+                onToggleSeverity={toggleSeverity}
+                onToggleScanType={toggleScanType}
+                onClear={clearAll}
+              />
+              <FindingsTable scanId={scan.id} filters={filters} />
+            </section>
+          ) : null}
         </>
       )}
     </div>
