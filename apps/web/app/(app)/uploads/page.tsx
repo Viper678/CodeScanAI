@@ -1,7 +1,13 @@
 'use client';
 
 import Link from 'next/link';
-import { AlertTriangle, FileArchive, FileUp, Loader2, Plus } from 'lucide-react';
+import {
+  AlertTriangle,
+  FileArchive,
+  FileUp,
+  Loader2,
+  Plus,
+} from 'lucide-react';
 
 import { EmptyState } from '@/components/empty-state';
 import { StatusPill } from '@/components/status-pill';

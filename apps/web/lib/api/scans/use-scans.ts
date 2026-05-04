@@ -169,7 +169,13 @@ export function useScansQuery({
   return useQuery<ScanListResponse, ApiError>({
     queryFn: ({ signal }) =>
       fetchScans({ limit, offset, status, upload_id }, signal),
-    queryKey: [SCANS_LIST_QUERY_KEY, limit, offset, status ?? null, upload_id ?? null],
+    queryKey: [
+      SCANS_LIST_QUERY_KEY,
+      limit,
+      offset,
+      status ?? null,
+      upload_id ?? null,
+    ],
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 0,

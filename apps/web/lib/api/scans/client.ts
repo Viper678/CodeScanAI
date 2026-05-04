@@ -77,12 +77,7 @@ type FetchScansParams = {
  * without re-touching the client. Server caps `limit` to 1..100.
  */
 export async function fetchScans(
-  {
-    limit = 20,
-    offset = 0,
-    status,
-    upload_id,
-  }: FetchScansParams = {},
+  { limit = 20, offset = 0, status, upload_id }: FetchScansParams = {},
   signal?: AbortSignal,
 ): Promise<ScanListResponse> {
   const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
