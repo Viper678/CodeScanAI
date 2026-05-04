@@ -1,5 +1,6 @@
 import { Button as ButtonPrimitive } from '@base-ui/react/button';
 import { cva, type VariantProps } from 'class-variance-authority';
+import { forwardRef } from 'react';
 
 import { cn } from '@/lib/utils';
 
@@ -40,19 +41,26 @@ const buttonVariants = cva(
   },
 );
 
-function Button({
-  className,
-  variant = 'default',
-  size = 'default',
-  ...props
-}: ButtonPrimitive.Props & VariantProps<typeof buttonVariants>) {
+// `forwardRef` is required so base-ui's `render` prop pattern (used by
+// MenuTrigger, DialogTrigger, etc.) can attach its ref to the underlying
+// element. Without it, those primitives log "Function components cannot be
+// given refs" and the trigger never wires up open/close behavior — the
+// dropdown stops responding to clicks.
+const Button = forwardRef<
+  HTMLButtonElement,
+  ButtonPrimitive.Props & VariantProps<typeof buttonVariants>
+>(function Button(
+  { className, variant = 'default', size = 'default', ...props },
+  ref,
+) {
   return (
     <ButtonPrimitive
+      ref={ref}
       data-slot="button"
       className={cn(buttonVariants({ variant, size, className }))}
       {...props}
     />
   );
-}
+});
 
 export { Button, buttonVariants };
