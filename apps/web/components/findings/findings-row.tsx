@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { ChevronRight } from 'lucide-react';
 import { useId, type KeyboardEvent } from 'react';
 
@@ -18,6 +19,13 @@ type FindingsRowProps = {
   finding: Finding;
   expanded: boolean;
   onToggle: () => void;
+  /**
+   * URL to the file viewer for this finding's file. Includes the originating
+   * scan + line in the query string so the viewer can scope its sidebar +
+   * scroll to the offending line. Optional during the codex deferred period
+   * (T4.2 P2) — once T4.3 ships every caller passes it.
+   */
+  fileHref?: string | null;
 };
 
 /**
@@ -25,13 +33,15 @@ type FindingsRowProps = {
  *
  * The whole row is keyboard-activatable (Enter / Space toggle expansion) and
  * carries `aria-expanded` + `aria-controls` so screen readers announce the
- * disclosure state. The file path renders as plain text for now — the file
- * viewer route lands in T4.3, at which point this becomes a `<Link>`.
+ * disclosure state. The file path renders as a `<Link>` to the file viewer
+ * (T4.3) when `fileHref` is supplied; the link's click is `stopPropagation`'d
+ * so navigating to the viewer doesn't also toggle the row.
  */
 export function FindingsRow({
   finding,
   expanded,
   onToggle,
+  fileHref,
 }: Readonly<FindingsRowProps>) {
   const detailsId = useId();
   const lineLabel =
@@ -43,9 +53,9 @@ export function FindingsRow({
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     // Only toggle when the row itself is the focus target. Without this
-    // guard, a future focusable child (e.g. the file-viewer link landing in
-    // T4.3) would have its Enter / Space activations canceled by our
-    // preventDefault() because the keydown bubbles up to this listener.
+    // guard, a focusable child (the file-viewer link added in T4.3) would
+    // have its Enter / Space activations canceled by our preventDefault()
+    // because the keydown bubbles up to this listener.
     if (event.target !== event.currentTarget) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
@@ -78,12 +88,27 @@ export function FindingsRow({
           <SeverityDot severity={finding.severity} />
           <span className="sr-only">Severity: {finding.severity}</span>
         </span>
-        <span
-          className="truncate font-mono text-xs text-foreground"
-          title={finding.file.path}
-        >
-          {finding.file.path}
-        </span>
+        {fileHref ? (
+          <Link
+            href={fileHref}
+            // Stop click + key bubbling so navigating to the viewer doesn't
+            // also toggle the row's expansion. The keyboard-target guard in
+            // handleKeyDown stops Enter/Space from toggling, but onClick
+            // bubbles up too — explicitly stop both.
+            onClick={(event) => event.stopPropagation()}
+            className="truncate font-mono text-xs text-foreground underline-offset-2 hover:underline focus-visible:underline"
+            title={finding.file.path}
+          >
+            {finding.file.path}
+          </Link>
+        ) : (
+          <span
+            className="truncate font-mono text-xs text-foreground"
+            title={finding.file.path}
+          >
+            {finding.file.path}
+          </span>
+        )}
         <span className="font-mono text-xs tabular-nums text-muted-foreground">
           {lineLabel}
         </span>

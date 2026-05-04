@@ -1,6 +1,6 @@
 'use client';
 
-import { useInfiniteQuery } from '@tanstack/react-query';
+import { useInfiniteQuery, useQuery } from '@tanstack/react-query';
 
 import { ApiError } from '@/lib/api/client';
 import { fetchFindings } from '@/lib/api/findings/client';
@@ -10,6 +10,7 @@ import type {
 } from '@/lib/api/findings/types';
 
 export const FINDINGS_QUERY_KEY = 'findings' as const;
+export const FINDINGS_FOR_FILE_QUERY_KEY = 'findings-for-file' as const;
 
 type UseFindingsInfiniteOptions = {
   enabled?: boolean;
@@ -56,5 +57,42 @@ export function useFindingsInfinite(
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 0,
+  });
+}
+
+/**
+ * Single-page findings query scoped to one file (used by the file viewer
+ * sidebar in T4.3). The infinite version above is the wrong shape here:
+ * a single file's findings list is small and the viewer wants a flat
+ * array, not a `pages` accumulator.
+ *
+ * The query is disabled when `scanId` is null (e.g. the viewer was
+ * opened without a `scan_id` query param). Limit is set high enough to
+ * avoid pagination — if a single file ever exceeds 200 findings, we'll
+ * surface a "load more" affordance and keep the rest of the UI sane.
+ */
+export function useFindingsForFile(
+  scanId: string | null,
+  fileId: string,
+  { enabled = true, limit = 200 }: { enabled?: boolean; limit?: number } = {},
+) {
+  return useQuery<FindingsListResponse, ApiError>({
+    enabled: enabled && scanId !== null,
+    queryFn: ({ signal }) =>
+      fetchFindings(
+        scanId as string,
+        {
+          cursor: null,
+          file_id: fileId,
+          limit,
+          scan_type: [],
+          severity: [],
+        },
+        signal,
+      ),
+    queryKey: [FINDINGS_FOR_FILE_QUERY_KEY, scanId, fileId, limit],
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 30_000,
   });
 }

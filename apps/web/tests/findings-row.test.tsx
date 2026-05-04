@@ -23,13 +23,20 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
   };
 }
 
-function Harness({ finding }: Readonly<{ finding: Finding }>) {
+const DEFAULT_FILE_HREF =
+  '/uploads/upload-1/files/file-1?scan_id=scan-1&line=42';
+
+function Harness({
+  finding,
+  fileHref = DEFAULT_FILE_HREF,
+}: Readonly<{ finding: Finding; fileHref?: string | null }>) {
   const [expanded, setExpanded] = useState(false);
   return (
     <FindingsRow
       finding={finding}
       expanded={expanded}
       onToggle={() => setExpanded((prev) => !prev)}
+      fileHref={fileHref}
     />
   );
 }
@@ -93,8 +100,30 @@ describe('<FindingsRow />', () => {
     expect(screen.queryByText('Recommendation')).not.toBeInTheDocument();
   });
 
-  it('renders the file path as non-navigable text (link arrives in T4.3)', () => {
+  it('renders the file path as a link to the viewer when fileHref is supplied', () => {
     render(<Harness finding={makeFinding()} />);
+
+    const link = screen.getByRole('link', { name: 'src/api/users.py' });
+    expect(link).toHaveAttribute('href', DEFAULT_FILE_HREF);
+  });
+
+  it('clicking the file link does not toggle row expansion', () => {
+    const onToggle = vi.fn();
+    render(
+      <FindingsRow
+        finding={makeFinding()}
+        expanded={false}
+        onToggle={onToggle}
+        fileHref={DEFAULT_FILE_HREF}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole('link', { name: 'src/api/users.py' }));
+    expect(onToggle).not.toHaveBeenCalled();
+  });
+
+  it('falls back to plain text when no fileHref is provided', () => {
+    render(<Harness finding={makeFinding()} fileHref={null} />);
 
     expect(
       screen.queryByRole('link', { name: 'src/api/users.py' }),
@@ -104,20 +133,21 @@ describe('<FindingsRow />', () => {
 
   it('does not toggle when Enter bubbles up from a focusable child', () => {
     // Regression guard: handleKeyDown must ignore events whose target is not
-    // the row itself, otherwise a future child link's Enter activation would
-    // be canceled by our preventDefault().
+    // the row itself, otherwise the file-viewer link's Enter activation
+    // would be canceled by our preventDefault().
     const onToggle = vi.fn();
     render(
       <FindingsRow
         finding={makeFinding()}
         expanded={false}
         onToggle={onToggle}
+        fileHref={DEFAULT_FILE_HREF}
       />,
     );
 
     const row = screen.getByRole('button');
-    const fileSpan = screen.getByText('src/api/users.py');
-    fireEvent.keyDown(fileSpan, {
+    const link = screen.getByRole('link', { name: 'src/api/users.py' });
+    fireEvent.keyDown(link, {
       bubbles: true,
       code: 'Enter',
       key: 'Enter',

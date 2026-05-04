@@ -153,6 +153,25 @@ List user's uploads (paginated).
 ### `DELETE /uploads/{id}`
 `204`. Cascades to files, scans, findings. Removes extracted files from disk.
 
+### `GET /uploads/{upload_id}/files/{file_id}/content`
+
+Stream the raw bytes of a single extracted file as `text/plain; charset=utf-8`. Used by the in-app file viewer (`/uploads/{upload_id}/files/{file_id}` route).
+
+Headers:
+- `Content-Type: text/plain; charset=utf-8`
+- `Content-Length: <bytes>`
+- `Cache-Control: private, max-age=60` — extracts are immutable but we keep the window short so disk-eviction races become fresh `404`s.
+
+Response `200`: file body as plain text.
+
+Errors:
+- `401 unauthorized` — no session cookie.
+- `404 not_found` — upload not owned by user, file not part of upload, `extract_path` is null, or the file is missing on disk. The endpoint never distinguishes between these cases (no enumeration — see `SECURITY.md` §3).
+- `413 payload_too_large` — file exceeds `MAX_VIEWABLE_FILE_SIZE_MB` (default 2). The viewer is a preview, not a download endpoint.
+- `415 unsupported_media_type` — file looks binary (NUL byte detected in the first 8 KiB). Frontend renders a "binary file" fallback.
+
+Path safety: `files.path` is database-controlled (worker-extracted, with the path-traversal guard in `FILE_HANDLING.md`), but the endpoint still resolves the final path and asserts containment under `extract_path` as defense in depth.
+
 ---
 
 ## Scans

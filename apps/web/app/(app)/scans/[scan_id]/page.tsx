@@ -145,7 +145,11 @@ export default function ScanProgressPage({
                 onToggleScanType={toggleScanType}
                 onClear={clearAll}
               />
-              <FindingsTable scanId={scan.id} filters={filters} />
+              <FindingsTable
+                scanId={scan.id}
+                filters={filters}
+                uploadId={scan.upload_id}
+              />
             </section>
           ) : null}
         </>
