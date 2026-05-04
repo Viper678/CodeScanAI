@@ -23,17 +23,13 @@ function makeFinding(overrides: Partial<Finding> = {}): Finding {
   };
 }
 
-function Harness({
-  finding,
-  fileHref = '/uploads/u-1/files/file-1',
-}: Readonly<{ finding: Finding; fileHref?: string }>) {
+function Harness({ finding }: Readonly<{ finding: Finding }>) {
   const [expanded, setExpanded] = useState(false);
   return (
     <FindingsRow
       finding={finding}
       expanded={expanded}
       onToggle={() => setExpanded((prev) => !prev)}
-      fileHref={fileHref}
     />
   );
 }
@@ -97,20 +93,39 @@ describe('<FindingsRow />', () => {
     expect(screen.queryByText('Recommendation')).not.toBeInTheDocument();
   });
 
-  it('clicking the file link does not toggle the row', () => {
+  it('renders the file path as non-navigable text (link arrives in T4.3)', () => {
+    render(<Harness finding={makeFinding()} />);
+
+    expect(
+      screen.queryByRole('link', { name: 'src/api/users.py' }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText('src/api/users.py').tagName).toBe('SPAN');
+  });
+
+  it('does not toggle when Enter bubbles up from a focusable child', () => {
+    // Regression guard: handleKeyDown must ignore events whose target is not
+    // the row itself, otherwise a future child link's Enter activation would
+    // be canceled by our preventDefault().
     const onToggle = vi.fn();
     render(
       <FindingsRow
         finding={makeFinding()}
         expanded={false}
         onToggle={onToggle}
-        fileHref="/uploads/u-1/files/file-1"
       />,
     );
 
-    const link = screen.getByRole('link', { name: 'src/api/users.py' });
-    expect(link).toHaveAttribute('href', '/uploads/u-1/files/file-1');
-    fireEvent.click(link);
+    const row = screen.getByRole('button');
+    const fileSpan = screen.getByText('src/api/users.py');
+    fireEvent.keyDown(fileSpan, {
+      bubbles: true,
+      code: 'Enter',
+      key: 'Enter',
+    });
     expect(onToggle).not.toHaveBeenCalled();
+
+    // sanity: the row's own Enter still toggles
+    fireEvent.keyDown(row, { code: 'Enter', key: 'Enter' });
+    expect(onToggle).toHaveBeenCalledTimes(1);
   });
 });

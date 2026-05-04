@@ -63,21 +63,15 @@ describe('<FindingsTable />', () => {
     render(
       <FindingsTable
         scanId="scan-1"
-        uploadId="upload-1"
         filters={{ file_id: null, scan_type: [], severity: [] }}
       />,
     );
 
     expect(screen.getByText('A')).toBeInTheDocument();
     expect(screen.getByText('B')).toBeInTheDocument();
-    // File path link points at /uploads/{upload_id}/files/{file_id}
-    expect(
-      screen.getByRole('link', { name: 'src/api/users.py' }),
-    ).toHaveAttribute('href', '/uploads/upload-1/files/file-1');
-    expect(screen.getByRole('link', { name: 'src/db.py' })).toHaveAttribute(
-      'href',
-      '/uploads/upload-1/files/file-2',
-    );
+    // File paths render as plain text — the file viewer route lands in T4.3.
+    expect(screen.getByText('src/api/users.py').tagName).toBe('SPAN');
+    expect(screen.getByText('src/db.py').tagName).toBe('SPAN');
     expect(screen.getByTestId('findings-count-summary')).toHaveTextContent(
       'Showing 2 of 2 findings',
     );
@@ -109,7 +103,6 @@ describe('<FindingsTable />', () => {
     render(
       <FindingsTable
         scanId="scan-1"
-        uploadId="upload-1"
         filters={{ file_id: null, scan_type: [], severity: [] }}
       />,
     );
@@ -135,7 +128,6 @@ describe('<FindingsTable />', () => {
     render(
       <FindingsTable
         scanId="scan-1"
-        uploadId="upload-1"
         filters={{ file_id: null, scan_type: [], severity: [] }}
       />,
     );
@@ -158,7 +150,6 @@ describe('<FindingsTable />', () => {
     render(
       <FindingsTable
         scanId="scan-1"
-        uploadId="upload-1"
         filters={{ file_id: null, scan_type: [], severity: [] }}
       />,
     );
@@ -186,7 +177,6 @@ describe('<FindingsTable />', () => {
     render(
       <FindingsTable
         scanId="scan-1"
-        uploadId="upload-1"
         filters={{ file_id: null, scan_type: [], severity: ['critical'] }}
       />,
     );
@@ -213,7 +203,6 @@ describe('<FindingsTable />', () => {
     render(
       <FindingsTable
         scanId="scan-1"
-        uploadId="upload-1"
         filters={{ file_id: null, scan_type: [], severity: [] }}
       />,
     );

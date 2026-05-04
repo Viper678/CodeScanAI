@@ -12,7 +12,6 @@ import type { Finding, FindingsFilters } from '@/lib/api/findings/types';
 
 type FindingsTableProps = {
   scanId: string;
-  uploadId: string;
   filters: FindingsFilters;
 };
 
@@ -27,7 +26,6 @@ type FindingsTableProps = {
  */
 export function FindingsTable({
   scanId,
-  uploadId,
   filters,
 }: Readonly<FindingsTableProps>) {
   const query = useFindingsInfinite(scanId, filters);
@@ -82,7 +80,6 @@ export function FindingsTable({
             onToggle={() =>
               setExpandedId((prev) => (prev === finding.id ? null : finding.id))
             }
-            fileHref={`/uploads/${uploadId}/files/${finding.file.id}`}
           />
         ))}
       </div>

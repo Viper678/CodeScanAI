@@ -1,7 +1,6 @@
 'use client';
 
 import { ChevronRight } from 'lucide-react';
-import Link from 'next/link';
 import { useId, type KeyboardEvent } from 'react';
 
 import { SeverityDot } from '@/components/findings/severity-dot';
@@ -19,8 +18,6 @@ type FindingsRowProps = {
   finding: Finding;
   expanded: boolean;
   onToggle: () => void;
-  /** `/uploads/{upload_id}/files/{file_id}` — link target landing in T4.3. */
-  fileHref: string;
 };
 
 /**
@@ -28,15 +25,13 @@ type FindingsRowProps = {
  *
  * The whole row is keyboard-activatable (Enter / Space toggle expansion) and
  * carries `aria-expanded` + `aria-controls` so screen readers announce the
- * disclosure state. The file path renders as a real `<Link>` inside the row;
- * we stop propagation on its click so following the link doesn't also toggle
- * the row open.
+ * disclosure state. The file path renders as plain text for now — the file
+ * viewer route lands in T4.3, at which point this becomes a `<Link>`.
  */
 export function FindingsRow({
   finding,
   expanded,
   onToggle,
-  fileHref,
 }: Readonly<FindingsRowProps>) {
   const detailsId = useId();
   const lineLabel =
@@ -47,6 +42,11 @@ export function FindingsRow({
         : String(finding.line_start);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    // Only toggle when the row itself is the focus target. Without this
+    // guard, a future focusable child (e.g. the file-viewer link landing in
+    // T4.3) would have its Enter / Space activations canceled by our
+    // preventDefault() because the keydown bubbles up to this listener.
+    if (event.target !== event.currentTarget) return;
     if (event.key === 'Enter' || event.key === ' ') {
       event.preventDefault();
       onToggle();
@@ -78,14 +78,12 @@ export function FindingsRow({
           <SeverityDot severity={finding.severity} />
           <span className="sr-only">Severity: {finding.severity}</span>
         </span>
-        <Link
-          href={fileHref}
-          onClick={(event) => event.stopPropagation()}
-          className="truncate font-mono text-xs text-foreground underline-offset-2 hover:underline"
+        <span
+          className="truncate font-mono text-xs text-foreground"
           title={finding.file.path}
         >
           {finding.file.path}
-        </Link>
+        </span>
         <span className="font-mono text-xs tabular-nums text-muted-foreground">
           {lineLabel}
         </span>
