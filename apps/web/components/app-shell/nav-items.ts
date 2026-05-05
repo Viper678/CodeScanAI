@@ -1,10 +1,10 @@
 import type { LucideIcon } from 'lucide-react';
-import { FolderUp, ScanLine, Settings } from 'lucide-react';
+import { FolderUp, ScanLine } from 'lucide-react';
 
 export type AppNavItem = {
-  href: '/scans' | '/uploads' | '/settings';
+  href: '/scans' | '/uploads';
   icon: LucideIcon;
-  label: 'Scans' | 'Uploads' | 'Settings';
+  label: 'Scans' | 'Uploads';
 };
 
 export const APP_NAV_ITEMS: AppNavItem[] = [
@@ -17,10 +17,5 @@ export const APP_NAV_ITEMS: AppNavItem[] = [
     href: '/uploads',
     icon: FolderUp,
     label: 'Uploads',
-  },
-  {
-    href: '/settings',
-    icon: Settings,
-    label: 'Settings',
   },
 ];

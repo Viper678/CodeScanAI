@@ -57,7 +57,9 @@ describe('AppShell', () => {
     ).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Scans' })).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Uploads' })).toBeInTheDocument();
-    expect(screen.getByRole('link', { name: 'Settings' })).toBeInTheDocument();
+    expect(
+      screen.queryByRole('link', { name: 'Settings' }),
+    ).not.toBeInTheDocument();
   });
 });
 

@@ -49,9 +49,6 @@ export function AppShell({ children }: Readonly<AppShellProps>) {
               </span>
               <div className={cn('hidden lg:block', collapsed && 'lg:hidden')}>
                 <p className="text-sm font-semibold">CodeScan</p>
-                <p className="text-xs text-muted-foreground">
-                  Frontend baseline
-                </p>
               </div>
             </Link>
             <button
@@ -128,13 +125,7 @@ export function AppShell({ children }: Readonly<AppShellProps>) {
         </aside>
 
         <div className="flex min-h-screen min-w-0 flex-1 flex-col">
-          <header className="flex h-16 items-center justify-between border-b border-border/80 bg-background/90 px-4 backdrop-blur lg:px-8">
-            <div>
-              <p className="text-xs font-medium uppercase tracking-[0.24em] text-muted-foreground">
-                Code intelligence
-              </p>
-              <h1 className="text-sm font-semibold">Static shell preview</h1>
-            </div>
+          <header className="flex h-16 items-center justify-end border-b border-border/80 bg-background/90 px-4 backdrop-blur lg:px-8">
             <UserMenu />
           </header>
           <main className="flex-1 px-4 py-6 lg:p-8">{children}</main>
