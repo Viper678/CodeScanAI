@@ -15,15 +15,6 @@ const SCAN_TYPE_LABEL = {
   security: 'Security',
 } as const;
 
-/**
- * Shared grid template for the findings table header + each row. The first
- * track is a fixed 2.25rem to match the row's chevron + severity-dot
- * footprint so the header labels (sr-only "Severity", then "File", "Line",
- * "Type", "Title") line up with the matching cells in each row.
- */
-export const FINDINGS_GRID_COLS =
-  'grid-cols-[2.25rem_minmax(0,2fr)_minmax(60px,80px)_minmax(0,90px)_minmax(0,3fr)]';
-
 type FindingsRowProps = {
   finding: Finding;
   expanded: boolean;
@@ -60,7 +51,7 @@ export function FindingsRow({
         ? `${finding.line_start}–${finding.line_end}`
         : String(finding.line_start);
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+  const handleKeyDown = (event: KeyboardEvent<HTMLTableRowElement>) => {
     // Only toggle when the row itself is the focus target. Without this
     // guard, a focusable child (the file-viewer link added in T4.3) would
     // have its Enter / Space activations canceled by our preventDefault()
@@ -73,8 +64,9 @@ export function FindingsRow({
   };
 
   return (
-    <div data-testid={`finding-row-${finding.id}`} className="contents">
-      <div
+    <>
+      <tr
+        data-testid={`finding-row-${finding.id}`}
         role="button"
         tabIndex={0}
         aria-expanded={expanded}
@@ -82,114 +74,124 @@ export function FindingsRow({
         onClick={onToggle}
         onKeyDown={handleKeyDown}
         className={cn(
-          'grid cursor-pointer items-center gap-3 border-b border-border/60 px-4 py-3 text-sm outline-none transition-colors hover:bg-muted/40 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/40',
-          FINDINGS_GRID_COLS,
+          'cursor-pointer border-b border-border/60 text-sm outline-none transition-colors hover:bg-muted/40 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/40',
           expanded && 'bg-muted/30',
         )}
       >
-        <span className="flex items-center gap-2">
-          <ChevronRight
-            aria-hidden="true"
-            className={cn(
-              'size-4 shrink-0 text-muted-foreground transition-transform',
-              expanded && 'rotate-90',
-            )}
-          />
-          <SeverityDot severity={finding.severity} />
-          <span className="sr-only">Severity: {finding.severity}</span>
-        </span>
-        {fileHref ? (
-          <Link
-            href={fileHref}
-            // Stop click + key bubbling so navigating to the viewer doesn't
-            // also toggle the row's expansion. The keyboard-target guard in
-            // handleKeyDown stops Enter/Space from toggling, but onClick
-            // bubbles up too — explicitly stop both.
-            onClick={(event) => event.stopPropagation()}
-            className="truncate font-mono text-xs text-foreground underline-offset-2 hover:underline focus-visible:underline"
-            title={finding.file.path}
-          >
-            {finding.file.path}
-          </Link>
-        ) : (
-          <span
-            className="truncate font-mono text-xs text-foreground"
-            title={finding.file.path}
-          >
-            {finding.file.path}
+        <td className="px-4 py-3 align-middle">
+          <span className="flex items-center gap-2">
+            <ChevronRight
+              aria-hidden="true"
+              className={cn(
+                'size-4 shrink-0 text-muted-foreground transition-transform',
+                expanded && 'rotate-90',
+              )}
+            />
+            <SeverityDot severity={finding.severity} />
+            <span className="sr-only">Severity: {finding.severity}</span>
           </span>
-        )}
-        <span className="font-mono text-xs tabular-nums text-muted-foreground">
+        </td>
+        <td className="px-4 py-3 align-middle">
+          {fileHref ? (
+            <Link
+              href={fileHref}
+              // Stop click + key bubbling so navigating to the viewer doesn't
+              // also toggle the row's expansion. The keyboard-target guard in
+              // handleKeyDown stops Enter/Space from toggling, but onClick
+              // bubbles up too — explicitly stop both.
+              onClick={(event) => event.stopPropagation()}
+              className="block truncate font-mono text-xs text-foreground underline-offset-2 hover:underline focus-visible:underline"
+              title={finding.file.path}
+            >
+              {finding.file.path}
+            </Link>
+          ) : (
+            <span
+              className="block truncate font-mono text-xs text-foreground"
+              title={finding.file.path}
+            >
+              {finding.file.path}
+            </span>
+          )}
+        </td>
+        <td className="px-4 py-3 align-middle font-mono text-xs tabular-nums text-muted-foreground">
           {lineLabel}
-        </span>
-        <span className="text-xs text-muted-foreground">
+        </td>
+        <td className="px-4 py-3 align-middle text-xs text-muted-foreground">
           {SCAN_TYPE_LABEL[finding.scan_type]}
-        </span>
-        <span className="truncate text-foreground" title={finding.title}>
-          {finding.title}
-        </span>
-      </div>
+        </td>
+        <td className="px-4 py-3 align-middle">
+          <span
+            className="block truncate text-foreground"
+            title={finding.title}
+          >
+            {finding.title}
+          </span>
+        </td>
+      </tr>
 
       {expanded ? (
-        <div
+        <tr
           id={detailsId}
           data-testid={`finding-details-${finding.id}`}
-          className="border-b border-border/60 bg-muted/10 px-12 py-4"
+          className="border-b border-border/60 bg-muted/10"
         >
-          <dl className="space-y-3 text-sm">
-            <div>
-              <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                Message
-              </dt>
-              <dd className="mt-1 whitespace-pre-wrap text-foreground">
-                {finding.message}
-              </dd>
-            </div>
-            {finding.recommendation ? (
+          <td colSpan={5} className="px-12 py-4">
+            <dl className="space-y-3 text-sm">
               <div>
                 <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Recommendation
+                  Message
                 </dt>
                 <dd className="mt-1 whitespace-pre-wrap text-foreground">
-                  {finding.recommendation}
+                  {finding.message}
                 </dd>
               </div>
-            ) : null}
-            {finding.snippet ? (
-              <div>
-                <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
-                  Snippet
-                </dt>
-                <dd className="mt-1">
-                  <SnippetViewer
-                    snippet={finding.snippet}
-                    startLine={finding.line_start}
-                    lineStart={finding.line_start}
-                    lineEnd={finding.line_end}
-                  />
-                </dd>
-              </div>
-            ) : null}
-            {finding.rule_id || finding.confidence !== null ? (
-              <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
-                {finding.rule_id ? (
-                  <span>
-                    Rule: <span className="font-mono">{finding.rule_id}</span>
-                  </span>
-                ) : null}
-                {finding.confidence !== null ? (
-                  <span>
-                    Confidence:{' '}
-                    <span className="tabular-nums">
-                      {(finding.confidence * 100).toFixed(0)}%
+              {finding.recommendation ? (
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Recommendation
+                  </dt>
+                  <dd className="mt-1 whitespace-pre-wrap text-foreground">
+                    {finding.recommendation}
+                  </dd>
+                </div>
+              ) : null}
+              {finding.snippet ? (
+                <div>
+                  <dt className="text-xs font-medium uppercase tracking-wide text-muted-foreground">
+                    Snippet
+                  </dt>
+                  <dd className="mt-1">
+                    <SnippetViewer
+                      snippet={finding.snippet}
+                      startLine={finding.line_start}
+                      lineStart={finding.line_start}
+                      lineEnd={finding.line_end}
+                    />
+                  </dd>
+                </div>
+              ) : null}
+              {finding.rule_id || finding.confidence !== null ? (
+                <div className="flex flex-wrap gap-x-6 gap-y-1 text-xs text-muted-foreground">
+                  {finding.rule_id ? (
+                    <span>
+                      Rule: <span className="font-mono">{finding.rule_id}</span>
                     </span>
-                  </span>
-                ) : null}
-              </div>
-            ) : null}
-          </dl>
-        </div>
+                  ) : null}
+                  {finding.confidence !== null ? (
+                    <span>
+                      Confidence:{' '}
+                      <span className="tabular-nums">
+                        {(finding.confidence * 100).toFixed(0)}%
+                      </span>
+                    </span>
+                  ) : null}
+                </div>
+              ) : null}
+            </dl>
+          </td>
+        </tr>
       ) : null}
-    </div>
+    </>
   );
 }

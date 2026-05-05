@@ -3,10 +3,7 @@
 import { AlertTriangle, ListFilter, Loader2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
-import {
-  FINDINGS_GRID_COLS,
-  FindingsRow,
-} from '@/components/findings/findings-row';
+import { FindingsRow } from '@/components/findings/findings-row';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ApiError } from '@/lib/api/client';
@@ -99,34 +96,54 @@ export function FindingsTable({
       data-testid="findings-table"
       className="overflow-hidden rounded-lg border border-border/80 bg-card/40"
     >
-      <header
-        className={`grid ${FINDINGS_GRID_COLS} items-center gap-3 border-b border-border/80 bg-muted/30 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground`}
-      >
-        <span className="sr-only">Severity</span>
-        <span>File</span>
-        <span>Line</span>
-        <span>Type</span>
-        <span>Title</span>
-      </header>
-
-      <div role="list" className="divide-y-0">
-        {items.map((finding) => (
-          <FindingsRow
-            key={finding.id}
-            finding={finding}
-            expanded={expandedId === finding.id}
-            onToggle={() =>
-              setExpandedId((prev) => (prev === finding.id ? null : finding.id))
-            }
-            fileHref={buildFileHref({
-              fileId: finding.file.id,
-              lineStart: finding.line_start,
-              scanId,
-              uploadId,
-            })}
-          />
-        ))}
-      </div>
+      <table className="w-full table-fixed border-collapse">
+        <colgroup>
+          <col style={{ width: '2.25rem' }} />
+          <col style={{ width: '32%' }} />
+          <col style={{ width: '80px' }} />
+          <col style={{ width: '90px' }} />
+          <col />
+        </colgroup>
+        <thead>
+          <tr className="border-b border-border/80 bg-muted/30 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground">
+            <th scope="col" className="px-4 py-2">
+              <span className="sr-only">Severity</span>
+            </th>
+            <th scope="col" className="px-4 py-2 font-medium">
+              File
+            </th>
+            <th scope="col" className="px-4 py-2 font-medium">
+              Line
+            </th>
+            <th scope="col" className="px-4 py-2 font-medium">
+              Type
+            </th>
+            <th scope="col" className="px-4 py-2 font-medium">
+              Title
+            </th>
+          </tr>
+        </thead>
+        <tbody>
+          {items.map((finding) => (
+            <FindingsRow
+              key={finding.id}
+              finding={finding}
+              expanded={expandedId === finding.id}
+              onToggle={() =>
+                setExpandedId((prev) =>
+                  prev === finding.id ? null : finding.id,
+                )
+              }
+              fileHref={buildFileHref({
+                fileId: finding.file.id,
+                lineStart: finding.line_start,
+                scanId,
+                uploadId,
+              })}
+            />
+          ))}
+        </tbody>
+      </table>
 
       <footer className="flex items-center justify-between gap-3 border-t border-border/80 bg-card/60 px-4 py-3 text-xs text-muted-foreground">
         <span data-testid="findings-count-summary">
