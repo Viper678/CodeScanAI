@@ -1,14 +1,25 @@
 'use client';
 
 import Link from 'next/link';
-import { AlertTriangle, ArrowRight, Loader2, ScanLine } from 'lucide-react';
+import { useRouter } from 'next/navigation';
+import {
+  AlertTriangle,
+  ArrowRight,
+  Loader2,
+  RotateCcw,
+  ScanLine,
+} from 'lucide-react';
+import { useState } from 'react';
 
 import { EmptyState } from '@/components/empty-state';
+import { ScansFilterBar } from '@/components/scans/scans-filter-bar';
 import { StatusPill } from '@/components/status-pill';
 import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useScansQuery } from '@/lib/api/scans/use-scans';
+import { ApiError } from '@/lib/api/client';
+import { useRerunScanMutation, useScansQuery } from '@/lib/api/scans/use-scans';
+import { useScansFilters } from '@/lib/api/scans/use-scans-filters';
 import type { ScanDetail, ScanStatus, ScanType } from '@/lib/api/scans/types';
 import { formatShortDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -28,7 +39,8 @@ const SCAN_TYPE_LABEL: Record<ScanType, string> = {
 };
 
 export default function ScansPage() {
-  const query = useScansQuery({ limit: PAGE_LIMIT });
+  const { filters, toggleStatus, clearAll } = useScansFilters();
+  const query = useScansQuery({ limit: PAGE_LIMIT, status: filters.status });
 
   return (
     <div className="space-y-8">
@@ -51,6 +63,12 @@ export default function ScansPage() {
         </Link>
       </div>
 
+      <ScansFilterBar
+        filters={filters}
+        onToggleStatus={toggleStatus}
+        onClear={clearAll}
+      />
+
       {query.isPending ? (
         <ListSkeleton label="Loading scans…" />
       ) : query.error ? (
@@ -61,15 +79,23 @@ export default function ScansPage() {
           }}
         />
       ) : query.data.items.length === 0 ? (
-        <EmptyState
-          icon={ScanLine}
-          title="No scans yet"
-          description="Create your first static scan to see findings, severity badges, and progress surfaces appear here."
-          action={{
-            href: '/scans/new',
-            label: 'Run your first scan',
-          }}
-        />
+        filters.status.length > 0 ? (
+          <EmptyState
+            icon={ScanLine}
+            title="No scans match these filters"
+            description="Try clearing the status filter to see your full scan history."
+          />
+        ) : (
+          <EmptyState
+            icon={ScanLine}
+            title="No scans yet"
+            description="Create your first static scan to see findings, severity badges, and progress surfaces appear here."
+            action={{
+              href: '/scans/new',
+              label: 'Run your first scan',
+            }}
+          />
+        )
       ) : (
         <ScansList items={query.data.items} total={query.data.total} />
       )}
@@ -105,54 +131,132 @@ type ScanRowProps = {
   scan: ScanDetail;
 };
 
+/**
+ * Map a re-run failure to a tight inline message. The two we surface
+ * differently are 422 with `unprocessable_rerun` (source can't be replayed —
+ * either no scan_files at all or every file vanished) and the generic
+ * fall-through. Network / 500s use the API-provided message.
+ */
+function rerunErrorText(err: ApiError): string {
+  if (err.code === 'unprocessable_rerun') {
+    return 'Source can no longer be re-run (files removed).';
+  }
+  return err.message || 'Could not re-run this scan.';
+}
+
 function ScanRow({ scan }: Readonly<ScanRowProps>) {
+  const router = useRouter();
   const isTerminal = TERMINAL.has(scan.status);
   const progressText = isTerminal
     ? '—'
     : `${scan.progress_done} / ${scan.progress_total}`;
   const dateIso = scan.created_at;
 
+  // Local error surface — kept per-row so a failure on one re-run doesn't
+  // wipe inline errors on a sibling row mid-toast-style.
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const rerun = useRerunScanMutation();
+
+  // Terminal-only: re-running a pending/running scan is a no-op intent and
+  // would race the worker — same rule the API would gladly enforce, but
+  // keeping the button hidden keeps the UI honest.
+  const canRerun = isTerminal;
+
+  const handleRerun = (e: React.MouseEvent<HTMLButtonElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setErrorText(null);
+    rerun.mutate(scan.id, {
+      onError: (err) => {
+        setErrorText(rerunErrorText(err));
+      },
+      onSuccess: (data) => {
+        router.push(`/scans/${data.id}`);
+      },
+    });
+  };
+
   return (
-    <Link
-      href={`/scans/${scan.id}`}
-      data-testid={`scan-row-${scan.id}`}
-      className={cn(
-        'flex items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3',
-        'transition-colors hover:border-border hover:bg-card focus-visible:outline-none',
-        'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-      )}
-    >
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          <ScanLine className="size-4" aria-hidden="true" />
-        </span>
+    <div className="space-y-1">
+      <div
+        data-testid={`scan-row-${scan.id}`}
+        className={cn(
+          'group/row relative flex items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3',
+          'transition-colors hover:border-border hover:bg-card',
+          'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2',
+        )}
+      >
+        {/*
+          The row's main click target is the link to the progress page. We
+          can't nest a button inside an anchor (invalid HTML), so the link
+          is laid out as an absolute overlay with the action button rendered
+          above it via z-index — same pattern shadcn / radix recommends.
+        */}
+        <Link
+          href={`/scans/${scan.id}`}
+          aria-label={`Open scan ${scan.name ?? 'Unnamed scan'}`}
+          className="absolute inset-0 rounded-2xl focus:outline-none"
+        />
         <div className="flex min-w-0 items-center gap-3">
-          <p className="truncate text-sm font-medium text-foreground">
-            {scan.name ?? 'Unnamed scan'}
-          </p>
-          <StatusPill status={scan.status} />
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <ScanLine className="size-4" aria-hidden="true" />
+          </span>
+          <div className="flex min-w-0 items-center gap-3">
+            <p className="truncate text-sm font-medium text-foreground">
+              {scan.name ?? 'Unnamed scan'}
+            </p>
+            <StatusPill status={scan.status} />
+          </div>
         </div>
-      </div>
-      <div className="flex shrink-0 items-center gap-3">
-        <div className="hidden items-center gap-1.5 md:flex">
-          {scan.scan_types.map((type) => (
-            <Badge
-              key={type}
+        <div className="relative z-10 flex shrink-0 items-center gap-3">
+          <div className="hidden items-center gap-1.5 md:flex">
+            {scan.scan_types.map((type) => (
+              <Badge
+                key={type}
+                variant="outline"
+                className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide"
+              >
+                {SCAN_TYPE_LABEL[type]}
+              </Badge>
+            ))}
+          </div>
+          <span className="hidden text-xs tabular-nums text-muted-foreground md:inline">
+            {progressText}
+          </span>
+          <span className="hidden whitespace-nowrap text-xs text-muted-foreground md:inline">
+            {formatShortDate(dateIso)}
+          </span>
+          {canRerun ? (
+            <Button
+              type="button"
               variant="outline"
-              className="rounded-full px-2 py-0.5 text-[10px] uppercase tracking-wide"
+              size="sm"
+              data-testid={`scan-row-${scan.id}-rerun`}
+              onClick={handleRerun}
+              disabled={rerun.isPending}
+              aria-label={`Re-run ${scan.name ?? 'scan'}`}
+              className="h-7 gap-1 px-2 text-xs"
             >
-              {SCAN_TYPE_LABEL[type]}
-            </Badge>
-          ))}
+              {rerun.isPending ? (
+                <Loader2 className="size-3 animate-spin" aria-hidden="true" />
+              ) : (
+                <RotateCcw className="size-3" aria-hidden="true" />
+              )}
+              Re-run
+            </Button>
+          ) : null}
         </div>
-        <span className="hidden text-xs tabular-nums text-muted-foreground md:inline">
-          {progressText}
-        </span>
-        <span className="hidden whitespace-nowrap text-xs text-muted-foreground md:inline">
-          {formatShortDate(dateIso)}
-        </span>
       </div>
-    </Link>
+      {errorText ? (
+        <p
+          data-testid={`scan-row-${scan.id}-rerun-error`}
+          role="alert"
+          className="px-1 text-xs text-red-600 dark:text-red-300"
+        >
+          {errorText}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

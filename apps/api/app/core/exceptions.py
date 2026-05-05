@@ -105,3 +105,19 @@ class ScanCancelConflict(AppError):
     error_code = "conflict"
     status_code = 409
     message = "Cannot cancel scan in current state"
+
+
+class UnprocessableRerun(AppError):
+    """Re-run requested on a scan whose source state can't be reconstructed.
+
+    Surfaced by ``POST /scans/{id}/rerun`` when the source upload was deleted
+    (cascade) or the source ``scan_files`` no longer point at any file the
+    user can read (e.g. the upload was wiped or a row was orphaned). 422 keeps
+    the ``GET /scans/{id}`` ownership check honest (we never reveal whether the
+    source id exists for a different user) while still letting the UI surface a
+    distinct error from a generic validation failure.
+    """
+
+    error_code = "unprocessable_rerun"
+    status_code = 422
+    message = "Cannot re-run scan"

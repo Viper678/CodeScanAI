@@ -5,7 +5,12 @@ import { buttonVariants } from '@/components/ui/button';
 import { cn } from '@/lib/utils';
 
 type EmptyStateProps = {
-  action: {
+  /**
+   * Optional CTA. Omit when the empty state is purely informational —
+   * e.g. a filter-driven "no rows match" surface where the only fix is
+   * to toggle the filter chip the user is already looking at.
+   */
+  action?: {
     href: string;
     label: string;
   };
@@ -30,15 +35,17 @@ export function EmptyState({
         <p className="mt-3 max-w-md text-sm leading-6 text-muted-foreground">
           {description}
         </p>
-        <Link
-          href={action.href}
-          className={cn(
-            buttonVariants({ size: 'lg' }),
-            'mt-8 bg-primary text-primary-foreground hover:bg-primary/90',
-          )}
-        >
-          {action.label}
-        </Link>
+        {action ? (
+          <Link
+            href={action.href}
+            className={cn(
+              buttonVariants({ size: 'lg' }),
+              'mt-8 bg-primary text-primary-foreground hover:bg-primary/90',
+            )}
+          >
+            {action.label}
+          </Link>
+        ) : null}
       </div>
     </section>
   );

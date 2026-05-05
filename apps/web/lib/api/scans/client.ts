@@ -66,18 +66,23 @@ export async function cancelScan(scanId: string): Promise<ScanDetail> {
 type FetchScansParams = {
   limit?: number;
   offset?: number;
-  status?: ScanStatus;
+  /**
+   * Multi-select status filter. Sent as a comma-joined value on the wire
+   * (`?status=running,completed`) per docs/API.md §`GET /scans`. Empty array
+   * → param is dropped so the server returns the unfiltered set. Mirrors
+   * the findings-client's filter shape so the two filter surfaces stay
+   * structurally identical.
+   */
+  status?: ScanStatus[];
   upload_id?: string;
 };
 
 /**
  * GET `/scans?limit=&offset=&status=&upload_id=` — paginated index of the
- * current user's scans. Filter params are plumbed through but no UI uses
- * them yet; they exist so the next iteration (filter chips) can wire up
- * without re-touching the client. Server caps `limit` to 1..100.
+ * current user's scans. Server caps `limit` to 1..100.
  */
 export async function fetchScans(
-  { limit = 20, offset = 0, status, upload_id }: FetchScansParams = {},
+  { limit = 20, offset = 0, status = [], upload_id }: FetchScansParams = {},
   signal?: AbortSignal,
 ): Promise<ScanListResponse> {
   const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
@@ -86,10 +91,23 @@ export async function fetchScans(
     limit: String(safeLimit),
     offset: String(safeOffset),
   });
-  if (status) params.set('status', status);
+  if (status.length > 0) params.set('status', status.join(','));
   if (upload_id) params.set('upload_id', upload_id);
   return apiFetch<ScanListResponse>(`/scans?${params.toString()}`, {
     method: 'GET',
     signal,
+  });
+}
+
+/**
+ * POST `/scans/{id}/rerun` — kick off a new scan with the same inputs as
+ * the source. Server reconstructs `file_ids`, `scan_types`, and the keywords
+ * config from the source row and returns the **new** scan's id (`202`).
+ * See docs/API.md §`POST /scans/{id}/rerun`.
+ */
+export async function rerunScan(scanId: string): Promise<ScanCreateResponse> {
+  return apiFetch<ScanCreateResponse>(`/scans/${scanId}/rerun`, {
+    csrf: true,
+    method: 'POST',
   });
 }

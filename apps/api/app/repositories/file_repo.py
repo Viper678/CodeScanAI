@@ -78,6 +78,34 @@ class FileRepo(BaseRepo[File]):
         )
         return int(result.scalar_one())
 
+    async def filter_existing_for_upload(
+        self,
+        *,
+        file_ids: Sequence[UUID],
+        upload_id: UUID,
+        user_id: UUID,
+    ) -> list[UUID]:
+        """Return the subset of ``file_ids`` that still exist on this upload.
+
+        Used by the re-run flow: a source scan may reference files that have
+        since been removed (e.g. an upload-level cleanup) — we want to launch
+        the new scan with whatever's still scannable rather than 403'ing the
+        whole request because of a stale id.
+        """
+
+        if not file_ids:
+            return []
+        result = await self.session.execute(
+            select(File.id)
+            .join(Upload, Upload.id == File.upload_id)
+            .where(
+                File.id.in_(list(file_ids)),
+                File.upload_id == upload_id,
+                Upload.user_id == user_id,
+            )
+        )
+        return [row for row in result.scalars().all()]
+
     async def list_for_upload(
         self,
         *,

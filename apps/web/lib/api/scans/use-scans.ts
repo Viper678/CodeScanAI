@@ -10,6 +10,7 @@ import {
   fetchScan,
   fetchScanFiles,
   fetchScans,
+  rerunScan,
 } from '@/lib/api/scans/client';
 import type {
   ScanCreateRequest,
@@ -150,22 +151,31 @@ export function useCancelScanMutation(scanId: string | null) {
 type UseScansQueryParams = {
   limit?: number;
   offset?: number;
-  status?: ScanStatus;
+  /**
+   * Multi-select status filter. Comma-joined on the wire, so the cache key
+   * sorts before joining to keep the key stable across array order. Empty
+   * array → no filter.
+   */
+  status?: ScanStatus[];
   upload_id?: string;
 };
 
 /**
- * One-shot fetch for `GET /scans`. The `/scans` index renders a single page
- * of rows; pagination + filter UI is the next iteration. The hook does not
- * poll. Mirrors the surface of the other read hooks in this file
- * (`staleTime: 0`, `retry: false`, no focus refetch).
+ * One-shot fetch for `GET /scans`. The hook does not poll. Mirrors the
+ * surface of the other read hooks in this file (`staleTime: 0`,
+ * `retry: false`, no focus refetch). Filters land via
+ * `useScansFilters` → `?status=` and are forwarded as a comma-joined value
+ * by `fetchScans`.
  */
 export function useScansQuery({
   limit = 20,
   offset = 0,
-  status,
+  status = [],
   upload_id,
 }: UseScansQueryParams = {}) {
+  // Sort the status tuple so [running, completed] and [completed, running]
+  // share a cache entry — the server treats them as the same filter.
+  const statusKey = [...status].sort().join(',');
   return useQuery<ScanListResponse, ApiError>({
     queryFn: ({ signal }) =>
       fetchScans({ limit, offset, status, upload_id }, signal),
@@ -173,11 +183,29 @@ export function useScansQuery({
       SCANS_LIST_QUERY_KEY,
       limit,
       offset,
-      status ?? null,
+      statusKey,
       upload_id ?? null,
     ],
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 0,
+  });
+}
+
+/**
+ * Mutation wrapper around `POST /scans/{id}/rerun`. On success, invalidates
+ * the listing cache so the new scan appears as soon as the user returns to
+ * `/scans`. Caller routes to `/scans/{new_id}` on the resolved response so
+ * the T3.6 progress page takes over.
+ */
+export function useRerunScanMutation() {
+  const queryClient = useQueryClient();
+  return useMutation<ScanCreateResponse, ApiError, string>({
+    mutationFn: (sourceScanId: string) => rerunScan(sourceScanId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [SCANS_LIST_QUERY_KEY],
+      });
+    },
   });
 }

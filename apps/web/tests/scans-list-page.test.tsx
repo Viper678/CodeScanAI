@@ -1,17 +1,40 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import ScansPage from '@/app/(app)/scans/page';
 import { ApiError } from '@/lib/api/auth/errors';
 import type { ScanDetail, ScanListResponse } from '@/lib/api/scans/types';
 
-const { useScansQueryMock } = vi.hoisted(() => ({
-  useScansQueryMock: vi.fn(),
+const {
+  pushMock,
+  rerunScanMock,
+  useRerunScanMutationMock,
+  useScansFiltersMock,
+  useScansQueryMock,
+} = vi.hoisted(() => {
+  return {
+    pushMock: vi.fn(),
+    rerunScanMock: vi.fn(),
+    useRerunScanMutationMock: vi.fn(),
+    useScansFiltersMock: vi.fn(),
+    useScansQueryMock: vi.fn(),
+  };
+});
+
+vi.mock('next/navigation', () => ({
+  usePathname: () => '/scans',
+  useRouter: () => ({ push: pushMock, replace: vi.fn() }),
+  useSearchParams: () => new URLSearchParams(),
 }));
 
 vi.mock('@/lib/api/scans/use-scans', () => ({
-  useScansQuery: () => useScansQueryMock(),
+  useRerunScanMutation: () => useRerunScanMutationMock(),
+  useScansQuery: (params: unknown) => useScansQueryMock(params),
+}));
+
+vi.mock('@/lib/api/scans/use-scans-filters', () => ({
+  useScansFilters: () => useScansFiltersMock(),
 }));
 
 function makeScan(overrides: Partial<ScanDetail> = {}): ScanDetail {
@@ -46,8 +69,37 @@ function makeListResult(items: ScanDetail[]): {
   };
 }
 
+function setUpFilters(status: string[] = []) {
+  useScansFiltersMock.mockReturnValue({
+    clearAll: vi.fn(),
+    filters: { status },
+    setFilters: vi.fn(),
+    toggleStatus: vi.fn(),
+  });
+}
+
+function setUpRerunMutation(impl?: {
+  isPending?: boolean;
+  mutate?: typeof rerunScanMock;
+}) {
+  useRerunScanMutationMock.mockReturnValue({
+    isPending: impl?.isPending ?? false,
+    mutate: impl?.mutate ?? rerunScanMock,
+  });
+}
+
 describe('ScansPage', () => {
-  it('renders a row per scan and links to the progress page', () => {
+  beforeEach(() => {
+    pushMock.mockReset();
+    rerunScanMock.mockReset();
+    useRerunScanMutationMock.mockReset();
+    useScansFiltersMock.mockReset();
+    useScansQueryMock.mockReset();
+  });
+
+  it('renders a row per scan', () => {
+    setUpFilters();
+    setUpRerunMutation();
     useScansQueryMock.mockReturnValue(
       makeListResult([
         makeScan({ id: 's-1', name: 'Repo audit' }),
@@ -67,18 +119,125 @@ describe('ScansPage', () => {
     expect(screen.getByText('Unnamed scan')).toBeInTheDocument();
 
     const firstRow = screen.getByTestId('scan-row-s-1');
-    expect(firstRow).toHaveAttribute('href', '/scans/s-1');
-    expect(screen.getByTestId('scan-row-s-2')).toHaveAttribute(
-      'href',
-      '/scans/s-2',
-    );
+    // Open-link is now an absolute overlay anchor inside the row, not the
+    // row itself — assert the anchor is present and points at the right id.
+    expect(firstRow.querySelector(`a[href="/scans/s-1"]`)).toBeInTheDocument();
+    const secondRow = screen.getByTestId('scan-row-s-2');
+    expect(secondRow.querySelector(`a[href="/scans/s-2"]`)).toBeInTheDocument();
 
     // Non-terminal shows the progress text; terminal shows '—'.
     expect(firstRow).toHaveTextContent('47 / 312');
-    expect(screen.getByTestId('scan-row-s-2')).toHaveTextContent('—');
+    expect(secondRow).toHaveTextContent('—');
+  });
+
+  it('only shows the Re-run button on terminal-status rows', () => {
+    setUpFilters();
+    setUpRerunMutation();
+    useScansQueryMock.mockReturnValue(
+      makeListResult([
+        makeScan({ id: 's-pending', status: 'pending' }),
+        makeScan({ id: 's-running', status: 'running' }),
+        makeScan({ id: 's-completed', status: 'completed' }),
+        makeScan({ id: 's-failed', status: 'failed' }),
+        makeScan({ id: 's-cancelled', status: 'cancelled' }),
+      ]),
+    );
+
+    render(<ScansPage />);
+
+    expect(
+      screen.queryByTestId('scan-row-s-pending-rerun'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByTestId('scan-row-s-running-rerun'),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByTestId('scan-row-s-completed-rerun'),
+    ).toBeInTheDocument();
+    expect(screen.getByTestId('scan-row-s-failed-rerun')).toBeInTheDocument();
+    expect(
+      screen.getByTestId('scan-row-s-cancelled-rerun'),
+    ).toBeInTheDocument();
+  });
+
+  it('calls the re-run mutation and routes to the new scan on success', async () => {
+    setUpFilters();
+    const mutate = vi.fn(
+      (
+        sourceId: string,
+        opts?: {
+          onSuccess?: (data: { id: string }) => void;
+          onError?: (err: ApiError) => void;
+        },
+      ) => {
+        // Simulate a successful 202 with a brand-new scan id.
+        opts?.onSuccess?.({ id: `${sourceId}-rerun` });
+      },
+    );
+    setUpRerunMutation({ mutate });
+    useScansQueryMock.mockReturnValue(
+      makeListResult([makeScan({ id: 's-1', status: 'completed' })]),
+    );
+
+    render(<ScansPage />);
+
+    fireEvent.click(screen.getByTestId('scan-row-s-1-rerun'));
+
+    expect(mutate).toHaveBeenCalledTimes(1);
+    expect(mutate.mock.calls[0]![0]).toBe('s-1');
+    await waitFor(() => {
+      expect(pushMock).toHaveBeenCalledWith('/scans/s-1-rerun');
+    });
+  });
+
+  it('surfaces an inline error when the re-run mutation fails with unprocessable_rerun', async () => {
+    setUpFilters();
+    const mutate = vi.fn(
+      (
+        _sourceId: string,
+        opts?: {
+          onSuccess?: (data: { id: string }) => void;
+          onError?: (err: ApiError) => void;
+        },
+      ) => {
+        opts?.onError?.(
+          new ApiError(422, 'unprocessable_rerun', 'no scannable files'),
+        );
+      },
+    );
+    setUpRerunMutation({ mutate });
+    useScansQueryMock.mockReturnValue(
+      makeListResult([makeScan({ id: 's-1', status: 'failed' })]),
+    );
+
+    render(<ScansPage />);
+
+    fireEvent.click(screen.getByTestId('scan-row-s-1-rerun'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('scan-row-s-1-rerun-error')).toHaveTextContent(
+        /source can no longer be re-run/i,
+      );
+    });
+    // No navigation on failure.
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it('forwards the active status filter into the scans query', () => {
+    setUpFilters(['running', 'completed']);
+    setUpRerunMutation();
+    useScansQueryMock.mockReturnValue(makeListResult([]));
+
+    render(<ScansPage />);
+
+    const lastCall =
+      useScansQueryMock.mock.calls[useScansQueryMock.mock.calls.length - 1]!;
+    expect(lastCall[0]).toMatchObject({ status: ['running', 'completed'] });
   });
 
   it('renders the EmptyState when the response has zero items', () => {
+    setUpFilters();
+    setUpRerunMutation();
     useScansQueryMock.mockReturnValue(makeListResult([]));
 
     render(<ScansPage />);
@@ -91,7 +250,26 @@ describe('ScansPage', () => {
     ).toBeInTheDocument();
   });
 
+  it('renders a filter-specific empty state when filters are active and no rows match', () => {
+    setUpFilters(['failed']);
+    setUpRerunMutation();
+    useScansQueryMock.mockReturnValue(makeListResult([]));
+
+    render(<ScansPage />);
+
+    expect(
+      screen.getByRole('heading', { name: 'No scans match these filters' }),
+    ).toBeInTheDocument();
+    // Should not offer the "Run your first scan" CTA — they have history,
+    // they just filtered it out.
+    expect(
+      screen.queryByRole('link', { name: 'Run your first scan' }),
+    ).not.toBeInTheDocument();
+  });
+
   it('shows the loading skeleton while pending', () => {
+    setUpFilters();
+    setUpRerunMutation();
     useScansQueryMock.mockReturnValue({
       data: undefined,
       error: null,
@@ -105,6 +283,8 @@ describe('ScansPage', () => {
   });
 
   it('renders the error panel with a Retry button on error', () => {
+    setUpFilters();
+    setUpRerunMutation();
     useScansQueryMock.mockReturnValue({
       data: undefined,
       error: new ApiError(500, 'server_error', 'Boom.'),

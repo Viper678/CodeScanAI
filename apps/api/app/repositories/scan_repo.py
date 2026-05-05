@@ -7,6 +7,7 @@ ownership scoping is a direct WHERE clause (no JOIN needed).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 from uuid import UUID
 
@@ -30,12 +31,12 @@ class ScanRepo(BaseRepo[Scan]):
         user_id: UUID,
         limit: int = 20,
         offset: int = 0,
-        status: str | None = None,
+        statuses: Sequence[str] | None = None,
         upload_id: UUID | None = None,
     ) -> list[Scan]:
         statement = select(Scan).where(Scan.user_id == user_id)
-        if status is not None:
-            statement = statement.where(Scan.status == status)
+        if statuses:
+            statement = statement.where(Scan.status.in_(list(statuses)))
         if upload_id is not None:
             statement = statement.where(Scan.upload_id == upload_id)
         statement = (
@@ -48,12 +49,12 @@ class ScanRepo(BaseRepo[Scan]):
         self,
         *,
         user_id: UUID,
-        status: str | None = None,
+        statuses: Sequence[str] | None = None,
         upload_id: UUID | None = None,
     ) -> int:
         statement = select(func.count()).select_from(Scan).where(Scan.user_id == user_id)
-        if status is not None:
-            statement = statement.where(Scan.status == status)
+        if statuses:
+            statement = statement.where(Scan.status.in_(list(statuses)))
         if upload_id is not None:
             statement = statement.where(Scan.upload_id == upload_id)
         result = await self.session.execute(statement)

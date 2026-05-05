@@ -38,6 +38,9 @@ from app.schemas.scan import (
 
 _VALID_SEVERITIES: frozenset[str] = frozenset({"critical", "high", "medium", "low", "info"})
 _VALID_SCAN_TYPES: frozenset[str] = frozenset({"security", "bugs", "keywords"})
+_VALID_SCAN_STATUSES: frozenset[str] = frozenset(
+    {"pending", "running", "completed", "failed", "cancelled"}
+)
 
 # CSV columns in the order documented in docs/API.md §"GET /scans/{id}/export".
 CSV_COLUMNS: tuple[str, ...] = (
@@ -82,6 +85,18 @@ def parse_severity_param(raw: str | None) -> list[str]:
 
 def parse_scan_type_param(raw: str | None) -> list[str]:
     return _parse_csv_param(raw, allowed=_VALID_SCAN_TYPES, param="scan_type")
+
+
+def parse_scan_status_param(raw: str | None) -> list[str]:
+    """Validate the ``?status=`` filter on ``GET /scans``.
+
+    Accepts a comma-separated list of ``ScanStatus`` literals (``pending``,
+    ``running``, ``completed``, ``failed``, ``cancelled``). Same shape as the
+    findings ``severity`` / ``scan_type`` filters: empty / missing → no filter,
+    unknown token → 422.
+    """
+
+    return _parse_csv_param(raw, allowed=_VALID_SCAN_STATUSES, param="status")
 
 
 def encode_cursor(row: FindingRow) -> str:
