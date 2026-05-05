@@ -157,6 +157,66 @@ describe('<FindingsSidebar />', () => {
     expect(screen.getByText('Findings (1)')).toBeInTheDocument();
   });
 
+  it('toggles an inline details panel showing message and recommendation on click', () => {
+    const finding = makeFinding({
+      id: 'f-a',
+      message: 'String concatenation in SQL allows injection.',
+      recommendation: 'Use parameterized queries.',
+      rule_id: 'CWE-89',
+      title: 'A',
+    });
+    render(
+      <FindingsSidebar
+        findings={[finding]}
+        total={1}
+        selectedId={null}
+        onSelect={vi.fn()}
+        isLoading={false}
+        hasScanContext={true}
+      />,
+    );
+
+    const button = screen.getByTestId('sidebar-item-f-a');
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('sidebar-details-f-a')).not.toBeInTheDocument();
+
+    fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'true');
+    const details = screen.getByTestId('sidebar-details-f-a');
+    expect(details).toHaveTextContent(
+      'String concatenation in SQL allows injection.',
+    );
+    expect(details).toHaveTextContent('Use parameterized queries.');
+    expect(details).toHaveTextContent('CWE-89');
+
+    fireEvent.click(button);
+    expect(button).toHaveAttribute('aria-expanded', 'false');
+    expect(screen.queryByTestId('sidebar-details-f-a')).not.toBeInTheDocument();
+  });
+
+  it('keeps only one row expanded at a time', () => {
+    render(
+      <FindingsSidebar
+        findings={[
+          makeFinding({ id: 'f-a', message: 'Msg A', title: 'A' }),
+          makeFinding({ id: 'f-b', message: 'Msg B', title: 'B' }),
+        ]}
+        total={2}
+        selectedId={null}
+        onSelect={vi.fn()}
+        isLoading={false}
+        hasScanContext={true}
+      />,
+    );
+
+    fireEvent.click(screen.getByTestId('sidebar-item-f-a'));
+    expect(screen.getByTestId('sidebar-details-f-a')).toBeInTheDocument();
+
+    fireEvent.click(screen.getByTestId('sidebar-item-f-b'));
+    expect(screen.queryByTestId('sidebar-details-f-a')).not.toBeInTheDocument();
+    expect(screen.getByTestId('sidebar-details-f-b')).toBeInTheDocument();
+  });
+
   it('renders an em-dash when line_start is null', () => {
     render(
       <FindingsSidebar

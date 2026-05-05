@@ -15,6 +15,15 @@ const SCAN_TYPE_LABEL = {
   security: 'Security',
 } as const;
 
+/**
+ * Shared grid template for the findings table header + each row. The first
+ * track is a fixed 2.25rem to match the row's chevron + severity-dot
+ * footprint so the header labels (sr-only "Severity", then "File", "Line",
+ * "Type", "Title") line up with the matching cells in each row.
+ */
+export const FINDINGS_GRID_COLS =
+  'grid-cols-[2.25rem_minmax(0,2fr)_minmax(60px,80px)_minmax(0,90px)_minmax(0,3fr)]';
+
 type FindingsRowProps = {
   finding: Finding;
   expanded: boolean;
@@ -73,7 +82,8 @@ export function FindingsRow({
         onClick={onToggle}
         onKeyDown={handleKeyDown}
         className={cn(
-          'grid cursor-pointer grid-cols-[auto_minmax(0,2fr)_minmax(0,4ch)_minmax(0,90px)_minmax(0,3fr)] items-center gap-3 border-b border-border/60 px-4 py-3 text-sm outline-none transition-colors hover:bg-muted/40 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/40',
+          'grid cursor-pointer items-center gap-3 border-b border-border/60 px-4 py-3 text-sm outline-none transition-colors hover:bg-muted/40 focus-visible:bg-muted/60 focus-visible:ring-2 focus-visible:ring-ring/40',
+          FINDINGS_GRID_COLS,
           expanded && 'bg-muted/30',
         )}
       >

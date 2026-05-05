@@ -133,7 +133,7 @@ export function FileViewerPage({
     <div className="flex h-[calc(100vh-4rem)] flex-col">
       <ViewerHeader filename={headerPath} scanId={scanId} />
       <div className="grid min-h-0 flex-1 grid-cols-1 lg:grid-cols-[minmax(0,1fr)_320px]">
-        <div className="min-h-0 overflow-hidden border-t border-border/60">
+        <div className="h-full min-h-0 overflow-hidden border-t border-border/60">
           <ViewerBody
             content={contentQuery.data}
             error={contentQuery.error}
@@ -144,7 +144,7 @@ export function FileViewerPage({
             onMarkerClick={handleGutterClick}
           />
         </div>
-        <div className="min-h-0 border-t border-border/60">
+        <div className="h-full min-h-0 border-t border-border/60">
           <FindingsSidebar
             findings={findings}
             total={findingsQuery.data?.total ?? null}

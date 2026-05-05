@@ -10,7 +10,7 @@ export default function RegisterPage() {
     <AuthFormCard
       mode="register"
       title="Create your account"
-      description="Use a 12+ character password. You can change your email later from settings."
+      description="Use a 12+ character password."
       submitLabel="Create account"
       alternateHref="/login"
       alternateLabel="Sign in"

@@ -3,7 +3,10 @@
 import { AlertTriangle, ListFilter, Loader2 } from 'lucide-react';
 import { useMemo, useState } from 'react';
 
-import { FindingsRow } from '@/components/findings/findings-row';
+import {
+  FINDINGS_GRID_COLS,
+  FindingsRow,
+} from '@/components/findings/findings-row';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ApiError } from '@/lib/api/client';
@@ -96,7 +99,9 @@ export function FindingsTable({
       data-testid="findings-table"
       className="overflow-hidden rounded-lg border border-border/80 bg-card/40"
     >
-      <header className="grid grid-cols-[auto_minmax(0,2fr)_minmax(0,4ch)_minmax(0,90px)_minmax(0,3fr)] items-center gap-3 border-b border-border/80 bg-muted/30 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground">
+      <header
+        className={`grid ${FINDINGS_GRID_COLS} items-center gap-3 border-b border-border/80 bg-muted/30 px-4 py-2 text-xs font-medium uppercase tracking-wide text-muted-foreground`}
+      >
         <span className="sr-only">Severity</span>
         <span>File</span>
         <span>Line</span>
