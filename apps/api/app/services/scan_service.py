@@ -10,6 +10,7 @@ the resource and the row-level state machine surfaced by ``cancel`` /
 from __future__ import annotations
 
 import logging
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from typing import Protocol, cast
 from uuid import UUID
@@ -23,6 +24,7 @@ from app.core.exceptions import (
     QueueUnavailable,
     ScanCancelConflict,
     ScanFilesForbidden,
+    UnprocessableRerun,
 )
 from app.models.scan import (
     SCAN_STATUS_CANCELLED,
@@ -38,6 +40,7 @@ from app.repositories.scan_file_repo import ScanFileRepo
 from app.repositories.scan_repo import ScanRepo
 from app.repositories.upload_repo import UploadRepo
 from app.schemas.scan import (
+    KeywordsConfig,
     ScanCreateRequest,
     ScanDetail,
     ScanFileItem,
@@ -149,19 +152,19 @@ class ScanService:
         user_id: UUID,
         limit: int,
         offset: int,
-        status: str | None,
+        statuses: Sequence[str] | None,
         upload_id: UUID | None,
     ) -> ScanListResponse:
         rows = await self.scans.list_for_user(
             user_id=user_id,
             limit=limit,
             offset=offset,
-            status=status,
+            statuses=statuses,
             upload_id=upload_id,
         )
         total = await self.scans.count_for_user(
             user_id=user_id,
-            status=status,
+            statuses=statuses,
             upload_id=upload_id,
         )
         items: list[ScanDetail] = []
@@ -227,6 +230,91 @@ class ScanService:
 
         summary = await self._build_summary(scan_id=scan.id)
         return _scan_to_detail(scan, summary)
+
+    async def rerun_scan(
+        self,
+        *,
+        scan_id: UUID,
+        user_id: UUID,
+        max_files_per_scan: int,
+    ) -> Scan:
+        """Reconstruct a scan's inputs from its source row and create a new one.
+
+        Why a dedicated server-side path (vs. the client GETting the source
+        and POSTing /scans):
+
+        - ``ScanDetail`` doesn't expose ``file_ids`` or the keywords blob —
+          and surfacing 500+ ids over the wire just to immediately bounce them
+          back is the wrong shape.
+        - One round-trip is atomic; the client double-roundtrip leaks a window
+          where the source upload could be deleted between fetch and POST.
+        - Same Celery enqueue + ownership validation path as ``create_scan``
+          so we don't get two competing definitions of "valid scan request".
+
+        Behavior:
+
+        1. Load the source scan; 404 if missing or owned by someone else.
+        2. Re-derive ``file_ids`` from ``scan_files`` for the source.
+        3. Filter that list down to file ids that *still* exist on the upload
+           (cleanup may have removed individual files since the source ran).
+        4. If nothing's left, raise ``UnprocessableRerun`` — a 422 the UI can
+           map to a friendly "the source has no scannable files anymore"
+           message instead of a generic validation error.
+        5. Build a ``ScanCreateRequest`` from the source's ``scan_types`` /
+           ``keywords`` / ``model_settings`` and delegate to ``create_scan``,
+           which does the rest (file-count cap, ownership re-check, persist,
+           enqueue).
+
+        Note: the ``upload_id`` FK is ``ON DELETE CASCADE``, so a deleted
+        upload also wipes the source scan — which means step 1 already 404s
+        for that case. ``UnprocessableRerun`` is reachable only via the
+        scan-files-still-pointing-at-no-files path.
+        """
+
+        source = await self.scans.get_by_id(scan_id, user_id=user_id)
+        if source is None:
+            raise NotFound("Scan not found")
+
+        scan_file_rows = await self.scan_files.list_for_scan(
+            scan_id=source.id,
+            user_id=user_id,
+        )
+        source_file_ids = [row.file_id for row in scan_file_rows]
+        if not source_file_ids:
+            # Source has no scan_files at all — nothing to re-run against.
+            raise UnprocessableRerun("source scan has no files to re-run")
+
+        existing_ids = await self.files.filter_existing_for_upload(
+            file_ids=source_file_ids,
+            upload_id=source.upload_id,
+            user_id=user_id,
+        )
+        if not existing_ids:
+            raise UnprocessableRerun("no scannable files remain in source")
+
+        # Reconstruct the keywords blob — stored as JSONB on the row exactly
+        # as posted, so re-validating through KeywordsConfig keeps the same
+        # shape the original POST used. Empty dict → no keywords.
+        keywords_payload: KeywordsConfig | None = None
+        if source.keywords:
+            try:
+                keywords_payload = KeywordsConfig.model_validate(source.keywords)
+            except Exception:  # pragma: no cover — defensive; create_scan re-validates
+                keywords_payload = None
+
+        request = ScanCreateRequest(
+            upload_id=source.upload_id,
+            name=source.name,
+            scan_types=cast(list[ScanType], list(source.scan_types)),
+            file_ids=existing_ids,
+            keywords=keywords_payload,
+            model_settings=dict(source.model_settings),
+        )
+        return await self.create_scan(
+            user_id=user_id,
+            request=request,
+            max_files_per_scan=max_files_per_scan,
+        )
 
     async def delete_scan(self, *, scan_id: UUID, user_id: UUID) -> None:
         scan = await self.scans.get_by_id(scan_id, user_id=user_id)

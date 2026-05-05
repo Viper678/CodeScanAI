@@ -227,6 +227,23 @@ Server enqueues `run_scan(scan_id)`.
 ### `GET /scans`
 List user's scans (paginated, filterable by `?status=` and `?upload_id=`).
 
+`?status=` accepts a comma-separated list of `pending|running|completed|failed|cancelled`. Unknown tokens → `422`. `?upload_id=` is a single UUID; rows for other users' uploads are silently scoped out (no enumeration).
+
+### `POST /scans/{id}/rerun`
+Re-run a previous scan with the same inputs. Reconstructs `file_ids`, `scan_types`, `keywords`, and `model_settings` from the source row server-side, validates the same way `POST /scans` does, and creates a brand-new scan (the source row is left untouched).
+
+CSRF: required (mutating). Response shape mirrors `POST /scans` — `202 Accepted` with the **new** scan's id.
+
+```json
+{ "id": "uuid", "status": "pending", "progress_done": 0, "progress_total": 312 }
+```
+
+Errors:
+- `404 not_found` — source scan doesn't exist or belongs to another user (same no-enumeration rule as `GET /scans/{id}`).
+- `422 unprocessable_rerun` — source has no scan_files at all, or every file the source referenced has since been deleted from the upload.
+- `422 validation_error` — the reconstructed payload would fail standard scan-creation validation (e.g. file count exceeds `MAX_FILES_PER_SCAN`).
+- `503 queue_unavailable` — broker is down; the new scan row is marked `failed` before bubbling.
+
 ### `POST /scans/{id}/cancel`
 `200` on success. Worker checks a cancellation flag between files and exits gracefully.
 

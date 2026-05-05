@@ -31,6 +31,7 @@ from app.schemas.scan import (
 )
 from app.services.findings_service import (
     FindingsService,
+    parse_scan_status_param,
     parse_scan_type_param,
     parse_severity_param,
 )
@@ -81,22 +82,13 @@ async def list_scans(
         raise InvalidScanRequest("limit must be between 1 and 100")
     if offset < 0:
         raise InvalidScanRequest("offset must be >= 0")
-    if status is not None and status not in {
-        "pending",
-        "running",
-        "completed",
-        "failed",
-        "cancelled",
-    }:
-        raise InvalidScanRequest(
-            "status must be one of: pending, running, completed, failed, cancelled"
-        )
+    statuses = parse_scan_status_param(status)
     service = ScanService(session)
     return await service.list_scans(
         user_id=current_user.id,
         limit=limit,
         offset=offset,
-        status=status,
+        statuses=statuses or None,
         upload_id=upload_id,
     )
 
@@ -199,6 +191,39 @@ async def export_scan_findings(
         headers={
             "Content-Disposition": (f'attachment; filename="scan-{scan_id}-findings.json"'),
         },
+    )
+
+
+@router.post(
+    "/{scan_id}/rerun",
+    response_model=ScanCreateResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+    dependencies=[Depends(require_csrf_header)],
+)
+async def rerun_scan(
+    scan_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> ScanCreateResponse:
+    """Re-run a previous scan using its original inputs.
+
+    Reconstructs ``file_ids`` + ``scan_types`` + keywords from the source
+    scan and creates a brand-new scan via the same path as ``POST /scans``
+    (including the Celery enqueue). Returns the *new* scan's id; the source
+    row is left untouched.
+    """
+
+    service = ScanService(session)
+    scan = await service.rerun_scan(
+        scan_id=scan_id,
+        user_id=current_user.id,
+        max_files_per_scan=settings.max_files_per_scan,
+    )
+    return ScanCreateResponse(
+        id=scan.id,
+        status=cast(ScanStatus, scan.status),
+        progress_done=scan.progress_done,
+        progress_total=scan.progress_total,
     )
 
 

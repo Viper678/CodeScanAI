@@ -101,3 +101,14 @@ export type ScanFileItem = {
 export type ScanFilesResponse = {
   items: ScanFileItem[];
 };
+
+/**
+ * Normalized filter state for the `/scans` index — multi-select status only
+ * for v1. We intentionally drop the `upload_id` filter from the UI: a UUID
+ * picker is bad UX with no upload-name surface yet (tracked separately). The
+ * API still honors `?upload_id=` so the underlying client / hook stays ready
+ * for the next iteration.
+ */
+export type ScansFilters = {
+  status: ScanStatus[];
+};

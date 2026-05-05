@@ -169,11 +169,17 @@ async def test_list_for_user_filters_by_status(
     running.status = SCAN_STATUS_RUNNING
     await db_session.flush()
 
-    pending_rows = await repo.list_for_user(user_id=user.id, status=SCAN_STATUS_PENDING)
-    running_rows = await repo.list_for_user(user_id=user.id, status=SCAN_STATUS_RUNNING)
+    pending_rows = await repo.list_for_user(user_id=user.id, statuses=[SCAN_STATUS_PENDING])
+    running_rows = await repo.list_for_user(user_id=user.id, statuses=[SCAN_STATUS_RUNNING])
+    multi_rows = await repo.list_for_user(
+        user_id=user.id,
+        statuses=[SCAN_STATUS_PENDING, SCAN_STATUS_RUNNING],
+    )
 
     assert [row.id for row in pending_rows] == [pending.id]
     assert [row.id for row in running_rows] == [running.id]
+    # Multi-status filter is the union of the per-status sets.
+    assert {row.id for row in multi_rows} == {pending.id, running.id}
 
 
 async def test_list_for_user_filters_by_upload_id(
@@ -227,8 +233,15 @@ async def test_count_for_user_matches_filtered_list(
     await db_session.flush()
 
     assert await repo.count_for_user(user_id=user.id) == 2
-    assert await repo.count_for_user(user_id=user.id, status=SCAN_STATUS_PENDING) == 1
-    assert await repo.count_for_user(user_id=user.id, status=SCAN_STATUS_COMPLETED) == 1
+    assert await repo.count_for_user(user_id=user.id, statuses=[SCAN_STATUS_PENDING]) == 1
+    assert await repo.count_for_user(user_id=user.id, statuses=[SCAN_STATUS_COMPLETED]) == 1
+    assert (
+        await repo.count_for_user(
+            user_id=user.id,
+            statuses=[SCAN_STATUS_PENDING, SCAN_STATUS_COMPLETED],
+        )
+        == 2
+    )
     assert (
         await repo.count_for_user(
             user_id=user.id,

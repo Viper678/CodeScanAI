@@ -618,6 +618,76 @@ async def test_list_scans_paginates_and_filters(
     assert len(pgbody["items"]) == 1
 
 
+async def test_list_scans_filters_by_comma_separated_statuses(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    """``?status=pending,running`` returns the union of the two buckets."""
+
+    user = await _current_user(authed_client)
+    upload, files = await _seed_upload_with_files(db_session, user_id=user.id)
+
+    s1 = await authed_client.post(
+        "/api/v1/scans",
+        headers=CSRF_HEADERS,
+        json=_scan_payload(upload_id=upload.id, file_ids=[f.id for f in files]),
+    )
+    s2 = await authed_client.post(
+        "/api/v1/scans",
+        headers=CSRF_HEADERS,
+        json=_scan_payload(upload_id=upload.id, file_ids=[f.id for f in files]),
+    )
+    s3 = await authed_client.post(
+        "/api/v1/scans",
+        headers=CSRF_HEADERS,
+        json=_scan_payload(upload_id=upload.id, file_ids=[f.id for f in files]),
+    )
+    assert s1.status_code == s2.status_code == s3.status_code == 202
+    s2_id = UUID(s2.json()["id"])
+    s3_id = UUID(s3.json()["id"])
+
+    # Flip s2 → running, s3 → completed; s1 stays pending.
+    await db_session.commit()
+    row_s2 = await db_session.get(Scan, s2_id)
+    row_s3 = await db_session.get(Scan, s3_id)
+    assert row_s2 is not None and row_s3 is not None
+    row_s2.status = SCAN_STATUS_RUNNING
+    row_s3.status = SCAN_STATUS_COMPLETED
+    await db_session.commit()
+
+    multi = await authed_client.get("/api/v1/scans?status=pending,running")
+    assert multi.status_code == 200, multi.text
+    body = multi.json()
+    assert body["total"] == 2
+    assert {item["status"] for item in body["items"]} == {"pending", "running"}
+
+    # AND-combined with upload_id (only one upload here, so all 3 match —
+    # but the status filter still narrows it to 2).
+    combined = await authed_client.get(
+        f"/api/v1/scans?status=pending,running&upload_id={upload.id}"
+    )
+    assert combined.status_code == 200
+    cbody = combined.json()
+    assert cbody["total"] == 2
+
+    # Empty status param → no filter.
+    empty = await authed_client.get("/api/v1/scans?status=")
+    assert empty.status_code == 200
+    assert empty.json()["total"] == 3
+
+
+async def test_list_scans_rejects_unknown_status_token(
+    authed_client: httpx.AsyncClient,
+) -> None:
+    response = await authed_client.get("/api/v1/scans?status=pending,bogus")
+    assert response.status_code == 422
+    body = response.json()
+    assert body["error"]["code"] == "validation_error"
+    # The shared validator surfaces the bad token in the message.
+    assert "bogus" in body["error"]["message"]
+
+
 async def test_list_scans_only_returns_current_user(
     client: httpx.AsyncClient,
     db_session: AsyncSession,
@@ -806,6 +876,168 @@ async def test_cancel_scan_404_for_other_user(
 
     assert response.status_code == 404
     assert response.json()["error"]["code"] == "not_found"
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/scans/{id}/rerun
+# ---------------------------------------------------------------------------
+
+
+async def test_rerun_scan_creates_new_scan_with_same_inputs(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    """Happy path — rerun returns 202 with a new id and identical inputs."""
+
+    user = await _current_user(authed_client)
+    upload, files = await _seed_upload_with_files(db_session, user_id=user.id)
+
+    create = await authed_client.post(
+        "/api/v1/scans",
+        headers=CSRF_HEADERS,
+        json=_scan_payload(
+            upload_id=upload.id,
+            file_ids=[f.id for f in files],
+            scan_types=["security", "bugs", "keywords"],
+            keywords={"items": ["TODO"], "case_sensitive": True, "regex": False},
+        ),
+    )
+    assert create.status_code == 202
+    source_id = UUID(create.json()["id"])
+
+    # Flip source to completed so the UI would have shown the re-run button.
+    await db_session.commit()
+    source_row = await db_session.get(Scan, source_id)
+    assert source_row is not None
+    source_row.status = SCAN_STATUS_COMPLETED
+    await db_session.commit()
+
+    mock_enqueue_run_scan.reset_mock()
+    response = await authed_client.post(
+        f"/api/v1/scans/{source_id}/rerun",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    new_id = UUID(body["id"])
+    assert new_id != source_id
+    assert body["status"] == SCAN_STATUS_PENDING
+    assert body["progress_total"] == len(files)
+
+    await db_session.commit()
+    new_row = await db_session.get(Scan, new_id)
+    assert new_row is not None
+    # Same inputs as the source.
+    assert new_row.upload_id == upload.id
+    assert list(new_row.scan_types) == ["security", "bugs", "keywords"]
+    assert new_row.keywords == {
+        "items": ["TODO"],
+        "case_sensitive": True,
+        "regex": False,
+    }
+    # ScanFile rows reconstructed from the source.
+    new_scan_files = (
+        await db_session.scalars(select(ScanFile).where(ScanFile.scan_id == new_id))
+    ).all()
+    assert {sf.file_id for sf in new_scan_files} == {f.id for f in files}
+
+    # Source row is left alone.
+    source_after = await db_session.get(Scan, source_id)
+    assert source_after is not None
+    assert source_after.status == SCAN_STATUS_COMPLETED
+
+    mock_enqueue_run_scan.assert_called_once_with(new_id)
+
+
+async def test_rerun_scan_404_for_other_user(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    register_a = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "owner-rerun@example.com", "password": "correct-horse"},
+    )
+    assert register_a.status_code == 201
+    user_a = await _current_user(client)
+    upload, files = await _seed_upload_with_files(db_session, user_id=user_a.id)
+    create = await client.post(
+        "/api/v1/scans",
+        headers=CSRF_HEADERS,
+        json=_scan_payload(upload_id=upload.id, file_ids=[f.id for f in files]),
+    )
+    assert create.status_code == 202
+    source_id = create.json()["id"]
+
+    client.cookies.clear()
+    register_b = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "intruder-rerun@example.com", "password": "correct-horse"},
+    )
+    assert register_b.status_code == 201
+
+    response = await client.post(
+        f"/api/v1/scans/{source_id}/rerun",
+        headers=CSRF_HEADERS,
+    )
+
+    # 404 — same no-enumeration rule as the rest of /scans.
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_rerun_scan_422_when_source_has_no_scan_files(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Source row exists but has no ``scan_files`` → ``unprocessable_rerun``.
+
+    A scan can end up here only if the row was hand-staged or its ``scan_files``
+    were pruned out of band — the create_scan path always inserts at least one.
+    Easier to reproduce than the "all files deleted" case (FK on ``scan_files``
+    blocks naive ``files`` deletion), but exercises the same code path: source
+    is owned, source has no derivable ``file_ids``, surface 422 with the
+    distinct error code so the UI can map it to a friendly message instead of
+    the generic validation banner.
+    """
+
+    user = await _current_user(authed_client)
+    # Stage a scan directly; ``_make_scan_directly`` does not insert any
+    # ``scan_files`` rows.
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_COMPLETED)
+
+    response = await authed_client.post(
+        f"/api/v1/scans/{scan.id}/rerun",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    assert body["error"]["code"] == "unprocessable_rerun"
+
+
+async def test_rerun_scan_requires_csrf(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    user = await _current_user(authed_client)
+    upload, files = await _seed_upload_with_files(db_session, user_id=user.id)
+    create = await authed_client.post(
+        "/api/v1/scans",
+        headers=CSRF_HEADERS,
+        json=_scan_payload(upload_id=upload.id, file_ids=[f.id for f in files]),
+    )
+    assert create.status_code == 202
+    source_id = create.json()["id"]
+
+    # No CSRF header.
+    response = await authed_client.post(f"/api/v1/scans/{source_id}/rerun")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
 
 
 # ---------------------------------------------------------------------------
