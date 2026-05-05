@@ -130,7 +130,7 @@ export function FileViewerPage({
   const headerPath = findings[0]?.file.path ?? `file ${fileId.slice(0, 8)}…`;
 
   return (
-    <div className="flex h-[calc(100vh-4rem)] flex-col">
+    <div className="-mx-4 -my-6 flex h-[calc(100vh-4rem)] flex-col lg:-m-8">
       <ViewerHeader filename={headerPath} scanId={scanId} />
       {/* explicit 1fr row so h-full cells resolve against viewport height, not content */}
       <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-1 lg:grid-cols-[minmax(0,1fr)_320px]">

@@ -12,10 +12,11 @@ import { generateFixture } from './fixture';
 const EMPTY_FILES: ReadonlyArray<TreeFile> = [];
 
 /**
- * Developer-facing preview for the FileTree component (T2.5). T2.4 wires the
- * component into the actual scan wizard step 2; this page exists so we can
- * iterate / verify behavior in isolation, including a synthetic 10k-file
- * dataset behind `?fixture=10k`.
+ * Dual-purpose page: the user-facing tree view that the Uploads list links
+ * to (where users choose which files to scan), and a developer playground
+ * for the FileTree component. The synthetic-fixture query params
+ * (`?fixture=10k|1k|small`) remain available for perf testing but are no
+ * longer surfaced in the user-facing copy.
  */
 export default function TreePreviewPage() {
   const params = useParams<{ upload_id: string }>();
@@ -60,14 +61,9 @@ export default function TreePreviewPage() {
   return (
     <div className="space-y-6">
       <div>
-        <h2 className="text-3xl font-semibold tracking-tight">Tree preview</h2>
-        <p className="mt-2 text-sm text-muted-foreground">
-          Developer preview for the FileTree component. Append{' '}
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-xs">
-            ?fixture=10k
-          </code>{' '}
-          to render a 10,000-file synthetic dataset for perf checks.
-        </p>
+        <h2 className="text-3xl font-semibold tracking-tight">
+          Choose files to scan
+        </h2>
       </div>
 
       {!fixtureFiles && isLoading && (
