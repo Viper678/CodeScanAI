@@ -32,12 +32,16 @@ function Harness({
 }: Readonly<{ finding: Finding; fileHref?: string | null }>) {
   const [expanded, setExpanded] = useState(false);
   return (
-    <FindingsRow
-      finding={finding}
-      expanded={expanded}
-      onToggle={() => setExpanded((prev) => !prev)}
-      fileHref={fileHref}
-    />
+    <table>
+      <tbody>
+        <FindingsRow
+          finding={finding}
+          expanded={expanded}
+          onToggle={() => setExpanded((prev) => !prev)}
+          fileHref={fileHref}
+        />
+      </tbody>
+    </table>
   );
 }
 
@@ -110,12 +114,16 @@ describe('<FindingsRow />', () => {
   it('clicking the file link does not toggle row expansion', () => {
     const onToggle = vi.fn();
     render(
-      <FindingsRow
-        finding={makeFinding()}
-        expanded={false}
-        onToggle={onToggle}
-        fileHref={DEFAULT_FILE_HREF}
-      />,
+      <table>
+        <tbody>
+          <FindingsRow
+            finding={makeFinding()}
+            expanded={false}
+            onToggle={onToggle}
+            fileHref={DEFAULT_FILE_HREF}
+          />
+        </tbody>
+      </table>,
     );
 
     fireEvent.click(screen.getByRole('link', { name: 'src/api/users.py' }));
@@ -137,12 +145,16 @@ describe('<FindingsRow />', () => {
     // would be canceled by our preventDefault().
     const onToggle = vi.fn();
     render(
-      <FindingsRow
-        finding={makeFinding()}
-        expanded={false}
-        onToggle={onToggle}
-        fileHref={DEFAULT_FILE_HREF}
-      />,
+      <table>
+        <tbody>
+          <FindingsRow
+            finding={makeFinding()}
+            expanded={false}
+            onToggle={onToggle}
+            fileHref={DEFAULT_FILE_HREF}
+          />
+        </tbody>
+      </table>,
     );
 
     const row = screen.getByRole('button');

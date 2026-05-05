@@ -25,7 +25,7 @@ export function AppShell({ children }: Readonly<AppShellProps>) {
       <div className="flex min-h-screen">
         <aside
           className={cn(
-            'flex min-h-screen w-16 shrink-0 flex-col border-r border-border/80 bg-card/70 backdrop-blur lg:transition-[width]',
+            'sticky top-0 flex h-screen w-16 shrink-0 flex-col border-r border-border/80 bg-card/70 backdrop-blur lg:transition-[width]',
             collapsed ? 'lg:w-16' : 'lg:w-72',
           )}
         >
