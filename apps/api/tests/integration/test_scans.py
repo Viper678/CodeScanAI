@@ -24,6 +24,8 @@ from app.models.file import File
 from app.models.scan import (
     SCAN_STATUS_CANCELLED,
     SCAN_STATUS_COMPLETED,
+    SCAN_STATUS_FAILED,
+    SCAN_STATUS_PAUSED,
     SCAN_STATUS_PENDING,
     SCAN_STATUS_RUNNING,
     Scan,
@@ -1309,3 +1311,321 @@ async def test_list_recent_scan_files_respects_limit(
     # Newest two = scan_files[3], scan_files[2].
     assert body["items"][0]["id"] == str(scan_files[3].id)
     assert body["items"][1]["id"] == str(scan_files[2].id)
+
+
+# ---------------------------------------------------------------------------
+# POST /api/v1/scans/{id}/pause   POST /api/v1/scans/{id}/resume
+# ---------------------------------------------------------------------------
+
+
+async def test_pause_scan_running_to_paused(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_RUNNING)
+
+    response = await authed_client.post(
+        f"/api/v1/scans/{scan.id}/pause",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["status"] == SCAN_STATUS_PAUSED
+
+    await db_session.commit()
+    row = await db_session.get(Scan, scan.id)
+    assert row is not None
+    assert row.status == SCAN_STATUS_PAUSED
+    # Pause does NOT set finished_at — the scan is still alive.
+    assert row.finished_at is None
+
+
+async def test_pause_scan_idempotent_on_paused(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_PAUSED)
+
+    response = await authed_client.post(
+        f"/api/v1/scans/{scan.id}/pause",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 200
+    assert response.json()["status"] == SCAN_STATUS_PAUSED
+
+
+@pytest.mark.parametrize(
+    "status_value",
+    [SCAN_STATUS_PENDING, SCAN_STATUS_COMPLETED, SCAN_STATUS_FAILED, SCAN_STATUS_CANCELLED],
+)
+async def test_pause_scan_409_not_pausable_from_other_states(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    status_value: str,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=status_value)
+
+    response = await authed_client.post(
+        f"/api/v1/scans/{scan.id}/pause",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["code"] == "not_pausable"
+    assert status_value in body["error"]["message"]
+
+
+async def test_pause_scan_404_for_other_user(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    register_a = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "owner-pause@example.com", "password": "correct-horse"},
+    )
+    assert register_a.status_code == 201
+    user_a = await _current_user(client)
+    scan = await _make_scan_directly(db_session, user_id=user_a.id, status=SCAN_STATUS_RUNNING)
+
+    client.cookies.clear()
+    register_b = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "intruder-pause@example.com", "password": "correct-horse"},
+    )
+    assert register_b.status_code == 201
+
+    response = await client.post(
+        f"/api/v1/scans/{scan.id}/pause",
+        headers=CSRF_HEADERS,
+    )
+
+    # 404, not 403 — see docs/SECURITY.md §3.
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_csrf_required_on_pause(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_RUNNING)
+
+    response = await authed_client.post(f"/api/v1/scans/{scan.id}/pause")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+
+
+async def test_resume_scan_paused_to_pending_re_enqueues(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_PAUSED)
+
+    response = await authed_client.post(
+        f"/api/v1/scans/{scan.id}/resume",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 202, response.text
+    body = response.json()
+    # Per the API spec: status flips to `pending` on the API response; the
+    # worker moves it to `running` on pickup.
+    assert body["status"] == SCAN_STATUS_PENDING
+    mock_enqueue_run_scan.assert_called_once_with(scan.id)
+
+    await db_session.commit()
+    row = await db_session.get(Scan, scan.id)
+    assert row is not None
+    assert row.status == SCAN_STATUS_PENDING
+
+
+@pytest.mark.parametrize(
+    "status_value",
+    [
+        SCAN_STATUS_PENDING,
+        SCAN_STATUS_RUNNING,
+        SCAN_STATUS_COMPLETED,
+        SCAN_STATUS_FAILED,
+        SCAN_STATUS_CANCELLED,
+    ],
+)
+async def test_resume_scan_409_not_resumable_from_non_paused(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+    status_value: str,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=status_value)
+
+    response = await authed_client.post(
+        f"/api/v1/scans/{scan.id}/resume",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 409
+    body = response.json()
+    assert body["error"]["code"] == "not_resumable"
+    assert status_value in body["error"]["message"]
+    mock_enqueue_run_scan.assert_not_called()
+
+
+async def test_resume_scan_503_reverts_to_paused_when_broker_down(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_PAUSED)
+    failing_enqueue = MagicMock(side_effect=RuntimeError("broker down"))
+
+    with patch(
+        "app.services.scan_service.enqueue_run_scan",
+        new=failing_enqueue,
+    ):
+        response = await authed_client.post(
+            f"/api/v1/scans/{scan.id}/resume",
+            headers=CSRF_HEADERS,
+        )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "queue_unavailable"
+
+    failing_enqueue.assert_called_once_with(scan.id)
+
+    await db_session.commit()
+    row = await db_session.get(Scan, scan.id)
+    assert row is not None
+    # Stays paused so the user can retry — does NOT flip to failed.
+    assert row.status == SCAN_STATUS_PAUSED
+
+
+async def test_resume_scan_404_for_other_user(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    register_a = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "owner-resume@example.com", "password": "correct-horse"},
+    )
+    assert register_a.status_code == 201
+    user_a = await _current_user(client)
+    scan = await _make_scan_directly(db_session, user_id=user_a.id, status=SCAN_STATUS_PAUSED)
+
+    client.cookies.clear()
+    register_b = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "intruder-resume@example.com", "password": "correct-horse"},
+    )
+    assert register_b.status_code == 201
+
+    response = await client.post(
+        f"/api/v1/scans/{scan.id}/resume",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+    mock_enqueue_run_scan.assert_not_called()
+
+
+async def test_csrf_required_on_resume(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    mock_enqueue_run_scan: MagicMock,
+) -> None:
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_PAUSED)
+
+    response = await authed_client.post(f"/api/v1/scans/{scan.id}/resume")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+    mock_enqueue_run_scan.assert_not_called()
+
+
+async def test_cancel_scan_from_paused_to_cancelled(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Cancel from `paused` is allowed and transitions directly to `cancelled`."""
+
+    user = await _current_user(authed_client)
+    scan = await _make_scan_directly(db_session, user_id=user.id, status=SCAN_STATUS_PAUSED)
+
+    response = await authed_client.post(
+        f"/api/v1/scans/{scan.id}/cancel",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == SCAN_STATUS_CANCELLED
+    assert body["finished_at"] is not None
+
+    await db_session.commit()
+    row = await db_session.get(Scan, scan.id)
+    assert row is not None
+    assert row.status == SCAN_STATUS_CANCELLED
+
+
+async def test_get_findings_works_on_paused_scan(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+) -> None:
+    """Regression: findings persisted before pause stay visible while paused."""
+
+    from app.models.scan_finding import ScanFinding
+
+    user = await _current_user(authed_client)
+    upload, files = await _seed_upload_with_files(db_session, user_id=user.id, file_count=2)
+
+    scan = Scan(
+        id=uuid7(),
+        user_id=user.id,
+        upload_id=upload.id,
+        name="paused-with-findings",
+        scan_types=["security"],
+        keywords={},
+        status=SCAN_STATUS_PAUSED,
+        progress_done=1,
+        progress_total=len(files),
+        model_settings={},
+    )
+    db_session.add(scan)
+    await db_session.flush()
+    db_session.add(
+        ScanFinding(
+            id=uuid7(),
+            scan_id=scan.id,
+            file_id=files[0].id,
+            scan_type="security",
+            severity="high",
+            title="prior finding",
+            message="persisted before pause",
+            recommendation=None,
+            line_start=1,
+            line_end=1,
+            snippet=None,
+            rule_id="R-prior",
+            confidence=None,
+            meta={},
+        )
+    )
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/scans/{scan.id}/findings")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["title"] == "prior finding"

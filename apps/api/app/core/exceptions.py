@@ -107,6 +107,22 @@ class ScanCancelConflict(AppError):
     message = "Cannot cancel scan in current state"
 
 
+class ScanNotPausable(AppError):
+    """Pause attempted on a scan whose state isn't ``running`` or ``paused``."""
+
+    error_code = "not_pausable"
+    status_code = 409
+    message = "Cannot pause scan in current state"
+
+
+class ScanNotResumable(AppError):
+    """Resume attempted on a scan whose state isn't ``paused``."""
+
+    error_code = "not_resumable"
+    status_code = 409
+    message = "Cannot resume scan in current state"
+
+
 class UnprocessableRerun(AppError):
     """Re-run requested on a scan whose source state can't be reconstructed.
 
