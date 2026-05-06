@@ -654,3 +654,326 @@ def test_run_scan_re_entry_skips_already_finalized_scan_files(
             )
         )
         assert len(md_findings) >= 1
+
+
+# ---- Pause / resume --------------------------------------------------------
+
+
+def _insert_upload_with_text_files(
+    session: Session,
+    *,
+    user_id: UUID,
+    extract_root: Path,
+    count: int,
+) -> tuple[UUID, list[UUID]]:
+    """Stage an upload with ``count`` small python files for pause tests."""
+
+    from worker.core.models import UPLOAD_STATUS_READY, File, Upload
+    from worker.core.uuid7 import uuid7
+
+    extract_root.mkdir(parents=True, exist_ok=True)
+    file_ids: list[UUID] = []
+    upload = Upload(
+        id=uuid7(),
+        user_id=user_id,
+        original_name="bundle.zip",
+        kind="zip",
+        size_bytes=999,
+        storage_path=str(extract_root),
+        extract_path=str(extract_root),
+        status=UPLOAD_STATUS_READY,
+        file_count=count,
+        scannable_count=count,
+    )
+    session.add(upload)
+    session.flush()
+    for i in range(count):
+        rel = f"f_{i}.py"
+        body = f"# TODO: stub {i}\nprint({i})\n"
+        (extract_root / rel).write_text(body)
+        f = File(
+            id=uuid7(),
+            upload_id=upload.id,
+            path=rel,
+            name=rel,
+            parent_path="",
+            size_bytes=len(body.encode()),
+            language="python",
+            is_binary=False,
+            is_excluded_by_default=False,
+            excluded_reason=None,
+            sha256=f"{i:0>64}",
+        )
+        session.add(f)
+        file_ids.append(f.id)
+    session.commit()
+    return upload.id, file_ids
+
+
+def _pause_after_first_factory(psycopg_url: str):  # type: ignore[no-untyped-def]
+    """Return a registry factory that flips the scan to ``paused`` after one file.
+
+    The first time ``scan_file`` is invoked, before returning, the scanner
+    issues a direct DB UPDATE setting the parent scan's status to ``paused``.
+    The next between-files poll inside ``_dispatch`` observes the flag and
+    drains the executor cleanly.
+    """
+
+    from worker.scanners.base import Finding, ScanCallResult, ScanContext
+
+    flipped: dict[str, bool] = {"done": False}
+
+    def _factory(scan_types, keywords_cfg):  # type: ignore[no-untyped-def]
+        del keywords_cfg
+
+        class _PauseTrigger:
+            name = "security"
+
+            def scan_file(self, content: str, ctx: ScanContext) -> ScanCallResult:
+                if not flipped["done"]:
+                    flipped["done"] = True
+                    # Flip the scan to paused via a fresh psycopg connection so
+                    # we don't depend on the orchestrator's session.
+                    with (
+                        psycopg.connect(psycopg_url, autocommit=True) as conn,
+                        conn.cursor() as cur,
+                    ):
+                        cur.execute("UPDATE scans SET status = 'paused' WHERE status = 'running'")
+                return ScanCallResult(
+                    findings=[
+                        Finding(
+                            title="security finding",
+                            message="canned",
+                            recommendation=None,
+                            severity="high",
+                            line_start=1,
+                            line_end=1,
+                            rule_id="R-security",
+                            confidence=0.5,
+                        )
+                    ],
+                    tokens_in=10,
+                    tokens_out=5,
+                    latency_ms=1,
+                )
+
+        registry: dict[str, object] = {}
+        if "security" in scan_types:
+            registry["security"] = _PauseTrigger()
+        return registry
+
+    return _factory
+
+
+def test_run_scan_honors_pause_mid_scan(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Pause flag flipped mid-run: in-flight file completes, no `running`
+    scan_files left, unprocessed rows stay pending, scan stays paused."""
+
+    sync_url, psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+    # Sequential dispatch + every-file poll → first file flips, second tick sees pause.
+    monkeypatch.setattr(cfg.settings, "scan_concurrency", 1)
+    monkeypatch.setattr(cfg.settings, "cancel_check_interval_files", 1)
+
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id, file_ids = _insert_upload_with_text_files(
+            session, user_id=user_id, extract_root=extract_root, count=4
+        )
+
+    # Build a 4-file scan with only `security` so the flip-after-first scanner
+    # applies to every per-file dispatch.
+    from worker.core.models import (
+        SCAN_FILE_STATUS_PENDING,
+        SCAN_STATUS_PENDING,
+        Scan,
+        ScanFile,
+        ScanFinding,
+    )
+    from worker.core.uuid7 import uuid7
+
+    with _engine_session(sync_url) as session:
+        scan = Scan(
+            id=uuid7(),
+            user_id=user_id,
+            upload_id=upload_id,
+            name="t",
+            scan_types=["security"],
+            keywords={},
+            status=SCAN_STATUS_PENDING,
+            progress_done=0,
+            progress_total=len(file_ids),
+            model="gemma-4-31b-it",
+            model_settings={},
+        )
+        session.add(scan)
+        session.flush()
+        scan_id = scan.id
+        for fid in file_ids:
+            session.add(
+                ScanFile(
+                    id=uuid7(),
+                    scan_id=scan_id,
+                    file_id=fid,
+                    status=SCAN_FILE_STATUS_PENDING,
+                )
+            )
+        session.commit()
+
+    from worker.tasks.run_scan import _run
+
+    result = _run(
+        str(scan_id),
+        scanner_registry_factory=_pause_after_first_factory(psycopg_url),
+        session_maker=new_maker,
+    )
+    assert result["status"] == "paused"
+
+    with _engine_session(sync_url) as session:
+        scan_row = session.scalar(select(Scan).where(Scan.id == scan_id))
+        assert scan_row is not None
+        assert scan_row.status == "paused"
+        # Scan must NOT have flipped to completed.
+        assert scan_row.finished_at is None
+
+        sfs = list(session.scalars(select(ScanFile).where(ScanFile.scan_id == scan_id)))
+        statuses = [sf.status for sf in sfs]
+        # No `running` rows left behind.
+        assert "running" not in statuses
+        # At least one file finished (the one that triggered the pause).
+        done_count = sum(1 for s in statuses if s == "done")
+        pending_count = sum(1 for s in statuses if s == "pending")
+        assert done_count >= 1
+        # Unprocessed rows remain pending for resume.
+        assert pending_count >= 1
+        assert done_count + pending_count == len(file_ids)
+
+        findings = list(session.scalars(select(ScanFinding).where(ScanFinding.scan_id == scan_id)))
+        # Each `done` file persisted exactly one security finding.
+        assert len(findings) == done_count
+
+
+def test_run_scan_resume_after_pause_completes(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Resume flow: paused scan with pending rows + a re-enqueue picks up the
+    remaining work and reaches ``completed`` with the expected finding count."""
+
+    sync_url, psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(cfg.settings, "scan_concurrency", 1)
+    monkeypatch.setattr(cfg.settings, "cancel_check_interval_files", 1)
+
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id, file_ids = _insert_upload_with_text_files(
+            session, user_id=user_id, extract_root=extract_root, count=4
+        )
+
+    from worker.core.models import (
+        SCAN_FILE_STATUS_PENDING,
+        SCAN_STATUS_PENDING,
+        Scan,
+        ScanFile,
+        ScanFinding,
+    )
+    from worker.core.uuid7 import uuid7
+
+    with _engine_session(sync_url) as session:
+        scan = Scan(
+            id=uuid7(),
+            user_id=user_id,
+            upload_id=upload_id,
+            name="t",
+            scan_types=["security"],
+            keywords={},
+            status=SCAN_STATUS_PENDING,
+            progress_done=0,
+            progress_total=len(file_ids),
+            model="gemma-4-31b-it",
+            model_settings={},
+        )
+        session.add(scan)
+        session.flush()
+        scan_id = scan.id
+        for fid in file_ids:
+            session.add(
+                ScanFile(
+                    id=uuid7(),
+                    scan_id=scan_id,
+                    file_id=fid,
+                    status=SCAN_FILE_STATUS_PENDING,
+                )
+            )
+        session.commit()
+
+    from worker.tasks.run_scan import _run
+
+    # Phase 1 — pause mid-scan.
+    pause_result = _run(
+        str(scan_id),
+        scanner_registry_factory=_pause_after_first_factory(psycopg_url),
+        session_maker=new_maker,
+    )
+    assert pause_result["status"] == "paused"
+
+    # Phase 2 — simulate the API's resume: flip back to pending, re-invoke _run.
+    # The orchestrator must pick up the remaining `pending` scan_files only,
+    # not re-process the already-`done` ones.
+    with _engine_session(sync_url) as session:
+        row = session.scalar(select(Scan).where(Scan.id == scan_id))
+        assert row is not None
+        row.status = SCAN_STATUS_PENDING
+        session.commit()
+
+    resume_result = _run(
+        str(scan_id),
+        scanner_registry_factory=_fake_registry_factory,
+        session_maker=new_maker,
+    )
+    assert resume_result["status"] == "completed"
+    assert resume_result["progress_done"] == len(file_ids)
+
+    with _engine_session(sync_url) as session:
+        scan_row = session.scalar(select(Scan).where(Scan.id == scan_id))
+        assert scan_row is not None
+        assert scan_row.status == "completed"
+        assert scan_row.progress_done == scan_row.progress_total == len(file_ids)
+
+        sfs = list(session.scalars(select(ScanFile).where(ScanFile.scan_id == scan_id)))
+        assert all(sf.status == "done" for sf in sfs)
+
+        findings = list(session.scalars(select(ScanFinding).where(ScanFinding.scan_id == scan_id)))
+        # scan_types=["security"] across both phases → exactly one security
+        # finding per file (the pause-path file kept its prior finding; the
+        # resume-path files each added one). No duplication for the file the
+        # pause was triggered on.
+        assert len(findings) == len(file_ids)
+        files_with_findings = {f.file_id for f in findings}
+        assert files_with_findings == set(file_ids)

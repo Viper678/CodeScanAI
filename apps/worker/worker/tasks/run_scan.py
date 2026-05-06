@@ -45,6 +45,7 @@ from worker.core.models import (
     SCAN_STATUS_CANCELLED,
     SCAN_STATUS_COMPLETED,
     SCAN_STATUS_FAILED,
+    SCAN_STATUS_PAUSED,
     SCAN_STATUS_PENDING,
     SCAN_STATUS_RUNNING,
     SCAN_TYPE_BUGS,
@@ -156,6 +157,12 @@ def _run(
             logger.info("run_scan: scan %s already terminal (%s)", scan_id, scan.status)
             return _result_dict(scan)
 
+        # Re-delivery while the user paused after the API enqueued resume:
+        # honor the pause flag and no-op. Resume re-enqueues anew.
+        if scan.status == SCAN_STATUS_PAUSED:
+            logger.info("run_scan: scan %s is paused; no-op", scan_id)
+            return _result_dict(scan)
+
         # Move pending -> running (allow re-entry from running too — replay).
         if scan.status in (SCAN_STATUS_PENDING, SCAN_STATUS_RUNNING):
             scan.status = SCAN_STATUS_RUNNING
@@ -207,8 +214,9 @@ def _run(
         raise
 
     cancelled = False
+    paused = False
     if eligible:
-        cancelled = _dispatch(
+        cancelled, paused = _dispatch(
             scan_id=parsed_id,
             plans=eligible,
             scan_types=scan_types,
@@ -225,6 +233,12 @@ def _run(
 
         if cancelled or scan.status == SCAN_STATUS_CANCELLED:
             # Honor the cancellation: don't flip to completed.
+            session.commit()
+            return _result_dict(scan)
+
+        if paused or scan.status == SCAN_STATUS_PAUSED:
+            # Honor the pause: leave row as `paused` (set by the API), keep
+            # any unprocessed scan_files in `pending` for resume.
             session.commit()
             return _result_dict(scan)
 
@@ -478,14 +492,19 @@ def _dispatch(
     keywords_cfg: KeywordsConfig | None,
     registry: ScannerRegistry,
     maker: sessionmaker[Session],
-) -> bool:
-    """Submit per-file work to a thread pool and watch for cancellation.
+) -> tuple[bool, bool]:
+    """Submit per-file work to a thread pool and watch for cancel/pause.
 
-    Returns True if cancelled mid-run.
+    Returns ``(cancelled, paused)``. Cancel is a hard stop — pending futures
+    are cancelled and the scan finalizes as ``cancelled``. Pause is a soft
+    stop — pending futures are also cancelled (their scan_files stay
+    ``pending`` for resume), but in-flight work is allowed to finish via the
+    executor's normal context-manager exit so persisted findings stay intact.
     """
 
     cancelled = False
-    completed = 0
+    paused = False
+    counted: set[Future[_PerFileOutcome]] = set()
     futures: dict[Future[_PerFileOutcome], _FilePlan] = {}
     with ThreadPoolExecutor(max_workers=settings.scan_concurrency) as executor:
         for plan in plans:
@@ -502,20 +521,39 @@ def _dispatch(
         try:
             for fut in as_completed(futures):
                 _outcome = fut.result()
-                completed += 1
+                counted.add(fut)
                 _atomic_progress_bump(maker, scan_id)
 
-                if completed % max(settings.cancel_check_interval_files, 1) == 0 and _is_cancelled(
-                    maker, scan_id
-                ):
-                    cancelled = True
-                    break
+                if len(counted) % max(settings.cancel_check_interval_files, 1) == 0:
+                    flag = _stop_flag(maker, scan_id)
+                    if flag == SCAN_STATUS_CANCELLED:
+                        cancelled = True
+                        break
+                    if flag == SCAN_STATUS_PAUSED:
+                        paused = True
+                        break
         finally:
-            if cancelled:
-                executor.shutdown(wait=False, cancel_futures=True)
+            if cancelled or paused:
+                # cancel_futures=True drops not-yet-started work (its
+                # scan_files stay `pending`); already-running threads keep
+                # going so they persist their findings. The with-exit then
+                # waits for those threads.
+                executor.shutdown(wait=True, cancel_futures=True)
+                if paused:
+                    # Threads in-flight at the break finish persisting after
+                    # we stopped pulling from as_completed. Reconcile progress
+                    # for them so resume's counters add up against scan_files.
+                    # Cancel skips this — the scan is terminal.
+                    for fut in futures:
+                        if fut in counted or fut.cancelled() or not fut.done():
+                            continue
+                        if fut.exception() is not None:
+                            continue
+                        _atomic_progress_bump(maker, scan_id)
+                        counted.add(fut)
             # If we exit normally, the with-block waits for in-flight futures.
 
-    return cancelled
+    return cancelled, paused
 
 
 def _atomic_progress_bump(maker: sessionmaker[Session], scan_id: UUID) -> None:
@@ -533,10 +571,16 @@ def _atomic_progress_bump(maker: sessionmaker[Session], scan_id: UUID) -> None:
         session.commit()
 
 
-def _is_cancelled(maker: sessionmaker[Session], scan_id: UUID) -> bool:
+def _stop_flag(maker: sessionmaker[Session], scan_id: UUID) -> str | None:
+    """Return ``cancelled`` / ``paused`` if either is set, else None."""
+
     with maker() as session:
         status = session.scalar(select(Scan.status).where(Scan.id == scan_id))
-        return status == SCAN_STATUS_CANCELLED
+    if status == SCAN_STATUS_CANCELLED:
+        return SCAN_STATUS_CANCELLED
+    if status == SCAN_STATUS_PAUSED:
+        return SCAN_STATUS_PAUSED
+    return None
 
 
 # ---- Helpers ----------------------------------------------------------------
