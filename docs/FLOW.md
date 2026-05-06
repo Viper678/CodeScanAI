@@ -99,7 +99,11 @@ received ──prepare_upload──▶ extracting ──tree built──▶ read
 pending ──worker picks up──▶ running ──all files done──▶ completed
                                     ╲──fatal error────▶ failed
                                     ╲──user cancels───▶ cancelled
+                                    ╲──user pauses───▶ paused ──user resumes──▶ pending
+                                                              ╲──user cancels─▶ cancelled
 ```
+
+Pause is a soft-stop. The worker checks a pause flag between files and exits cleanly; the in-flight file finishes and persists findings before exit, so paused scans never leave `running` `scan_files` rows behind. Resume re-enqueues the scan task; the worker picks up the unprocessed `scan_files.status = 'pending'` rows and continues. Findings persisted before the pause remain visible via `GET /scans/{id}/findings` throughout.
 
 ### Per-file scan
 ```
@@ -120,6 +124,9 @@ pending ──picked──▶ running ──ok──▶ done
 | Single Gemma call returns invalid JSON | One repair attempt with stricter prompt. If still bad: `scan_files.status=failed`, scan continues for other files. |
 | Scan gets > 10% file failures   | `scans.status=failed` with summary error.                                |
 | Worker process dies mid-scan    | Celery task ack-late + visibility timeout: another worker picks it up; per-file `status=running` rows older than `STUCK_THRESHOLD` are reset to `pending`. |
+| User pauses scan                | Worker exits cleanly between files; in-flight file completes and persists findings; unprocessed rows remain `pending`. Findings already persisted stay visible. |
+| Worker dies while scan paused   | Pause is a DB flag — no worker process is needed to "hold" it. The scan stays `paused` and resume works as normal once a worker is available. |
+| User resumes after pause        | Re-enqueue `run_scan(scan_id)`. Worker selects `scan_files.status='pending'` and continues. Progress counters resume from the saved `progress_done`. |
 
 ---
 

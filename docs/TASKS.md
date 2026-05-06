@@ -148,6 +148,19 @@ Each task has:
 - **AC:** filtering and re-run both work end-to-end.
 - **Depends on:** T4.1.
 
+### T4.5 — Pause / resume scans
+- **Goal:** add `paused` to `scans.status`. Ship `POST /scans/{id}/pause` and `POST /scans/{id}/resume` per `API.md`. Worker observes a pause flag between files (mirrors cancel), exits cleanly with unprocessed `scan_files` left in `pending`. Resume re-enqueues `run_scan(scan_id)`; worker continues from the remaining `pending` rows. Web exposes Pause/Resume on the progress page; the existing findings panel keeps working unchanged on a paused scan (partial findings already persist incrementally). No alembic migration — `scans.status` is `TEXT`, the new value is application-level only.
+- **AC:**
+  - `POST /scans/{id}/pause` → `200` from `running`; idempotent `200` from `paused`; `409 not_pausable` from `pending`/`completed`/`failed`/`cancelled`.
+  - `POST /scans/{id}/resume` → `202` from `paused` (re-enqueues); `409 not_resumable` otherwise; `503 queue_unavailable` if broker is down (scan stays `paused`).
+  - `POST /scans/{id}/cancel` works from `paused` and transitions directly to `cancelled`.
+  - Worker integration test: pause mid-scan leaves zero `scan_files.status='running'` rows; resume processes the remaining `pending` rows and the scan reaches `completed` with the expected total finding count.
+  - `GET /scans/{id}/findings` returns persisted findings on a `paused` scan (regression test).
+  - Cross-user pause/resume returns `404` (no enumeration — matches existing scan endpoints).
+  - Web: Pause button visible while `running`, Resume button visible while `paused`; clicking either reflects the new state within one polling tick. Findings panel renders unchanged through the transition.
+- **Touches:** `apps/api/app/routers/scans.py`, `apps/api/app/services/scan_service.py`, `apps/api/app/schemas/scan.py`, `apps/worker/worker/tasks/run_scan.py`, `apps/web/app/scans/[id]/page.tsx`, `apps/web/lib/api/scans.ts`, plus tests.
+- **Depends on:** T3.4 (worker orchestrator), T3.6 (progress page).
+
 ---
 
 ## Phase 5 — Hardening & polish
