@@ -244,8 +244,45 @@ Errors:
 - `422 validation_error` — the reconstructed payload would fail standard scan-creation validation (e.g. file count exceeds `MAX_FILES_PER_SCAN`).
 - `503 queue_unavailable` — broker is down; the new scan row is marked `failed` before bubbling.
 
+### `POST /scans/{id}/pause`
+
+Pauses a running scan. Worker checks a pause flag between files and exits cleanly; in-flight per-file work completes and persists findings before exit. Any unprocessed `scan_files` rows remain in `pending` for resume to pick up.
+
+CSRF: required (mutating).
+
+Response `200`:
+```json
+{ "id": "uuid", "status": "paused", "progress_done": 47, "progress_total": 312 }
+```
+
+Idempotent: calling pause on an already-`paused` scan returns `200` with the same body (no-op).
+
+Errors:
+- `404 not_found` — scan doesn't exist or belongs to another user.
+- `409 conflict` — scan is in `pending`, `completed`, `failed`, or `cancelled` state. Body includes `error.code = "not_pausable"` and the current status.
+
+While paused, `GET /scans/{id}/findings` continues to work — partial findings persisted before the pause are visible immediately. No API change is needed for this; it follows from the existing per-file persistence contract.
+
+### `POST /scans/{id}/resume`
+
+Resumes a paused scan. Clears the pause flag and re-enqueues `run_scan(scan_id)`; the worker selects `scan_files` rows where `status = 'pending'` and continues from there.
+
+CSRF: required (mutating).
+
+Response `202`:
+```json
+{ "id": "uuid", "status": "pending", "progress_done": 47, "progress_total": 312 }
+```
+
+`status` flips back to `running` once the worker picks the task up (same as the pending → running transition for a brand-new scan).
+
+Errors:
+- `404 not_found` — scan doesn't exist or belongs to another user.
+- `409 conflict` — scan is not in `paused` state. Body includes `error.code = "not_resumable"` and the current status.
+- `503 queue_unavailable` — broker is down; the scan stays in `paused` so the user can retry.
+
 ### `POST /scans/{id}/cancel`
-`200` on success. Worker checks a cancellation flag between files and exits gracefully.
+`200` on success. Worker checks a cancellation flag between files and exits gracefully. Cancel is also valid from `paused` — it transitions `paused → cancelled` directly (no worker wake-up needed).
 
 ### `DELETE /scans/{id}`
 `204`. Cascades to scan_files and findings.
