@@ -44,8 +44,8 @@ export function AppShell({ children }: Readonly<AppShellProps>) {
                 collapsed ? 'justify-center px-0' : 'px-2',
               )}
             >
-              <span className="flex size-9 items-center justify-center rounded-xl bg-primary/15 text-sm font-semibold text-primary">
-                CS
+              <span className="flex size-9 items-center justify-center rounded-xl bg-primary/15 text-2xl font-extrabold leading-none text-primary">
+                i
               </span>
               <div className={cn('hidden lg:block', collapsed && 'lg:hidden')}>
                 <p className="text-sm font-semibold">CodeScan</p>
@@ -81,7 +81,7 @@ export function AppShell({ children }: Readonly<AppShellProps>) {
                       className={cn(
                         'flex min-h-11 items-center gap-3 rounded-r-xl border-l-2 border-transparent text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/70 hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background',
                         isActive &&
-                          'border-indigo-500 bg-zinc-100 text-foreground dark:bg-zinc-800',
+                          'border-primary bg-zinc-100 text-foreground dark:bg-zinc-800',
                         collapsed
                           ? 'justify-center px-0 lg:justify-center'
                           : 'justify-center px-0 lg:justify-start lg:px-3',
