@@ -44,10 +44,28 @@ class Settings(BaseSettings):
     max_loose_files: int = 50
     max_loose_file_size_mb: int = 50
 
+    # ---- Redis (app-level) ----
+    # Used for the rate limiter (T5.1). Db 0 is reserved for the API; Celery
+    # owns 1 (broker) and 2 (result backend). Default mirrors docker-compose.
+    redis_url: str = "redis://redis:6379/0"
+
     # ---- Celery ----
     # The API only enqueues; consumption lives in apps/worker. Default mirrors
     # docker-compose so local dev "just works".
     celery_broker_url: str = "redis://redis:6379/1"
+
+    # ---- Rate limits (T5.1, sourced from docs/API.md §"Rate limits") ----
+    # Sliding-window counts are evaluated lazily per request, so changes to
+    # these via env hot-reload between requests, without re-registering routes.
+    rate_limit_login_per_minute: int = 5
+    rate_limit_register_per_minute: int = 5
+    rate_limit_upload_per_hour: int = 10
+    rate_limit_scan_per_hour: int = 30
+    # Optional namespace prefix on every rate-limit key — empty in prod, set to
+    # a per-test UUID in the test suite to isolate concurrent test runs that
+    # share the same Redis db. Keeping it on Settings (rather than baked into
+    # the test fixture) means no special-casing in the limiter itself.
+    rate_limit_key_namespace: str = ""
 
     # ---- CORS ----
     # Browser → API is cross-origin; the frontend uses cookie auth so wildcard

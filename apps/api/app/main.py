@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
 
+import redis.asyncio as redis_async
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -14,7 +15,7 @@ from sqlalchemy.exc import SQLAlchemyError
 
 from app.core.config import settings
 from app.core.db import engine
-from app.core.exceptions import AppError
+from app.core.exceptions import AppError, RateLimited
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
 from app.routers.scans import router as scans_router
@@ -90,8 +91,25 @@ async def http_exception_handler(_: Request, exc: Exception) -> JSONResponse:
     )
 
 
+async def rate_limited_handler(_: Request, exc: Exception) -> JSONResponse:
+    """429 + standard error envelope + ``Retry-After`` header.
+
+    Registered before ``app_error_handler`` so the more specific class wins
+    dispatch — FastAPI walks the MRO and picks the closest match.
+    """
+
+    err = cast(RateLimited, exc)
+    response = _error_response(
+        status_code=err.status_code,
+        code=err.error_code,
+        message=err.message,
+    )
+    response.headers["Retry-After"] = str(err.retry_after_seconds)
+    return response
+
+
 @asynccontextmanager
-async def lifespan(_: FastAPI) -> AsyncIterator[None]:
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     try:
         async with engine.connect() as connection:
             await connection.execute(text("SELECT 1"))
@@ -99,10 +117,23 @@ async def lifespan(_: FastAPI) -> AsyncIterator[None]:
     except (OSError, SQLAlchemyError):
         logger.exception("database connectivity check failed during startup")
 
+    # Single async Redis client per process. ``decode_responses=True`` so the
+    # rate limiter sees `str` rather than `bytes` from ZRANGE — keeps the
+    # call sites readable. The pool size defaults are fine for v1; bump
+    # ``max_connections`` if we add hot-path Redis use elsewhere.
+    # ``from_url`` lacks a typed signature in redis-py 5.x; cast + ignore
+    # keeps mypy --strict happy without disabling stubs project-wide.
+    redis_client: redis_async.Redis = redis_async.from_url(  # type: ignore[no-untyped-call]
+        settings.redis_url,
+        decode_responses=True,
+    )
+    app.state.redis = redis_client
+
     try:
         yield
     finally:
         await engine.dispose()
+        await redis_client.aclose()
 
 
 def create_app() -> FastAPI:
@@ -118,6 +149,10 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Accept", "X-Requested-With"],
     )
+    # The RateLimited handler must be registered BEFORE the AppError one so
+    # FastAPI's MRO-walking dispatch picks the more specific subclass and
+    # we get the ``Retry-After`` header on 429s.
+    app.add_exception_handler(RateLimited, rate_limited_handler)
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)

@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.core.deps import get_current_user, require_csrf_header
 from app.core.exceptions import InvalidUploadRequest, NotFound
+from app.core.rate_limit import rate_limit_per_user
 from app.models.upload import UPLOAD_KIND_LOOSE, UPLOAD_KIND_ZIP, Upload
 from app.models.user import User
 from app.repositories.upload_repo import UploadRepo
@@ -37,6 +38,14 @@ router = APIRouter(
     prefix="/api/v1/uploads",
     tags=["uploads"],
     dependencies=[Depends(get_current_user)],
+)
+
+# Rate limit dep (T5.1): 10 uploads per user per hour. Sourced from
+# docs/API.md §"Rate limits".
+_upload_rate_limit = rate_limit_per_user(
+    limit_factory=lambda: settings.rate_limit_upload_per_hour,
+    window_seconds=3600,
+    key_prefix="upload",
 )
 
 
@@ -69,7 +78,7 @@ def _detail_response(upload: Upload) -> UploadDetail:
     "",
     response_model=UploadCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_csrf_header)],
+    dependencies=[Depends(require_csrf_header), Depends(_upload_rate_limit)],
 )
 async def create_upload(
     current_user: Annotated[User, Depends(get_current_user)],

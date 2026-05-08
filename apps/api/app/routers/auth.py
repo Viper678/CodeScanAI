@@ -9,11 +9,27 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.core.deps import get_current_user, require_csrf_header
 from app.core.exceptions import InvalidToken
+from app.core.rate_limit import rate_limit_per_ip
 from app.models.user import User
 from app.schemas.auth import LoginRequest, RegisterRequest, UserOut
 from app.services.auth_service import AuthCookies, AuthService
 
 router = APIRouter(prefix="/api/v1/auth", tags=["auth"])
+
+# Rate limit deps (T5.1). 5/IP/min on register and login per docs/API.md
+# §"Rate limits" + docs/SECURITY.md §"Authentication" (credential-stuffing
+# mitigation). The limit_factory thunk re-reads settings on every request so
+# operators can tune limits without re-registering routes.
+_login_rate_limit = rate_limit_per_ip(
+    limit_factory=lambda: settings.rate_limit_login_per_minute,
+    window_seconds=60,
+    key_prefix="login",
+)
+_register_rate_limit = rate_limit_per_ip(
+    limit_factory=lambda: settings.rate_limit_register_per_minute,
+    window_seconds=60,
+    key_prefix="register",
+)
 
 
 def _client_ip(request: Request) -> str | None:
@@ -62,7 +78,12 @@ def _clear_auth_cookies(response: Response) -> None:
     )
 
 
-@router.post("/register", response_model=UserOut, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/register",
+    response_model=UserOut,
+    status_code=status.HTTP_201_CREATED,
+    dependencies=[Depends(_register_rate_limit)],
+)
 async def register(
     payload: RegisterRequest,
     request: Request,
@@ -79,14 +100,17 @@ async def register(
     return _user_out(user)
 
 
-@router.post("/login", response_model=UserOut)
+@router.post(
+    "/login",
+    response_model=UserOut,
+    dependencies=[Depends(_login_rate_limit)],
+)
 async def login(
     payload: LoginRequest,
     request: Request,
     response: Response,
     session: Annotated[AsyncSession, Depends(get_session)],
 ) -> UserOut:
-    # TODO(T5.1): rate-limit POST /auth/login at 5/IP/min — see docs/SECURITY.md §2 and docs/API.md §Rate limits  # noqa: E501 - required task TODO text
     user, cookies = await AuthService(session).login(
         email=str(payload.email),
         password=payload.password,
