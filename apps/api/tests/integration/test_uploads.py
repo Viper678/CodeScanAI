@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import shutil
 import zipfile
 from collections.abc import Iterator
 from pathlib import Path
@@ -13,6 +14,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.uuid7 import uuid7
+from app.models.file import File
+from app.models.scan import Scan
+from app.models.scan_file import ScanFile
+from app.models.scan_finding import ScanFinding
 from app.models.upload import Upload
 
 CSRF_HEADERS = {"X-Requested-With": "codescan"}
@@ -464,3 +470,275 @@ async def test_post_loose_upload_marks_failed_when_broker_unavailable(
     assert row is not None
     assert row.status == "failed"
     assert row.error == "queue_unavailable"
+
+
+# ---------------------------------------------------------------------------
+# DELETE /api/v1/uploads/{id}
+# ---------------------------------------------------------------------------
+
+
+async def _create_upload_via_api(
+    authed_client: httpx.AsyncClient,
+    *,
+    body: bytes | None = None,
+) -> UUID:
+    """POST a tiny zip and return the new upload id."""
+
+    response = await authed_client.post(
+        "/api/v1/uploads",
+        headers=CSRF_HEADERS,
+        files={"file": ("repo.zip", body or _zip_bytes(), "application/zip")},
+        data={"kind": "zip"},
+    )
+    assert response.status_code == 202, response.text
+    return UUID(response.json()["id"])
+
+
+async def test_delete_upload_returns_204_and_wipes_disk(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    upload_data_dir: Path,
+    mock_enqueue: MagicMock,
+) -> None:
+    upload_id = await _create_upload_via_api(authed_client)
+    upload_dir = upload_data_dir / "uploads" / str(upload_id)
+    assert upload_dir.exists()  # raw artifact landed on disk
+
+    response = await authed_client.delete(
+        f"/api/v1/uploads/{upload_id}",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 204
+    assert response.content == b""
+
+    assert not upload_dir.exists(), "raw upload tree should be gone"
+
+    await db_session.commit()
+    row = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
+    assert row is None
+
+
+async def test_delete_upload_cascades_to_files_scans_and_findings(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    upload_data_dir: Path,
+    mock_enqueue: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Deleting an upload must leave no row referencing it.
+
+    Seeds an upload + one file + one scan + one scan_file + one scan_finding,
+    plus an extract directory on disk distinct from the upload dir, then
+    asserts the DELETE wipes everything in one shot. This is the contract
+    that makes the endpoint safe to surface to data-retention-conscious
+    customers.
+    """
+
+    upload_id = await _create_upload_via_api(authed_client)
+    upload = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
+    assert upload is not None
+
+    extract_dir = tmp_path / "extracts" / str(upload_id)
+    extract_dir.mkdir(parents=True)
+    (extract_dir / "main.py").write_text("print('hi')\n")
+    upload.extract_path = str(extract_dir)
+    upload.status = "ready"
+
+    file_row = File(
+        id=uuid7(),
+        upload_id=upload.id,
+        path="src/main.py",
+        name="main.py",
+        parent_path="src",
+        size_bytes=10,
+        language="python",
+        is_binary=False,
+        is_excluded_by_default=False,
+        excluded_reason=None,
+        sha256="deadbeef",
+    )
+    db_session.add(file_row)
+    scan_row = Scan(
+        id=uuid7(),
+        user_id=upload.user_id,
+        upload_id=upload.id,
+        name="test scan",
+        scan_types=["security"],
+        keywords={},
+        status="completed",
+        progress_done=1,
+        progress_total=1,
+        model="gemma-4-31b-it",
+        model_settings={},
+    )
+    db_session.add(scan_row)
+    await db_session.flush()
+    scan_file_row = ScanFile(
+        id=uuid7(),
+        scan_id=scan_row.id,
+        file_id=file_row.id,
+        status="done",
+    )
+    finding_row = ScanFinding(
+        id=uuid7(),
+        scan_id=scan_row.id,
+        file_id=file_row.id,
+        scan_type="security",
+        severity="high",
+        title="example",
+        message="example",
+    )
+    db_session.add_all([scan_file_row, finding_row])
+    await db_session.commit()
+
+    response = await authed_client.delete(
+        f"/api/v1/uploads/{upload_id}",
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 204
+
+    await db_session.commit()
+    assert (await db_session.scalar(select(Upload).where(Upload.id == upload_id))) is None
+    assert (await db_session.scalar(select(File).where(File.id == file_row.id))) is None
+    assert (await db_session.scalar(select(Scan).where(Scan.id == scan_row.id))) is None
+    sf_row = await db_session.scalar(
+        select(ScanFile).where(ScanFile.id == scan_file_row.id),
+    )
+    assert sf_row is None
+    finding = await db_session.scalar(
+        select(ScanFinding).where(ScanFinding.id == finding_row.id),
+    )
+    assert finding is None
+
+    assert not extract_dir.exists(), "extract tree should be gone"
+    assert not (upload_data_dir / "uploads" / str(upload_id)).exists()
+
+
+async def test_delete_upload_404_for_other_user(
+    client: httpx.AsyncClient,
+    upload_data_dir: Path,
+    mock_enqueue: MagicMock,
+) -> None:
+    register_a = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "owner-del@example.com", "password": "correct-horse"},
+    )
+    assert register_a.status_code == 201
+    create = await client.post(
+        "/api/v1/uploads",
+        headers=CSRF_HEADERS,
+        files={"file": ("repo.zip", _zip_bytes(), "application/zip")},
+        data={"kind": "zip"},
+    )
+    assert create.status_code == 202
+    upload_id = UUID(create.json()["id"])
+
+    client.cookies.clear()
+    register_b = await client.post(
+        "/api/v1/auth/register",
+        json={"email": "intruder-del@example.com", "password": "correct-horse"},
+    )
+    assert register_b.status_code == 201
+
+    response = await client.delete(
+        f"/api/v1/uploads/{upload_id}",
+        headers=CSRF_HEADERS,
+    )
+
+    # 404, not 403 — same no-enumeration rule as GET /uploads/{id}.
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+    # Disk artifact must survive — the cross-user request is not authorized
+    # to delete it.
+    assert (upload_data_dir / "uploads" / str(upload_id)).exists()
+
+
+async def test_delete_upload_404_for_unknown_id(
+    authed_client: httpx.AsyncClient,
+    upload_data_dir: Path,
+) -> None:
+    response = await authed_client.delete(
+        f"/api/v1/uploads/{uuid4()}",
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "not_found"
+
+
+async def test_delete_upload_unauthenticated_returns_401(
+    client: httpx.AsyncClient,
+    upload_data_dir: Path,
+) -> None:
+    response = await client.delete(
+        f"/api/v1/uploads/{uuid4()}",
+        headers=CSRF_HEADERS,
+    )
+    assert response.status_code == 401
+    assert response.json()["error"]["code"] == "unauthorized"
+
+
+async def test_delete_upload_without_csrf_header_returns_403(
+    authed_client: httpx.AsyncClient,
+    upload_data_dir: Path,
+    mock_enqueue: MagicMock,
+) -> None:
+    upload_id = await _create_upload_via_api(authed_client)
+
+    response = await authed_client.delete(f"/api/v1/uploads/{upload_id}")
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden"
+    # And the upload must still be there.
+    assert (upload_data_dir / "uploads" / str(upload_id)).exists()
+
+
+async def test_delete_upload_tolerates_missing_disk_artifacts(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    upload_data_dir: Path,
+    mock_enqueue: MagicMock,
+) -> None:
+    """A pre-wiped on-disk tree (e.g. the cleanup beat task already ran) must
+    not block deletion — the row should still be removed."""
+
+    upload_id = await _create_upload_via_api(authed_client)
+    upload_dir = upload_data_dir / "uploads" / str(upload_id)
+    shutil.rmtree(upload_dir)
+    assert not upload_dir.exists()
+
+    response = await authed_client.delete(
+        f"/api/v1/uploads/{upload_id}",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 204
+    await db_session.commit()
+    row = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
+    assert row is None
+
+
+async def test_delete_upload_tolerates_null_extract_path(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    upload_data_dir: Path,
+    mock_enqueue: MagicMock,
+) -> None:
+    """An upload that never finished extracting still deletes cleanly — the
+    extract_path is null, so we only wipe the raw upload dir."""
+
+    upload_id = await _create_upload_via_api(authed_client)
+    upload = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
+    assert upload is not None
+    assert upload.extract_path is None  # received → never got past worker
+
+    response = await authed_client.delete(
+        f"/api/v1/uploads/{upload_id}",
+        headers=CSRF_HEADERS,
+    )
+
+    assert response.status_code == 204
+    await db_session.commit()
+    row = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
+    assert row is None
+    assert not (upload_data_dir / "uploads" / str(upload_id)).exists()

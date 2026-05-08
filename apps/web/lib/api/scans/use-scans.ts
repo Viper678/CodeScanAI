@@ -7,6 +7,7 @@ import { ApiError } from '@/lib/api/client';
 import {
   cancelScan,
   createScan,
+  deleteScan,
   fetchScan,
   fetchScanFiles,
   fetchScans,
@@ -202,6 +203,25 @@ export function useRerunScanMutation() {
   const queryClient = useQueryClient();
   return useMutation<ScanCreateResponse, ApiError, string>({
     mutationFn: (sourceScanId: string) => rerunScan(sourceScanId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [SCANS_LIST_QUERY_KEY],
+      });
+    },
+  });
+}
+
+/**
+ * Mutation wrapper around `DELETE /scans/{id}`. Used by the data-retention
+ * delete button on `/scans` rows + the scan detail header. Invalidates the
+ * listing on success; the caller (detail page) is responsible for routing
+ * back to `/scans` since the per-scan polling key would otherwise 404 on
+ * its next tick.
+ */
+export function useDeleteScanMutation() {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (scanId: string) => deleteScan(scanId),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: [SCANS_LIST_QUERY_KEY],

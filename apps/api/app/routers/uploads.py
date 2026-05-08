@@ -2,7 +2,8 @@
 
 The router stays intentionally thin — validation and persistence live in
 ``app.services.upload_service``. Auth is enforced via a router-wide
-``Depends(get_current_user)`` and CSRF on the mutating ``POST``.
+``Depends(get_current_user)`` and CSRF on the mutating endpoints
+(``POST /uploads`` and ``DELETE /uploads/{id}``).
 """
 
 from __future__ import annotations
@@ -10,7 +11,7 @@ from __future__ import annotations
 from typing import Annotated, cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -131,6 +132,29 @@ async def get_upload(
         # upload owned by someone else. See docs/SECURITY.md §3.
         raise NotFound("Upload not found")
     return _detail_response(upload)
+
+
+@router.delete(
+    "/{upload_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+    dependencies=[Depends(require_csrf_header)],
+)
+async def delete_upload(
+    upload_id: UUID,
+    current_user: Annotated[User, Depends(get_current_user)],
+    session: Annotated[AsyncSession, Depends(get_session)],
+) -> Response:
+    """Permanently delete an upload, its files, scans, findings, and disk artifacts.
+
+    See ``docs/API.md`` §`DELETE /uploads/{id}` and the data-retention rule in
+    ``docs/SECURITY.md``: this endpoint is the customer-facing way to purge
+    everything we hold for one upload. Cross-user / unknown ids return 404
+    (not 403) to keep ``GET`` and ``DELETE`` enumerable consistently.
+    """
+
+    service = UploadService(session)
+    await service.delete_upload(upload_id=upload_id, user_id=current_user.id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 @router.get("/{upload_id}/tree", response_model=TreeResponse)

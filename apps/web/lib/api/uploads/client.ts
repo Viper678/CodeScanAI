@@ -175,3 +175,15 @@ export async function fetchUploads(
     { method: 'GET', signal },
   );
 }
+
+/**
+ * DELETE `/uploads/{id}` — hard-delete an upload, its files, scans, findings,
+ * and on-disk artifacts in one call. The server returns 204 (no body); see
+ * docs/API.md §`DELETE /uploads/{id}`.
+ */
+export async function deleteUpload(uploadId: string): Promise<void> {
+  await apiFetch<void>(`/uploads/${uploadId}`, {
+    csrf: true,
+    method: 'DELETE',
+  });
+}

@@ -151,7 +151,16 @@ Directories are returned as entries with `language: null`, `is_binary: false`, a
 List user's uploads (paginated).
 
 ### `DELETE /uploads/{id}`
-`204`. Cascades to files, scans, findings. Removes extracted files from disk.
+`204`. Hard-delete: removes the raw upload tree (`/data/uploads/<id>/`) and the extracted tree (`upload.extract_path`) from disk, then cascades the row deletion through `files` → `scans` → `scan_files` → `scan_findings` (one DB transaction). Surfaced for data-retention-conscious customers; the operation is the only customer-facing way to purge every byte of a single upload.
+
+CSRF: required (mutating).
+
+Errors:
+- `401 unauthorized` — no session cookie.
+- `403 forbidden` — missing CSRF header.
+- `404 not_found` — upload doesn't exist or belongs to another user (no enumeration; matches the rule in §3 of `docs/SECURITY.md`).
+
+Idempotency: safe to retry. Disk artifacts that were already wiped (e.g. by the cleanup beat task) are skipped without error. The DB delete is committed only after the disk wipe succeeds, so a retry never observes a row whose backing files are gone.
 
 ### `GET /uploads/{upload_id}/files/{file_id}/content`
 

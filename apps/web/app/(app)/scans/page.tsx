@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { useState } from 'react';
 
+import { ConfirmDeleteButton } from '@/components/confirm-delete-button';
 import { EmptyState } from '@/components/empty-state';
 import { ScansFilterBar } from '@/components/scans/scans-filter-bar';
 import { StatusPill } from '@/components/status-pill';
@@ -18,7 +19,11 @@ import { Badge } from '@/components/ui/badge';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ApiError } from '@/lib/api/client';
-import { useRerunScanMutation, useScansQuery } from '@/lib/api/scans/use-scans';
+import {
+  useDeleteScanMutation,
+  useRerunScanMutation,
+  useScansQuery,
+} from '@/lib/api/scans/use-scans';
 import { useScansFilters } from '@/lib/api/scans/use-scans-filters';
 import type { ScanDetail, ScanStatus, ScanType } from '@/lib/api/scans/types';
 import { formatShortDate } from '@/lib/format';
@@ -156,6 +161,7 @@ function ScanRow({ scan }: Readonly<ScanRowProps>) {
   // wipe inline errors on a sibling row mid-toast-style.
   const [errorText, setErrorText] = useState<string | null>(null);
   const rerun = useRerunScanMutation();
+  const deleteScan = useDeleteScanMutation();
 
   // Terminal-only: re-running a pending/running scan is a no-op intent and
   // would race the worker — same rule the API would gladly enforce, but
@@ -174,6 +180,11 @@ function ScanRow({ scan }: Readonly<ScanRowProps>) {
         router.push(`/scans/${data.id}`);
       },
     });
+  };
+
+  const handleDelete = async () => {
+    setErrorText(null);
+    await deleteScan.mutateAsync(scan.id);
   };
 
   return (
@@ -245,6 +256,18 @@ function ScanRow({ scan }: Readonly<ScanRowProps>) {
               Re-run
             </Button>
           ) : null}
+          <ConfirmDeleteButton
+            label={`scan ${scan.name ?? 'Unnamed scan'}`}
+            onConfirm={handleDelete}
+            onError={(err) => {
+              setErrorText(
+                err instanceof ApiError
+                  ? err.message
+                  : 'Could not delete this scan.',
+              );
+            }}
+            testId={`scan-row-${scan.id}-delete`}
+          />
         </div>
       </div>
       {errorText ? (

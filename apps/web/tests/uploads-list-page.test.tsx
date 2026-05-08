@@ -1,16 +1,20 @@
 import React from 'react';
-import { render, screen } from '@testing-library/react';
-import { describe, expect, it, vi } from 'vitest';
+import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 import UploadsPage from '@/app/(app)/uploads/page';
 import { ApiError } from '@/lib/api/auth/errors';
 import type { UploadDetail, UploadListResponse } from '@/lib/api/uploads/types';
 
-const { useUploadsQueryMock } = vi.hoisted(() => ({
-  useUploadsQueryMock: vi.fn(),
-}));
+const { deleteUploadMock, useDeleteUploadMutationMock, useUploadsQueryMock } =
+  vi.hoisted(() => ({
+    deleteUploadMock: vi.fn(),
+    useDeleteUploadMutationMock: vi.fn(),
+    useUploadsQueryMock: vi.fn(),
+  }));
 
 vi.mock('@/lib/api/uploads/use-upload', () => ({
+  useDeleteUploadMutation: () => useDeleteUploadMutationMock(),
   useUploadsQuery: () => useUploadsQueryMock(),
 }));
 
@@ -44,6 +48,17 @@ function makeListResult(items: UploadDetail[]): {
 }
 
 describe('UploadsPage', () => {
+  beforeEach(() => {
+    deleteUploadMock.mockReset();
+    deleteUploadMock.mockResolvedValue(undefined);
+    useDeleteUploadMutationMock.mockReset();
+    useDeleteUploadMutationMock.mockReturnValue({
+      isPending: false,
+      mutateAsync: deleteUploadMock,
+    });
+    useUploadsQueryMock.mockReset();
+  });
+
   it('renders a row per upload and links to the tree-preview', () => {
     useUploadsQueryMock.mockReturnValue(
       makeListResult([
@@ -62,16 +77,59 @@ describe('UploadsPage', () => {
     expect(screen.getByText('monorepo.zip')).toBeInTheDocument();
     expect(screen.getByText('wip.zip')).toBeInTheDocument();
 
+    // The row is now a div with an absolute overlay anchor (so the inline
+    // delete button can sit above it without nesting button-in-anchor). Look
+    // up the link inside the row rather than treating the row itself as the
+    // <a>.
     const firstRow = screen.getByTestId('upload-row-u-1');
-    expect(firstRow).toHaveAttribute('href', '/uploads/u-1/tree-preview');
-    expect(screen.getByTestId('upload-row-u-2')).toHaveAttribute(
-      'href',
-      '/uploads/u-2/tree-preview',
-    );
+    expect(
+      firstRow.querySelector('a[href="/uploads/u-1/tree-preview"]'),
+    ).toBeInTheDocument();
+    const secondRow = screen.getByTestId('upload-row-u-2');
+    expect(
+      secondRow.querySelector('a[href="/uploads/u-2/tree-preview"]'),
+    ).toBeInTheDocument();
 
     // Ready upload shows file count; extracting shows "—".
     expect(firstRow).toHaveTextContent('312 files');
-    expect(screen.getByTestId('upload-row-u-2')).toHaveTextContent('—');
+    expect(secondRow).toHaveTextContent('—');
+  });
+
+  it('exposes the delete trigger on every row and fires the mutation on confirm', async () => {
+    useUploadsQueryMock.mockReturnValue(
+      makeListResult([
+        makeUpload({ id: 'u-1', original_name: 'monorepo.zip' }),
+      ]),
+    );
+
+    render(<UploadsPage />);
+
+    fireEvent.click(screen.getByTestId('upload-row-u-1-delete-trigger'));
+    fireEvent.click(screen.getByTestId('upload-row-u-1-delete-confirm'));
+
+    await waitFor(() => {
+      expect(deleteUploadMock).toHaveBeenCalledWith('u-1');
+    });
+  });
+
+  it('surfaces an inline error when the delete mutation rejects', async () => {
+    deleteUploadMock.mockRejectedValueOnce(
+      new ApiError(500, 'server_error', 'Boom.'),
+    );
+    useUploadsQueryMock.mockReturnValue(
+      makeListResult([makeUpload({ id: 'u-1' })]),
+    );
+
+    render(<UploadsPage />);
+
+    fireEvent.click(screen.getByTestId('upload-row-u-1-delete-trigger'));
+    fireEvent.click(screen.getByTestId('upload-row-u-1-delete-confirm'));
+
+    await waitFor(() => {
+      expect(
+        screen.getByTestId('upload-row-u-1-delete-error'),
+      ).toHaveTextContent(/boom/i);
+    });
   });
 
   it('renders the EmptyState when the response has zero items', () => {

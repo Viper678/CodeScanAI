@@ -39,7 +39,7 @@ class ScanFinding(Base):
     )
     file_id: Mapped[UUID] = mapped_column(
         PGUUID(as_uuid=True),
-        ForeignKey("files.id"),
+        ForeignKey("files.id", ondelete="CASCADE"),
         nullable=False,
     )
     scan_type: Mapped[str] = mapped_column(Text, nullable=False)

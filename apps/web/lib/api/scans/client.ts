@@ -111,3 +111,14 @@ export async function rerunScan(scanId: string): Promise<ScanCreateResponse> {
     method: 'POST',
   });
 }
+
+/**
+ * DELETE `/scans/{id}` — hard-delete a scan and all its findings + scan_files.
+ * Returns 204 (no body); see docs/API.md §`DELETE /scans/{id}`.
+ */
+export async function deleteScan(scanId: string): Promise<void> {
+  await apiFetch<void>(`/scans/${scanId}`, {
+    csrf: true,
+    method: 'DELETE',
+  });
+}

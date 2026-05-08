@@ -7,15 +7,19 @@ import { ApiError } from '@/lib/api/auth/errors';
 import type { ScanDetail, ScanListResponse } from '@/lib/api/scans/types';
 
 const {
+  deleteScanMock,
   pushMock,
   rerunScanMock,
+  useDeleteScanMutationMock,
   useRerunScanMutationMock,
   useScansFiltersMock,
   useScansQueryMock,
 } = vi.hoisted(() => {
   return {
+    deleteScanMock: vi.fn(),
     pushMock: vi.fn(),
     rerunScanMock: vi.fn(),
+    useDeleteScanMutationMock: vi.fn(),
     useRerunScanMutationMock: vi.fn(),
     useScansFiltersMock: vi.fn(),
     useScansQueryMock: vi.fn(),
@@ -29,6 +33,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@/lib/api/scans/use-scans', () => ({
+  useDeleteScanMutation: () => useDeleteScanMutationMock(),
   useRerunScanMutation: () => useRerunScanMutationMock(),
   useScansQuery: (params: unknown) => useScansQueryMock(params),
 }));
@@ -88,13 +93,27 @@ function setUpRerunMutation(impl?: {
   });
 }
 
+function setUpDeleteMutation(impl?: {
+  isPending?: boolean;
+  mutateAsync?: typeof deleteScanMock;
+}) {
+  useDeleteScanMutationMock.mockReturnValue({
+    isPending: impl?.isPending ?? false,
+    mutateAsync: impl?.mutateAsync ?? deleteScanMock,
+  });
+}
+
 describe('ScansPage', () => {
   beforeEach(() => {
+    deleteScanMock.mockReset();
+    deleteScanMock.mockResolvedValue(undefined);
     pushMock.mockReset();
     rerunScanMock.mockReset();
+    useDeleteScanMutationMock.mockReset();
     useRerunScanMutationMock.mockReset();
     useScansFiltersMock.mockReset();
     useScansQueryMock.mockReset();
+    setUpDeleteMutation();
   });
 
   it('renders a row per scan', () => {
@@ -265,6 +284,49 @@ describe('ScansPage', () => {
     expect(
       screen.queryByRole('link', { name: 'Run your first scan' }),
     ).not.toBeInTheDocument();
+  });
+
+  it('exposes the delete trigger on every row and fires the mutation on confirm', async () => {
+    setUpFilters();
+    setUpRerunMutation();
+    useScansQueryMock.mockReturnValue(
+      makeListResult([
+        makeScan({ id: 's-1', name: 'Repo audit', status: 'completed' }),
+      ]),
+    );
+
+    render(<ScansPage />);
+
+    const trigger = screen.getByTestId('scan-row-s-1-delete-trigger');
+    expect(trigger).toBeInTheDocument();
+    fireEvent.click(trigger);
+    fireEvent.click(screen.getByTestId('scan-row-s-1-delete-confirm'));
+
+    await waitFor(() => {
+      expect(deleteScanMock).toHaveBeenCalledWith('s-1');
+    });
+  });
+
+  it('surfaces an inline error when the delete mutation rejects', async () => {
+    setUpFilters();
+    setUpRerunMutation();
+    deleteScanMock.mockRejectedValueOnce(
+      new ApiError(500, 'server_error', 'Boom.'),
+    );
+    useScansQueryMock.mockReturnValue(
+      makeListResult([makeScan({ id: 's-1', status: 'completed' })]),
+    );
+
+    render(<ScansPage />);
+
+    fireEvent.click(screen.getByTestId('scan-row-s-1-delete-trigger'));
+    fireEvent.click(screen.getByTestId('scan-row-s-1-delete-confirm'));
+
+    await waitFor(() => {
+      expect(screen.getByTestId('scan-row-s-1-rerun-error')).toHaveTextContent(
+        /boom/i,
+      );
+    });
   });
 
   it('shows the loading skeleton while pending', () => {

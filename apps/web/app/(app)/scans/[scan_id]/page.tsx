@@ -1,9 +1,11 @@
 'use client';
 
 import Link from 'next/link';
-import { useMemo } from 'react';
+import { useRouter } from 'next/navigation';
+import { useMemo, useState } from 'react';
 import { AlertTriangle, Loader2 } from 'lucide-react';
 
+import { ConfirmDeleteButton } from '@/components/confirm-delete-button';
 import { ExportMenu } from '@/components/findings/export-menu';
 import { FindingsFilterBar } from '@/components/findings/findings-filter-bar';
 import { FindingsTable } from '@/components/findings/findings-table';
@@ -18,6 +20,7 @@ import { ApiError } from '@/lib/api/client';
 import { useFindingsFilters } from '@/lib/api/findings/use-findings-filters';
 import {
   useCancelScanMutation,
+  useDeleteScanMutation,
   useRecentScanFiles,
   useScanPolling,
 } from '@/lib/api/scans/use-scans';
@@ -53,6 +56,9 @@ export default function ScanProgressPage({
     limit: 10,
   });
   const cancelMutation = useCancelScanMutation(scanId);
+  const deleteMutation = useDeleteScanMutation();
+  const router = useRouter();
+  const [deleteError, setDeleteError] = useState<string | null>(null);
   const { filters, toggleSeverity, toggleScanType, clearAll } =
     useFindingsFilters();
 
@@ -92,13 +98,45 @@ export default function ScanProgressPage({
     return <ErrorPanel title="Scan not found." message={null} />;
   }
 
+  const handleDeleteScan = async () => {
+    setDeleteError(null);
+    try {
+      await deleteMutation.mutateAsync(scan.id);
+      router.push('/scans');
+    } catch (err) {
+      const message =
+        err instanceof ApiError
+          ? err.message
+          : 'Could not delete this scan. Please try again.';
+      setDeleteError(message);
+      throw err;
+    }
+  };
+
   return (
     <div className="space-y-8">
       <ProgressHeader
         scan={scan}
         cancelling={cancelMutation.isPending}
         onCancel={() => cancelMutation.mutate()}
+        actions={
+          <ConfirmDeleteButton
+            label={`scan "${scan.name?.trim().length ? scan.name : 'Untitled'}"`}
+            variant="wide"
+            onConfirm={handleDeleteScan}
+            testId={`scan-${scan.id}-delete`}
+          />
+        }
       />
+      {deleteError ? (
+        <p
+          role="alert"
+          data-testid="scan-delete-error"
+          className="text-sm text-red-600 dark:text-red-300"
+        >
+          {deleteError}
+        </p>
+      ) : null}
 
       {!isTerminal ? (
         <>
