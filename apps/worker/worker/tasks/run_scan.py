@@ -142,6 +142,13 @@ def _dispatch_lock(maker: sessionmaker[Session], scan_id: UUID) -> Iterator[Conn
     the entire dispatch (orphan recovery, plan build, pre-flight, dispatch
     loop, finalize). Released on every exit path: success, exception, pause,
     cancel.
+
+    On release we always ``invalidate()`` the connection so the underlying
+    psycopg connection is physically closed rather than returned to the pool.
+    Belt-and-suspenders: even if ``pg_advisory_unlock`` fails (e.g. the
+    connection is in a borked transaction state), Postgres releases the lock
+    once the backing session terminates — the pool would otherwise hold the
+    lock indefinitely on a recycled connection.
     """
 
     engine = maker.kw["bind"]
@@ -154,7 +161,15 @@ def _dispatch_lock(maker: sessionmaker[Session], scan_id: UUID) -> Iterator[Conn
         try:
             yield conn
         finally:
-            conn.execute(select(func.pg_advisory_unlock(_dispatch_lock_key_sql(scan_id))))
+            try:
+                conn.execute(select(func.pg_advisory_unlock(_dispatch_lock_key_sql(scan_id))))
+            except Exception:  # justify: unlock failure must not block invalidation
+                logger.exception(
+                    "pg_advisory_unlock failed for scan %s; invalidating connection",
+                    scan_id,
+                )
+            finally:
+                conn.invalidate()
     finally:
         conn.close()
 
@@ -202,8 +217,12 @@ def run_scan(self: Task, scan_id: str) -> dict[str, object]:
     """Run a scan end-to-end. Idempotent on re-delivery (terminal status no-ops).
 
     On dispatch-lock contention this task Celery-retries with exponential
-    backoff (2s/4s/8s/16s/32s, 5 attempts). After the budget is exhausted the
-    scan is marked ``failed`` with ``error="dispatch_lock_timeout"``.
+    backoff (2s/4s/8s/16s/32s, 5 attempts). After the budget is exhausted we
+    log loudly and return the scan's current state without modifying it —
+    another worker is presumed to be making progress under the lock, and a
+    failure-finalize here would overwrite that worker's eventual success.
+    Genuinely orphaned locks recover on the next dispatch via orphan-running
+    cleanup or a future cleanup beat.
 
     Args:
         scan_id: String form of the scan's UUID.
@@ -220,9 +239,12 @@ def run_scan(self: Task, scan_id: str) -> dict[str, object]:
     except DispatchLockBusy as exc:
         attempt = self.request.retries
         if attempt >= _DISPATCH_LOCK_MAX_RETRIES:
-            logger.error("dispatch lock timeout for scan %s after %d retries", scan_id, attempt)
-            _mark_dispatch_lock_timeout(scan_id)
-            return _result_for_lock_timeout(scan_id)
+            logger.error(
+                "dispatch lock timeout for scan %s after %d retries; leaving scan state unchanged",
+                scan_id,
+                attempt,
+            )
+            return _read_scan_result(scan_id)
         countdown = 2 ** (attempt + 1)
         logger.info(
             "dispatch lock busy for scan %s; retry %d in %ds", scan_id, attempt + 1, countdown
@@ -232,23 +254,9 @@ def run_scan(self: Task, scan_id: str) -> dict[str, object]:
         ) from exc
 
 
-def _mark_dispatch_lock_timeout(scan_id: str) -> None:
-    """Finalize a scan as ``failed`` with ``error='dispatch_lock_timeout'``."""
+def _read_scan_result(scan_id: str) -> dict[str, object]:
+    """Return the current state of ``scan_id`` without modifying it."""
 
-    parsed_id = UUID(scan_id)
-    with worker_db.SessionMaker() as session:
-        scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
-        if scan is None:
-            return
-        if scan.status in (SCAN_STATUS_COMPLETED, SCAN_STATUS_FAILED, SCAN_STATUS_CANCELLED):
-            return
-        scan.status = SCAN_STATUS_FAILED
-        scan.error = "dispatch_lock_timeout"
-        scan.finished_at = datetime.now(UTC)
-        session.commit()
-
-
-def _result_for_lock_timeout(scan_id: str) -> dict[str, object]:
     parsed_id = UUID(scan_id)
     with worker_db.SessionMaker() as session:
         scan = session.scalar(select(Scan).where(Scan.id == parsed_id))

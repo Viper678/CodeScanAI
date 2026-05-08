@@ -16,7 +16,7 @@ from uuid import UUID, uuid4
 import psycopg
 import pytest
 from psycopg import sql
-from sqlalchemy import create_engine, select
+from sqlalchemy import create_engine, func, select
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import NullPool
@@ -1243,13 +1243,14 @@ def test_run_scan_celery_retry_called_on_lock_busy(
     assert all(r["max_retries"] == 5 for r in retries)
 
 
-def test_run_scan_celery_retry_exhausted_marks_scan_failed(
+def test_run_scan_celery_retry_exhausted_does_not_mark_failed(
     test_db: tuple[str, str],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """After 5 retries on dispatch-lock contention, mark the scan failed
-    with `error="dispatch_lock_timeout"` and finalize."""
+    """After 5 retries on dispatch-lock contention, leave the scan's status
+    untouched — another worker is presumed to be making progress under the
+    lock, and a failure-finalize would overwrite that worker's success."""
 
     sync_url, _psycopg_url = test_db
     from worker.core import config as cfg
@@ -1285,7 +1286,7 @@ def test_run_scan_celery_retry_exhausted_marks_scan_failed(
             scan_types=["security"],
             keywords={},
             status=SCAN_STATUS_RUNNING,
-            progress_done=0,
+            progress_done=3,
             progress_total=len(file_ids),
             model="gemma-4-31b-it",
             model_settings={},
@@ -1326,14 +1327,18 @@ def test_run_scan_celery_retry_exhausted_marks_scan_failed(
 
     # Pretend the broker has already retried 5 times — this attempt is #6.
     result = run_scan_fn(_FakeTask(5), str(scan_id))
-    assert result["status"] == "failed"
+    # Returns the scan's current state without modifying it.
+    assert result["status"] == "running"
+    assert result["progress_done"] == 3
 
     with _engine_session(sync_url) as session:
         row = session.scalar(select(Scan).where(Scan.id == scan_id))
         assert row is not None
-        assert row.status == "failed"
-        assert row.error == "dispatch_lock_timeout"
-        assert row.finished_at is not None
+        # Status untouched — the other worker holding the lock will finalize.
+        assert row.status == "running"
+        assert row.error is None
+        assert row.finished_at is None
+        assert row.progress_done == 3
 
 
 def test_run_scan_orphan_running_files_reset_to_pending(
@@ -1487,3 +1492,69 @@ def test_run_scan_lock_released_so_followup_dispatch_succeeds(
         session_maker=new_maker,
     )
     assert second["status"] == "completed"
+
+
+def test_worker_process_init_releases_orphan_advisory_locks(
+    test_db: tuple[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A leaked advisory lock from a previous worker incarnation must be
+    released by the ``worker_process_init`` startup hook.
+
+    Simulates the leak by acquiring a lock on a connection pulled from the
+    same engine, then dropping the Python reference without unlocking. The
+    startup hook opens a fresh connection from the engine and runs
+    ``pg_advisory_unlock_all()`` — verified by re-acquiring the same key on
+    a third connection."""
+
+    sync_url, psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    # Use a single-connection pool so the leaked-lock connection is the SAME
+    # one the startup hook will get back from the pool — which is exactly the
+    # scenario the hook is defending against.
+    from sqlalchemy.pool import StaticPool
+
+    new_engine = create_engine(
+        sync_url,
+        poolclass=StaticPool,
+        connect_args={"options": "-c statement_timeout=10000"},
+        future=True,
+    )
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+
+    leak_key = 987_654
+    # Phase 1 — acquire the lock on the engine's pooled connection and drop
+    # the Python handle without releasing. With StaticPool the same psycopg
+    # connection (and its locks) survives in the pool.
+    leak_conn = new_engine.connect()
+    leak_conn.execute(select(func.pg_advisory_lock(leak_key)))
+    leak_conn.close()
+
+    # Phase 2 — confirm the lock is still held using a different psycopg
+    # session. ``pg_try_advisory_lock`` from any other session returns false
+    # while it's held.
+    with psycopg.connect(psycopg_url) as probe, probe.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (leak_key,))
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] is False, "lock not held; test cannot verify cleanup"
+
+    # Phase 3 — invoke the startup hook (same code path as Celery
+    # ``worker_process_init``).
+    from worker.celery_app import _release_orphan_advisory_locks
+
+    _release_orphan_advisory_locks()
+
+    # Phase 4 — a probe session can now acquire the key.
+    with psycopg.connect(psycopg_url) as probe, probe.cursor() as cur:
+        cur.execute("SELECT pg_try_advisory_lock(%s)", (leak_key,))
+        row = cur.fetchone()
+        assert row is not None
+        assert row[0] is True, "lock not released by startup hook"
+        # Clean up so we don't leak it back to the test fixture's DB drop.
+        cur.execute("SELECT pg_advisory_unlock(%s)", (leak_key,))
+
+    new_engine.dispose()
