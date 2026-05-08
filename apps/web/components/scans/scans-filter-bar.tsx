@@ -9,6 +9,7 @@ import { cn } from '@/lib/utils';
 const STATUS_OPTIONS: ReadonlyArray<{ id: ScanStatus; label: string }> = [
   { id: 'pending', label: 'Pending' },
   { id: 'running', label: 'Running' },
+  { id: 'paused', label: 'Paused' },
   { id: 'completed', label: 'Completed' },
   { id: 'failed', label: 'Failed' },
   { id: 'cancelled', label: 'Cancelled' },

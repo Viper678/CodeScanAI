@@ -12,7 +12,7 @@ import type { ScanStatus } from '@/lib/api/scans/types';
 import { formatEta } from '@/lib/scan-progress/eta';
 
 type ProgressBarProps = {
-  status: Extract<ScanStatus, 'pending' | 'running'>;
+  status: Extract<ScanStatus, 'pending' | 'running' | 'paused'>;
   done: number;
   total: number;
   /** ETA in milliseconds, or `null` while we don't have enough samples. */
@@ -22,6 +22,8 @@ type ProgressBarProps = {
 const STATUS_LABELS: Record<ProgressBarProps['status'], string> = {
   pending: 'Queued…',
   running: 'Scanning…',
+  // No ellipsis: paused is a steady state, not "in progress".
+  paused: 'Paused',
 };
 
 /** Determinate progress bar with counter + ETA. */

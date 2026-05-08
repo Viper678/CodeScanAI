@@ -175,3 +175,15 @@ export async function fetchUploads(
     { method: 'GET', signal },
   );
 }
+
+/**
+ * DELETE `/uploads/{id}` — permanent delete. Server cascades to files,
+ * scans, and findings, and removes the extracted files from disk
+ * (see docs/API.md §`DELETE /uploads/{id}`). 204 on success.
+ */
+export async function deleteUpload(uploadId: string): Promise<void> {
+  await apiFetch<null>(`/uploads/${uploadId}`, {
+    csrf: true,
+    method: 'DELETE',
+  });
+}

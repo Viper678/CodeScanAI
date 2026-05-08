@@ -7,10 +7,13 @@ import { ApiError } from '@/lib/api/client';
 import {
   cancelScan,
   createScan,
+  deleteScan,
   fetchScan,
   fetchScanFiles,
   fetchScans,
+  pauseScan,
   rerunScan,
+  resumeScan,
 } from '@/lib/api/scans/client';
 import type {
   ScanCreateRequest,
@@ -74,7 +77,10 @@ export function useScanPolling(
       if (!data) return 1_000;
       if (TERMINAL_STATUSES.has(data.status)) return false;
       if (data.status === 'running') return 2_000;
-      if (data.status === 'pending') return 5_000;
+      // `paused` is steady-state until the user clicks Resume; the same 5s
+      // cadence we use for `pending` is plenty (any state change is driven by
+      // a mutation that explicitly invalidates this key).
+      if (data.status === 'pending' || data.status === 'paused') return 5_000;
       return 1_000;
     },
     refetchOnWindowFocus: false,
@@ -205,6 +211,73 @@ export function useRerunScanMutation() {
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: [SCANS_LIST_QUERY_KEY],
+      });
+    },
+  });
+}
+
+/**
+ * Mutation wrapper around `DELETE /scans/{id}`. On success, invalidates the
+ * scans listing so the deleted row drops out on the next render. We do NOT
+ * touch the per-scan detail key — the caller already navigated away (or the
+ * row is gone), and a fresh observer mounting against a deleted id will get
+ * a 404 from the next poll, which the existing error panel handles.
+ */
+export function useDeleteScanMutation() {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (scanId: string) => deleteScan(scanId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [SCANS_LIST_QUERY_KEY],
+      });
+    },
+  });
+}
+
+/**
+ * Mutation wrapper around `POST /scans/{id}/pause`. On success, invalidates
+ * the polling key so the next refetch reflects `paused` immediately rather
+ * than waiting for the running-cadence tick. The progress page uses the
+ * mutation's `isPending` for the button-spinner gate.
+ */
+export function usePauseScanMutation(scanId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<ScanCreateResponse, ApiError, void>({
+    mutationFn: () => {
+      if (scanId === null) {
+        throw new Error('cannot pause without a scan id');
+      }
+      return pauseScan(scanId);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [SCAN_QUERY_KEY, scanId],
+      });
+    },
+  });
+}
+
+/**
+ * Mutation wrapper around `POST /scans/{id}/resume`. On success the server
+ * returns `202` with `status='pending'` (the worker flips it to `'running'`
+ * once it picks up the task); we invalidate the polling key so the next tick
+ * reflects the new state. On 503 (`queue_unavailable`) the scan stays
+ * `paused` server-side — the caller surfaces a "try again" message and the
+ * polling key is left alone.
+ */
+export function useResumeScanMutation(scanId: string | null) {
+  const queryClient = useQueryClient();
+  return useMutation<ScanCreateResponse, ApiError, void>({
+    mutationFn: () => {
+      if (scanId === null) {
+        throw new Error('cannot resume without a scan id');
+      }
+      return resumeScan(scanId);
+    },
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [SCAN_QUERY_KEY, scanId],
       });
     },
   });

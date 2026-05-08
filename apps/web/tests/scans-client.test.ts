@@ -1,6 +1,12 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { fetchScans, rerunScan } from '@/lib/api/scans/client';
+import {
+  deleteScan,
+  fetchScans,
+  pauseScan,
+  rerunScan,
+  resumeScan,
+} from '@/lib/api/scans/client';
 
 const originalFetch = globalThis.fetch;
 
@@ -100,5 +106,70 @@ describe('rerunScan', () => {
     expect(init.method).toBe('POST');
     const headers = init.headers as Headers;
     expect(headers.get('X-Requested-With')).toBe('codescan');
+  });
+});
+
+describe('pauseScan', () => {
+  it('POSTs to /scans/{id}/pause with the CSRF header', async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        id: 'scan-1',
+        progress_done: 47,
+        progress_total: 312,
+        status: 'paused',
+      }),
+    );
+
+    const result = await pauseScan('scan-1');
+
+    expect(result.status).toBe('paused');
+    const call = fetchMock.mock.calls[0]!;
+    expect((call[0] as string).endsWith('/scans/scan-1/pause')).toBe(true);
+    const init = call[1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect((init.headers as Headers).get('X-Requested-With')).toBe('codescan');
+  });
+});
+
+describe('resumeScan', () => {
+  it('POSTs to /scans/{id}/resume with the CSRF header', async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse(
+        {
+          id: 'scan-1',
+          progress_done: 47,
+          progress_total: 312,
+          status: 'pending',
+        },
+        { status: 202 },
+      ),
+    );
+
+    const result = await resumeScan('scan-1');
+
+    // 202 from resume → server flips to running shortly after.
+    expect(result.id).toBe('scan-1');
+    const call = fetchMock.mock.calls[0]!;
+    expect((call[0] as string).endsWith('/scans/scan-1/resume')).toBe(true);
+    const init = call[1] as RequestInit;
+    expect(init.method).toBe('POST');
+    expect((init.headers as Headers).get('X-Requested-With')).toBe('codescan');
+  });
+});
+
+describe('deleteScan', () => {
+  it('DELETEs /scans/{id} with the CSRF header and resolves on 204', async () => {
+    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
+
+    await expect(deleteScan('scan-1')).resolves.toBeUndefined();
+
+    const call = fetchMock.mock.calls[0]!;
+    expect((call[0] as string).endsWith('/scans/scan-1')).toBe(true);
+    const init = call[1] as RequestInit;
+    expect(init.method).toBe('DELETE');
+    expect((init.headers as Headers).get('X-Requested-With')).toBe('codescan');
   });
 });

@@ -9,6 +9,7 @@ import type { ScanDetail, ScanListResponse } from '@/lib/api/scans/types';
 const {
   pushMock,
   rerunScanMock,
+  useDeleteScanMutationMock,
   useRerunScanMutationMock,
   useScansFiltersMock,
   useScansQueryMock,
@@ -16,6 +17,7 @@ const {
   return {
     pushMock: vi.fn(),
     rerunScanMock: vi.fn(),
+    useDeleteScanMutationMock: vi.fn(),
     useRerunScanMutationMock: vi.fn(),
     useScansFiltersMock: vi.fn(),
     useScansQueryMock: vi.fn(),
@@ -29,6 +31,7 @@ vi.mock('next/navigation', () => ({
 }));
 
 vi.mock('@/lib/api/scans/use-scans', () => ({
+  useDeleteScanMutation: () => useDeleteScanMutationMock(),
   useRerunScanMutation: () => useRerunScanMutationMock(),
   useScansQuery: (params: unknown) => useScansQueryMock(params),
 }));
@@ -92,6 +95,11 @@ describe('ScansPage', () => {
   beforeEach(() => {
     pushMock.mockReset();
     rerunScanMock.mockReset();
+    useDeleteScanMutationMock.mockReset();
+    useDeleteScanMutationMock.mockReturnValue({
+      isPending: false,
+      mutate: vi.fn(),
+    });
     useRerunScanMutationMock.mockReset();
     useScansFiltersMock.mockReset();
     useScansQueryMock.mockReset();
