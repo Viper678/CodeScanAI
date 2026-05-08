@@ -1,4 +1,11 @@
-"""Unit tests for ``GemmaClient`` — fake transports only, never imports google.genai."""
+"""Unit tests for ``GemmaClient``.
+
+Most tests inject a fake ``transport=`` and never touch ``google.genai``. The
+single exception is the regression test for the default transport's eager
+client init (``test_default_transport_initializes_underlying_client_eagerly``),
+which constructs the real ``_DefaultGemmaTransport`` to pin down the
+thread-safety invariant — that path imports ``google.genai`` deliberately.
+"""
 
 from __future__ import annotations
 
@@ -309,6 +316,40 @@ def test_retry_policy_passed_through_to_call_with_retry() -> None:
 def test_constructing_default_transport_requires_api_key() -> None:
     with pytest.raises(ValueError, match="api_key is required"):
         GemmaClient(api_key="")
+
+
+def test_default_transport_initializes_underlying_client_eagerly() -> None:
+    """Regression test for the worker thread-safety bug.
+
+    Before this test landed, ``_DefaultGemmaTransport.__init__`` left
+    ``_client=None`` and the underlying ``genai.Client`` was constructed
+    lazily inside ``__call__`` via ``if self._client is None: …`` — a
+    check-then-set that is not thread-safe.
+
+    The orchestrator (``run_scan._dispatch_files``) shares one
+    ``GemmaClient`` across a ``ThreadPoolExecutor`` with ``scan_concurrency``
+    workers. Two threads racing on the first call would each construct a
+    ``genai.Client``; the loser's instance was garbage-collected, closing
+    its underlying ``httpx.Client``, and the winner's in-flight request died
+    with ``Cannot send a request, as the client has been closed.`` —
+    observed in the wild on multi-file scans.
+
+    The fix moves the ``genai.Client`` construction into ``__init__``, which
+    always runs on the orchestrator's main thread before the pool opens. This
+    test pins that invariant down: any future change that flips the init
+    back to lazy-in-``__call__`` will fail here.
+    """
+
+    # Local import keeps the SDK out of the import graph for tests that don't
+    # exercise the default transport (most of this file).
+    from worker.llm.client import _DefaultGemmaTransport
+
+    transport = _DefaultGemmaTransport(api_key="ai-test-key-not-validated-at-init")
+    assert transport._client is not None, (
+        "_DefaultGemmaTransport must construct the underlying genai.Client "
+        "eagerly in __init__; the lazy variant in __call__ was a thread-safety "
+        "bug under the orchestrator's ThreadPoolExecutor."
+    )
 
 
 def test_drops_findings_with_line_end_past_eof() -> None:

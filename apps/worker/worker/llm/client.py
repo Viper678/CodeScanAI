@@ -258,7 +258,18 @@ def _filter_in_bounds(findings: list[LlmFinding], *, total_lines: int) -> list[L
 
 
 class _DefaultGemmaTransport:
-    """Production transport. Lazily constructs the SDK client on first call.
+    """Production transport. Constructs the SDK client eagerly in ``__init__``.
+
+    Why eager (and not the previous lazy ``if self._client is None: …`` in
+    ``__call__``): the orchestrator (T3.4) shares one ``GemmaClient`` across
+    a ``ThreadPoolExecutor`` with ``scan_concurrency`` workers. Lazy init is
+    a check-then-set race in that setting — two threads racing on the first
+    call could each construct a ``genai.Client``; the loser's instance is
+    garbage-collected, closing its underlying ``httpx.Client``, and the
+    winner's in-flight request errors out with
+    ``Cannot send a request, as the client has been closed.``
+    Eager init in ``__init__`` runs on the orchestrator's main thread before
+    the pool is opened, sidestepping the race entirely.
 
     SDK exception translation:
         ``google.genai.errors.ClientError``  -> 429 -> GemmaRateLimited
@@ -268,8 +279,13 @@ class _DefaultGemmaTransport:
     """
 
     def __init__(self, *, api_key: str) -> None:
+        # Import inside __init__ keeps ``google.genai`` out of unit-test import
+        # graphs: tests that supply ``transport=`` to ``GemmaClient`` never
+        # touch this constructor.
+        from google import genai
+
         self._api_key = api_key
-        self._client: object | None = None
+        self._client = genai.Client(api_key=api_key)
 
     def __call__(
         self,
@@ -280,13 +296,8 @@ class _DefaultGemmaTransport:
         temperature: float,
         max_output_tokens: int,
     ) -> RawResponse:
-        # Lazy import: keeps ``google.genai`` out of unit-test import graphs.
-        from google import genai
         from google.genai import errors as genai_errors
         from google.genai import types as genai_types
-
-        if self._client is None:
-            self._client = genai.Client(api_key=self._api_key)
 
         config = genai_types.GenerateContentConfig(
             system_instruction=system_prompt,
@@ -296,7 +307,7 @@ class _DefaultGemmaTransport:
         )
 
         try:
-            response = self._client.models.generate_content(  # type: ignore[attr-defined]
+            response = self._client.models.generate_content(
                 model=model,
                 contents=user_prompt,
                 config=config,
