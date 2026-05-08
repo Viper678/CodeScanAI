@@ -1,11 +1,14 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { useParams, useSearchParams } from 'next/navigation';
+import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
+import { ConfirmDeleteButton } from '@/components/confirm-delete-button';
 import { FileTree } from '@/components/file-tree/file-tree';
 import type { TreeFile } from '@/components/file-tree/types';
+import { ApiError } from '@/lib/api/client';
 import { useUploadTree } from '@/lib/api/uploads/tree';
+import { useDeleteUploadMutation } from '@/lib/api/uploads/use-upload';
 
 import { generateFixture } from './fixture';
 
@@ -23,6 +26,9 @@ export default function TreePreviewPage() {
   const searchParams = useSearchParams();
   const fixture = searchParams.get('fixture');
   const uploadId = params?.upload_id;
+  const router = useRouter();
+  const deleteUpload = useDeleteUploadMutation();
+  const [deleteError, setDeleteError] = useState<string | null>(null);
 
   const fixtureFiles = useMemo<TreeFile[] | null>(() => {
     if (fixture === '10k') return generateFixture(10_000);
@@ -58,13 +64,46 @@ export default function TreePreviewPage() {
     setSelection(next);
   }, [files]);
 
+  const handleDeleteUpload = async () => {
+    if (!uploadId || fixtureFiles) return;
+    setDeleteError(null);
+    try {
+      await deleteUpload.mutateAsync(uploadId);
+      router.push('/uploads');
+    } catch (err) {
+      setDeleteError(
+        err instanceof ApiError
+          ? err.message
+          : 'Could not delete this upload. Please try again.',
+      );
+      throw err;
+    }
+  };
+
   return (
     <div className="space-y-6">
-      <div>
+      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
         <h2 className="text-3xl font-semibold tracking-tight">
           Choose files to scan
         </h2>
+        {!fixtureFiles && uploadId ? (
+          <ConfirmDeleteButton
+            label={`upload ${rootName}`}
+            variant="wide"
+            onConfirm={handleDeleteUpload}
+            testId={`upload-${uploadId}-delete`}
+          />
+        ) : null}
       </div>
+      {deleteError ? (
+        <p
+          role="alert"
+          data-testid="upload-delete-error"
+          className="text-sm text-red-600 dark:text-red-300"
+        >
+          {deleteError}
+        </p>
+      ) : null}
 
       {!fixtureFiles && isLoading && (
         <div className="rounded-lg border border-border bg-card p-6 text-sm text-muted-foreground">

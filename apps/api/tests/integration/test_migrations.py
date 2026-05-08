@@ -226,6 +226,7 @@ def test_alembic_refresh_token_family_id_round_trip(
     # Round-trip the family-id migration once, then re-upgrade so subsequent
     # tests in this file see HEAD applied. Later migrations are layered on top,
     # so we have to step their downgrades first.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # restore non-cascade FKs
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop scans+scan_files+findings
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop uploads
@@ -260,6 +261,7 @@ def test_alembic_uploads_round_trip(migration_database_urls: DatabaseUrls) -> No
     assert "ix_uploads_user_id_created_at" in _uploads_indexes(migration_database_urls.psycopg_url)
 
     # Step past later migrations first so the uploads downgrade can run.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # restore non-cascade FKs
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop scans+scan_files+findings
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop uploads
@@ -281,6 +283,7 @@ def test_alembic_files_round_trip(migration_database_urls: DatabaseUrls) -> None
     )
 
     # Step past the scans migration first so the files downgrade can run.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # restore non-cascade FKs
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop scans+scan_files+findings
     _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop files
     assert "files" not in _table_names(migration_database_urls.psycopg_url)
@@ -316,8 +319,9 @@ def test_alembic_scans_round_trip(migration_database_urls: DatabaseUrls) -> None
     assert "ix_scan_findings_scan_id_scan_type" in scan_findings_indexes
     assert "ix_scan_findings_scan_id_file_id" in scan_findings_indexes
 
-    # Scans / scan_files / scan_findings live in one migration — one step is enough.
-    _run_alembic_cli(migration_database_urls, "downgrade", "-1")
+    # Step past the cascade-FK migration first so the scans downgrade can run.
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # restore non-cascade FKs
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")  # drop scans+scan_files+findings
     tables = _table_names(migration_database_urls.psycopg_url)
     assert "scans" not in tables
     assert "scan_files" not in tables
@@ -339,3 +343,53 @@ def test_alembic_scans_round_trip(migration_database_urls: DatabaseUrls) -> None
     assert "ix_scan_findings_scan_id_severity" in scan_findings_indexes
     assert "ix_scan_findings_scan_id_scan_type" in scan_findings_indexes
     assert "ix_scan_findings_scan_id_file_id" in scan_findings_indexes
+
+
+def _scan_files_file_id_fk_ondelete(psycopg_url: str) -> str:
+    """Read the ON DELETE action for ``scan_files.file_id``'s FK as a single
+    char (``a``=NO ACTION, ``r``=RESTRICT, ``c``=CASCADE, etc — see
+    ``pg_constraint.confdeltype``)."""
+
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT confdeltype FROM pg_constraint
+            WHERE conname = 'fk_scan_files_file_id_files'
+              AND conrelid = 'public.scan_files'::regclass
+            """,
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        return str(row[0])
+
+
+def _scan_findings_file_id_fk_ondelete(psycopg_url: str) -> str:
+    with psycopg.connect(psycopg_url) as connection, connection.cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT confdeltype FROM pg_constraint
+            WHERE conname = 'fk_scan_findings_file_id_files'
+              AND conrelid = 'public.scan_findings'::regclass
+            """,
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        return str(row[0])
+
+
+def test_alembic_cascade_scan_rows_on_file_delete_round_trip(
+    migration_database_urls: DatabaseUrls,
+) -> None:
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
+    # 'c' = CASCADE per pg_constraint.confdeltype.
+    assert _scan_files_file_id_fk_ondelete(migration_database_urls.psycopg_url) == "c"
+    assert _scan_findings_file_id_fk_ondelete(migration_database_urls.psycopg_url) == "c"
+
+    _run_alembic_cli(migration_database_urls, "downgrade", "-1")
+    # 'a' = NO ACTION (the original schema's default).
+    assert _scan_files_file_id_fk_ondelete(migration_database_urls.psycopg_url) == "a"
+    assert _scan_findings_file_id_fk_ondelete(migration_database_urls.psycopg_url) == "a"
+
+    _run_alembic_cli(migration_database_urls, "upgrade", "head")
+    assert _scan_files_file_id_fk_ondelete(migration_database_urls.psycopg_url) == "c"
+    assert _scan_findings_file_id_fk_ondelete(migration_database_urls.psycopg_url) == "c"

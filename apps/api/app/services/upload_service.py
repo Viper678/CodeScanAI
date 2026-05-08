@@ -241,6 +241,42 @@ class UploadService:
     def _upload_dir(self, upload_id: UUID) -> Path:
         return self._data_dir / "uploads" / str(upload_id)
 
+    async def delete_upload(self, *, upload_id: UUID, user_id: UUID) -> None:
+        """Permanently delete an upload + every byte of user code we hold.
+
+        Wipes the on-disk raw artifact tree (``data_dir/uploads/<id>/``) and
+        the extracted tree (``upload.extract_path``) before deleting the
+        ``uploads`` row. The DB cascade then fans out through ``files`` →
+        ``scans`` → ``scan_files`` → ``scan_findings`` so a single call leaves
+        no trace of the upload — that's the contract advertised in
+        ``docs/API.md`` §Uploads and what data-retention-conscious customers
+        rely on.
+
+        Order matters: disk wipe first, DB delete second. If disk wipe fails
+        we surface a 500 with the row intact, so the caller can safely retry.
+        The reverse order would orphan rows whose backing files are already
+        gone (or vice-versa) — both are worse than a single visible failure.
+
+        Raises:
+            NotFound: when the upload doesn't exist or belongs to another
+                user — same no-enumeration rule as ``GET /uploads/{id}``.
+        """
+
+        upload = await self.uploads.get_by_id(upload_id, user_id=user_id)
+        if upload is None:
+            raise NotFound("Upload not found")
+
+        self._wipe_upload_artifacts(upload)
+        await self.session.delete(upload)
+        await self.session.commit()
+
+    def _wipe_upload_artifacts(self, upload: Upload) -> None:
+        """Remove the raw + extracted directories for ``upload`` from disk."""
+
+        _wipe_path(self._upload_dir(upload.id))
+        if upload.extract_path:
+            _wipe_path(Path(upload.extract_path))
+
     async def _enqueue_or_mark_failed(self, upload: Upload) -> None:
         # If the broker is down, _enqueue raises before the worker ever sees the
         # upload. Without this guard the row sits in `received` forever and
@@ -372,3 +408,21 @@ def _safe_cleanup(path: Path) -> None:
     except OSError:
         # Cleanup is best-effort — the alternative is leaking partials on disk.
         logger.exception("failed to clean up upload directory %s", path)
+
+
+def _wipe_path(path: Path) -> None:
+    """Remove ``path`` recursively, surfacing OSError to the caller.
+
+    Distinct from ``_safe_cleanup``: that one runs on the *failure* path of an
+    upload where leaking partials is the worst case; this runs on the *delete*
+    path where a silent-ignore would let bytes survive a "compliant deletion."
+    A missing path is a no-op (idempotent), but a permission/IO error escapes.
+    """
+
+    if not path.exists():
+        return
+    try:
+        shutil.rmtree(path)
+    except FileNotFoundError:
+        # Race with concurrent cleanup beat task — treat as success.
+        return

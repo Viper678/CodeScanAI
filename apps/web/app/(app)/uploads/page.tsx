@@ -1,6 +1,7 @@
 'use client';
 
 import Link from 'next/link';
+import { useState } from 'react';
 import {
   AlertTriangle,
   FileArchive,
@@ -9,11 +10,16 @@ import {
   Plus,
 } from 'lucide-react';
 
+import { ConfirmDeleteButton } from '@/components/confirm-delete-button';
 import { EmptyState } from '@/components/empty-state';
 import { StatusPill } from '@/components/status-pill';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { useUploadsQuery } from '@/lib/api/uploads/use-upload';
+import { ApiError } from '@/lib/api/client';
+import {
+  useDeleteUploadMutation,
+  useUploadsQuery,
+} from '@/lib/api/uploads/use-upload';
 import type { UploadDetail } from '@/lib/api/uploads/types';
 import { formatBytes, formatShortDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
@@ -105,40 +111,77 @@ function UploadRow({ upload }: Readonly<UploadRowProps>) {
       ? `${upload.file_count} files`
       : '—';
 
+  const [errorText, setErrorText] = useState<string | null>(null);
+  const deleteUpload = useDeleteUploadMutation();
+
+  const handleDelete = async () => {
+    setErrorText(null);
+    await deleteUpload.mutateAsync(upload.id);
+  };
+
   return (
-    <Link
-      href={`/uploads/${upload.id}/tree-preview`}
-      data-testid={`upload-row-${upload.id}`}
-      className={cn(
-        'flex items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3',
-        'transition-colors hover:border-border hover:bg-card focus-visible:outline-none',
-        'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
-      )}
-    >
-      <div className="flex min-w-0 items-center gap-3">
-        <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-          <FileArchive className="size-4" aria-hidden="true" />
-        </span>
-        <div className="min-w-0">
-          <p
-            className="truncate text-sm font-medium text-foreground"
-            title={upload.original_name}
-          >
-            {upload.original_name}
-          </p>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            kind={upload.kind} · {formatBytes(upload.size_bytes)} ·{' '}
-            {fileCountText}
-          </p>
+    <div className="space-y-1">
+      <div
+        data-testid={`upload-row-${upload.id}`}
+        className={cn(
+          'group/row relative flex items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3',
+          'transition-colors hover:border-border hover:bg-card',
+          'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2',
+        )}
+      >
+        {/* Same overlay-link pattern as ScanRow — keeps the row clickable
+            without nesting a button inside an anchor (invalid HTML). */}
+        <Link
+          href={`/uploads/${upload.id}/tree-preview`}
+          aria-label={`Open upload ${upload.original_name}`}
+          className="absolute inset-0 rounded-2xl focus:outline-none"
+        />
+        <div className="flex min-w-0 items-center gap-3">
+          <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+            <FileArchive className="size-4" aria-hidden="true" />
+          </span>
+          <div className="min-w-0">
+            <p
+              className="truncate text-sm font-medium text-foreground"
+              title={upload.original_name}
+            >
+              {upload.original_name}
+            </p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              kind={upload.kind} · {formatBytes(upload.size_bytes)} ·{' '}
+              {fileCountText}
+            </p>
+          </div>
+        </div>
+        <div className="relative z-10 flex shrink-0 items-center gap-3">
+          <StatusPill status={upload.status} />
+          <span className="hidden whitespace-nowrap text-xs text-muted-foreground md:inline">
+            {formatShortDate(upload.created_at)}
+          </span>
+          <ConfirmDeleteButton
+            label={`upload ${upload.original_name}`}
+            onConfirm={handleDelete}
+            onError={(err) => {
+              setErrorText(
+                err instanceof ApiError
+                  ? err.message
+                  : 'Could not delete this upload.',
+              );
+            }}
+            testId={`upload-row-${upload.id}-delete`}
+          />
         </div>
       </div>
-      <div className="flex shrink-0 items-center gap-3">
-        <StatusPill status={upload.status} />
-        <span className="hidden whitespace-nowrap text-xs text-muted-foreground md:inline">
-          {formatShortDate(upload.created_at)}
-        </span>
-      </div>
-    </Link>
+      {errorText ? (
+        <p
+          data-testid={`upload-row-${upload.id}-delete-error`}
+          role="alert"
+          className="px-1 text-xs text-red-600 dark:text-red-300"
+        >
+          {errorText}
+        </p>
+      ) : null}
+    </div>
   );
 }
 

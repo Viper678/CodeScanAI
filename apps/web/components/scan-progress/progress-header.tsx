@@ -1,6 +1,7 @@
 'use client';
 
 import { Loader2, X } from 'lucide-react';
+import type { ReactNode } from 'react';
 
 import { StatusPill } from '@/components/status-pill';
 import { Badge } from '@/components/ui/badge';
@@ -18,6 +19,9 @@ type ProgressHeaderProps = {
   /** True iff a cancel mutation is in flight (button should disable + spin). */
   cancelling: boolean;
   onCancel: () => void;
+  /** Extra action buttons rendered after the Cancel button. Use for the
+   *  data-retention delete button in the live progress view. */
+  actions?: ReactNode;
 };
 
 /**
@@ -29,9 +33,11 @@ export function ProgressHeader({
   scan,
   cancelling,
   onCancel,
+  actions,
 }: Readonly<ProgressHeaderProps>) {
   const cancellable = scan.status === 'pending' || scan.status === 'running';
   const displayName = scan.name?.trim().length ? scan.name : 'Scan';
+  const hasTrailingActions = cancellable || actions !== undefined;
 
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -50,20 +56,25 @@ export function ProgressHeader({
           ))}
         </div>
       </div>
-      {cancellable ? (
-        <Button
-          type="button"
-          variant="outline"
-          onClick={onCancel}
-          disabled={cancelling}
-        >
-          {cancelling ? (
-            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-          ) : (
-            <X className="size-4" aria-hidden="true" />
-          )}
-          {cancelling ? 'Cancelling…' : 'Cancel'}
-        </Button>
+      {hasTrailingActions ? (
+        <div className="flex flex-wrap items-center gap-2">
+          {cancellable ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={onCancel}
+              disabled={cancelling}
+            >
+              {cancelling ? (
+                <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+              ) : (
+                <X className="size-4" aria-hidden="true" />
+              )}
+              {cancelling ? 'Cancelling…' : 'Cancel'}
+            </Button>
+          ) : null}
+          {actions}
+        </div>
       ) : null}
     </div>
   );

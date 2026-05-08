@@ -1,10 +1,11 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useMutation, useQuery } from '@tanstack/react-query';
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { ApiError } from '@/lib/api/client';
 import {
+  deleteUpload,
   fetchUpload,
   fetchUploads,
   uploadFile,
@@ -16,6 +17,7 @@ import type {
   UploadKind,
   UploadListResponse,
 } from '@/lib/api/uploads/types';
+import { SCANS_LIST_QUERY_KEY } from '@/lib/api/scans/use-scans';
 
 export const UPLOAD_QUERY_KEY = 'upload' as const;
 export const UPLOADS_LIST_QUERY_KEY = 'uploads-list' as const;
@@ -116,5 +118,27 @@ export function useUploadsQuery({
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 0,
+  });
+}
+
+/**
+ * Mutation wrapper around `DELETE /uploads/{id}`. Used by the data-retention
+ * delete button on `/uploads` rows + the upload tree-preview header. On
+ * success we invalidate both the uploads listing AND the scans listing —
+ * an upload delete cascades server-side through its scans + findings, so
+ * any cached `/scans` index would otherwise show ghost rows.
+ */
+export function useDeleteUploadMutation() {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (uploadId: string) => deleteUpload(uploadId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [UPLOADS_LIST_QUERY_KEY],
+      });
+      void queryClient.invalidateQueries({
+        queryKey: [SCANS_LIST_QUERY_KEY],
+      });
+    },
   });
 }
