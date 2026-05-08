@@ -149,6 +149,7 @@ Each task has:
 - **Depends on:** T4.1.
 
 ### T4.5 — Pause / resume scans
+- **Status:** complete (backend #39, web in this PR).
 - **Goal:** add `paused` to `scans.status`. Ship `POST /scans/{id}/pause` and `POST /scans/{id}/resume` per `API.md`. Worker observes a pause flag between files (mirrors cancel), exits cleanly with unprocessed `scan_files` left in `pending`. Resume re-enqueues `run_scan(scan_id)`; worker continues from the remaining `pending` rows. Web exposes Pause/Resume on the progress page; the existing findings panel keeps working unchanged on a paused scan (partial findings already persist incrementally). No alembic migration — `scans.status` is `TEXT`, the new value is application-level only.
 - **AC:**
   - `POST /scans/{id}/pause` → `200` from `running`; idempotent `200` from `paused`; `409 not_pausable` from `pending`/`completed`/`failed`/`cancelled`.
@@ -160,6 +161,16 @@ Each task has:
   - Web: Pause button visible while `running`, Resume button visible while `paused`; clicking either reflects the new state within one polling tick. Findings panel renders unchanged through the transition.
 - **Touches:** `apps/api/app/routers/scans.py`, `apps/api/app/services/scan_service.py`, `apps/api/app/schemas/scan.py`, `apps/worker/worker/tasks/run_scan.py`, `apps/web/app/scans/[id]/page.tsx`, `apps/web/lib/api/scans.ts`, plus tests.
 - **Depends on:** T3.4 (worker orchestrator), T3.6 (progress page).
+
+### T4.6 — Permanent delete UI for uploads + scans
+- **Goal:** surface row-level delete affordances on `/scans` and `/uploads`. Backend endpoints (`DELETE /scans/{id}`, `DELETE /uploads/{id}`) already exist per `API.md` — this is a UI-only ticket. Both flows route through a shadcn-style `<AlertDialog>` confirm; the upload dialog body explicitly warns about cascade (associated scans + findings + extracted files on disk) since the cascade is irreversible. No new API, no migration.
+- **AC:**
+  - `/scans` row gets a destructive Delete button next to Re-run; confirm → `DELETE /scans/{id}` → row drops on `['scans']` invalidation.
+  - `/uploads` row gets a destructive Delete button; confirm → `DELETE /uploads/{id}` → both `['uploads']` and `['scans']` are invalidated (cascaded scans are gone server-side).
+  - Dialog dismisses on Esc; cancel button does NOT call the mutation; confirm button shows a spinner while the request is in flight and stays open on error.
+  - No bulk delete / multi-select in v1.
+- **Touches:** `apps/web/lib/api/scans/client.ts`, `apps/web/lib/api/uploads/client.ts`, `apps/web/lib/api/scans/use-scans.ts`, `apps/web/lib/api/uploads/use-upload.ts`, `apps/web/components/ui/alert-dialog.tsx` (new primitive on `@base-ui/react`), `apps/web/components/scans/delete-scan-button.tsx`, `apps/web/components/upload/delete-upload-button.tsx`, `apps/web/app/(app)/scans/page.tsx`, `apps/web/app/(app)/uploads/page.tsx`, plus tests.
+- **Depends on:** T4.4 (scan list page), T2.2 (uploads list page).
 
 ---
 

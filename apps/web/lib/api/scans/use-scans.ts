@@ -7,6 +7,7 @@ import { ApiError } from '@/lib/api/client';
 import {
   cancelScan,
   createScan,
+  deleteScan,
   fetchScan,
   fetchScanFiles,
   fetchScans,
@@ -207,6 +208,25 @@ export function useRerunScanMutation() {
   const queryClient = useQueryClient();
   return useMutation<ScanCreateResponse, ApiError, string>({
     mutationFn: (sourceScanId: string) => rerunScan(sourceScanId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: [SCANS_LIST_QUERY_KEY],
+      });
+    },
+  });
+}
+
+/**
+ * Mutation wrapper around `DELETE /scans/{id}`. On success, invalidates the
+ * scans listing so the deleted row drops out on the next render. We do NOT
+ * touch the per-scan detail key — the caller already navigated away (or the
+ * row is gone), and a fresh observer mounting against a deleted id will get
+ * a 404 from the next poll, which the existing error panel handles.
+ */
+export function useDeleteScanMutation() {
+  const queryClient = useQueryClient();
+  return useMutation<void, ApiError, string>({
+    mutationFn: (scanId: string) => deleteScan(scanId),
     onSuccess: () => {
       void queryClient.invalidateQueries({
         queryKey: [SCANS_LIST_QUERY_KEY],

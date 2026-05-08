@@ -92,6 +92,19 @@ export async function resumeScan(scanId: string): Promise<ScanCreateResponse> {
   });
 }
 
+/**
+ * DELETE `/scans/{id}` — permanent delete. Server cascades to scan_files and
+ * findings (see docs/API.md §`DELETE /scans/{id}`). 204 on success; the
+ * shared `apiFetch` helper resolves with `null` for empty bodies, so this
+ * wrapper resolves with `void` and callers should not depend on the value.
+ */
+export async function deleteScan(scanId: string): Promise<void> {
+  await apiFetch<null>(`/scans/${scanId}`, {
+    csrf: true,
+    method: 'DELETE',
+  });
+}
+
 type FetchScansParams = {
   limit?: number;
   offset?: number;
