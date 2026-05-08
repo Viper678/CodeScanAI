@@ -19,6 +19,7 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.core.deps import get_current_user, require_csrf_header
 from app.core.exceptions import InvalidScanRequest
+from app.core.rate_limit import rate_limit_per_user
 from app.models.user import User
 from app.schemas.scan import (
     ScanCreateRequest,
@@ -43,12 +44,20 @@ router = APIRouter(
     dependencies=[Depends(get_current_user)],
 )
 
+# Rate limit dep (T5.1): 30 scans per user per hour. Sourced from
+# docs/API.md §"Rate limits".
+_scan_rate_limit = rate_limit_per_user(
+    limit_factory=lambda: settings.rate_limit_scan_per_hour,
+    window_seconds=3600,
+    key_prefix="scan",
+)
+
 
 @router.post(
     "",
     response_model=ScanCreateResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_csrf_header)],
+    dependencies=[Depends(require_csrf_header), Depends(_scan_rate_limit)],
 )
 async def create_scan(
     payload: ScanCreateRequest,

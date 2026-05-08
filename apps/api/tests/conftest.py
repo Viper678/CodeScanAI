@@ -13,6 +13,7 @@ import httpx
 import psycopg
 import pytest
 import pytest_asyncio
+import redis.asyncio as redis_async
 from psycopg import sql
 from sqlalchemy.engine import URL, make_url
 from sqlalchemy.ext.asyncio import AsyncEngine, AsyncSession, create_async_engine
@@ -24,6 +25,10 @@ from app.core.config import settings
 from app.core.db import get_session
 from app.main import app
 from app.models.user import User
+
+# A Redis db that's never used by the dev API (0) or Celery (1/2). The
+# rate-limit fixtures mount this on ``app.state.redis``.
+TEST_REDIS_URL = "redis://localhost:6379/15"
 
 API_ROOT = Path(__file__).resolve().parents[1]
 ALEMBIC_INI_PATH = API_ROOT / "alembic.ini"
@@ -179,7 +184,50 @@ async def db_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
 
 
 @pytest_asyncio.fixture
-async def client(db_session: AsyncSession) -> AsyncIterator[httpx.AsyncClient]:
+async def api_redis_client() -> AsyncIterator[redis_async.Redis]:
+    """Mount a real async Redis client on ``app.state.redis`` for the test.
+
+    httpx's ``ASGITransport`` doesn't run FastAPI's ``lifespan``, so without
+    this fixture the rate-limit dependency (T5.1) would see an unset
+    ``app.state.redis`` and fall through its fail-open path. By mounting a
+    real client we exercise the real limiter logic against a real sliding
+    window — far higher signal than mocking.
+    """
+
+    redis_client: redis_async.Redis = redis_async.from_url(  # type: ignore[no-untyped-call]
+        TEST_REDIS_URL,
+        decode_responses=True,
+    )
+    app.state.redis = redis_client
+    try:
+        yield redis_client
+    finally:
+        await redis_client.aclose()
+
+
+@pytest.fixture(autouse=True)
+def _per_test_rate_limit_isolation(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-test rate-limit isolation.
+
+    1. Fresh ``rate_limit_key_namespace`` so concurrent tests sharing the
+       Redis db can't bleed counters into each other.
+    2. Limits bumped to 100 so existing non-rate-limit tests can register /
+       login / upload / scan repeatedly without tripping the limiter.
+       Rate-limit-specific tests reset the relevant limit explicitly.
+    """
+
+    monkeypatch.setattr(settings, "rate_limit_key_namespace", uuid4().hex)
+    monkeypatch.setattr(settings, "rate_limit_login_per_minute", 100)
+    monkeypatch.setattr(settings, "rate_limit_register_per_minute", 100)
+    monkeypatch.setattr(settings, "rate_limit_upload_per_hour", 100)
+    monkeypatch.setattr(settings, "rate_limit_scan_per_hour", 100)
+
+
+@pytest_asyncio.fixture
+async def client(
+    db_session: AsyncSession,
+    api_redis_client: redis_async.Redis,  # mounts redis on app.state
+) -> AsyncIterator[httpx.AsyncClient]:
     async def override_get_session() -> AsyncIterator[AsyncSession]:
         yield db_session
 

@@ -121,3 +121,25 @@ class UnprocessableRerun(AppError):
     error_code = "unprocessable_rerun"
     status_code = 422
     message = "Cannot re-run scan"
+
+
+class RateLimited(AppError):
+    """Rate limit exceeded — surfaces 429 with a ``Retry-After`` header.
+
+    The dedicated exception (instead of a plain HTTPException) lets us thread
+    ``retry_after_seconds`` through to a custom handler in ``app.main`` so the
+    response carries both the standard error envelope AND the header.
+    """
+
+    error_code = "rate_limited"
+    status_code = 429
+    message = "Rate limit exceeded"
+
+    def __init__(
+        self,
+        *,
+        retry_after_seconds: int,
+        message: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
