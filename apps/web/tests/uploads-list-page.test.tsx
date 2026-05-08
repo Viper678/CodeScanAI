@@ -97,7 +97,9 @@ describe('UploadsPage', () => {
 
   it('exposes the delete trigger on every row and fires the mutation on confirm', async () => {
     useUploadsQueryMock.mockReturnValue(
-      makeListResult([makeUpload({ id: 'u-1', original_name: 'monorepo.zip' })]),
+      makeListResult([
+        makeUpload({ id: 'u-1', original_name: 'monorepo.zip' }),
+      ]),
     );
 
     render(<UploadsPage />);
