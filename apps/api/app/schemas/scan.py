@@ -15,7 +15,7 @@ from uuid import UUID
 from pydantic import BaseModel, ConfigDict, Field
 
 ScanType = Literal["security", "bugs", "keywords"]
-ScanStatus = Literal["pending", "running", "completed", "failed", "cancelled"]
+ScanStatus = Literal["pending", "running", "paused", "completed", "failed", "cancelled"]
 Severity = Literal["critical", "high", "medium", "low", "info"]
 ScanFileStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
