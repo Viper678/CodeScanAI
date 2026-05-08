@@ -13,7 +13,6 @@ import { EmptyState } from '@/components/empty-state';
 import { StatusPill } from '@/components/status-pill';
 import { Button, buttonVariants } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
-import { DeleteUploadButton } from '@/components/upload/delete-upload-button';
 import { useUploadsQuery } from '@/lib/api/uploads/use-upload';
 import type { UploadDetail } from '@/lib/api/uploads/types';
 import { formatBytes, formatShortDate } from '@/lib/format';
@@ -107,26 +106,15 @@ function UploadRow({ upload }: Readonly<UploadRowProps>) {
       : '—';
 
   return (
-    <div
+    <Link
+      href={`/uploads/${upload.id}/tree-preview`}
       data-testid={`upload-row-${upload.id}`}
-      data-upload-href={`/uploads/${upload.id}/tree-preview`}
       className={cn(
-        'group/row relative flex items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3',
-        'transition-colors hover:border-border hover:bg-card',
-        'focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2',
+        'flex items-center justify-between gap-4 rounded-2xl border border-border/80 bg-card/60 px-4 py-3',
+        'transition-colors hover:border-border hover:bg-card focus-visible:outline-none',
+        'focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2',
       )}
     >
-      {/*
-        Absolute-overlay anchor pattern — same as the scan-row in
-        `/scans/page.tsx`. We can't nest a button inside an anchor, so the
-        link spans the row and the action button (Delete) is rendered above
-        it via z-index.
-      */}
-      <Link
-        href={`/uploads/${upload.id}/tree-preview`}
-        aria-label={`Open upload ${upload.original_name}`}
-        className="absolute inset-0 rounded-2xl focus:outline-none"
-      />
       <div className="flex min-w-0 items-center gap-3">
         <span className="flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
           <FileArchive className="size-4" aria-hidden="true" />
@@ -144,17 +132,13 @@ function UploadRow({ upload }: Readonly<UploadRowProps>) {
           </p>
         </div>
       </div>
-      <div className="relative z-10 flex shrink-0 items-center gap-3">
+      <div className="flex shrink-0 items-center gap-3">
         <StatusPill status={upload.status} />
         <span className="hidden whitespace-nowrap text-xs text-muted-foreground md:inline">
           {formatShortDate(upload.created_at)}
         </span>
-        <DeleteUploadButton
-          uploadId={upload.id}
-          uploadName={upload.original_name}
-        />
       </div>
-    </div>
+    </Link>
   );
 }
 

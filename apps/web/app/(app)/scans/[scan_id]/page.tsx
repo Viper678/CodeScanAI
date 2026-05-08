@@ -56,10 +56,6 @@ export default function ScanProgressPage({
   const { filters, toggleSeverity, toggleScanType, clearAll } =
     useFindingsFilters();
 
-  const handleCancel = () => {
-    cancelMutation.mutate();
-  };
-
   // Latencies feed the rolling-average ETA. Filter to finalized rows only.
   const etaMs = useMemo(() => {
     if (!scan) return null;
@@ -101,7 +97,7 @@ export default function ScanProgressPage({
       <ProgressHeader
         scan={scan}
         cancelling={cancelMutation.isPending}
-        onCancel={handleCancel}
+        onCancel={() => cancelMutation.mutate()}
       />
 
       {!isTerminal ? (

@@ -1,12 +1,10 @@
 'use client';
 
 import { useEffect, useRef } from 'react';
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQuery } from '@tanstack/react-query';
 
 import { ApiError } from '@/lib/api/client';
-import { SCANS_LIST_QUERY_KEY } from '@/lib/api/scans/use-scans';
 import {
-  deleteUpload,
   fetchUpload,
   fetchUploads,
   uploadFile,
@@ -118,29 +116,5 @@ export function useUploadsQuery({
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 0,
-  });
-}
-
-/**
- * Mutation wrapper around `DELETE /uploads/{id}`. The server cascades to
- * files, scans, and findings (and removes the extracted files from disk),
- * so on success we invalidate BOTH the uploads list and the scans list —
- * scans backed by this upload are now gone server-side and any cached row
- * would be stale on the next visit to `/scans`.
- */
-export function useDeleteUploadMutation() {
-  const queryClient = useQueryClient();
-  return useMutation<void, ApiError, string>({
-    mutationFn: (uploadId: string) => deleteUpload(uploadId),
-    onSuccess: () => {
-      void queryClient.invalidateQueries({
-        queryKey: [UPLOADS_LIST_QUERY_KEY],
-      });
-      // Cascaded scans are gone server-side — drop our cached list so the
-      // user doesn't see ghost rows on the /scans page.
-      void queryClient.invalidateQueries({
-        queryKey: [SCANS_LIST_QUERY_KEY],
-      });
-    },
   });
 }

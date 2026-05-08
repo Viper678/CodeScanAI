@@ -21,13 +21,9 @@ type ProgressHeaderProps = {
 };
 
 /**
- * Top of the progress page: scan name + status pill + scan-type badges, plus
- * the cancel control:
- *
- * - `pending` / `running` → Cancel
- * - terminal              → no controls
- *
- * See docs/UI_DESIGN.md §`/scans/{id}`.
+ * Top of the progress page: scan name + status pill + scan-type badges, and
+ * (when cancellable) a Cancel button. Re-run / Export are reserved for Phase 4
+ * — see docs/UI_DESIGN.md §`/scans/{id}`.
  */
 export function ProgressHeader({
   scan,
@@ -55,22 +51,19 @@ export function ProgressHeader({
         </div>
       </div>
       {cancellable ? (
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            variant="outline"
-            data-testid="scan-cancel"
-            onClick={onCancel}
-            disabled={cancelling}
-          >
-            {cancelling ? (
-              <Loader2 className="size-4 animate-spin" aria-hidden="true" />
-            ) : (
-              <X className="size-4" aria-hidden="true" />
-            )}
-            {cancelling ? 'Cancelling…' : 'Cancel'}
-          </Button>
-        </div>
+        <Button
+          type="button"
+          variant="outline"
+          onClick={onCancel}
+          disabled={cancelling}
+        >
+          {cancelling ? (
+            <Loader2 className="size-4 animate-spin" aria-hidden="true" />
+          ) : (
+            <X className="size-4" aria-hidden="true" />
+          )}
+          {cancelling ? 'Cancelling…' : 'Cancel'}
+        </Button>
       ) : null}
     </div>
   );
