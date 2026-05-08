@@ -12,6 +12,7 @@ export type ScanType = 'security' | 'bugs' | 'keywords';
 export type ScanStatus =
   | 'pending'
   | 'running'
+  | 'paused'
   | 'completed'
   | 'failed'
   | 'cancelled';
