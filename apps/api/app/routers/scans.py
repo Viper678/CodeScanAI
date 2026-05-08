@@ -241,35 +241,6 @@ async def cancel_scan(
     return await service.cancel_scan(scan_id=scan_id, user_id=current_user.id)
 
 
-@router.post(
-    "/{scan_id}/pause",
-    response_model=ScanDetail,
-    dependencies=[Depends(require_csrf_header)],
-)
-async def pause_scan(
-    scan_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScanDetail:
-    service = ScanService(session)
-    return await service.pause_scan(scan_id=scan_id, user_id=current_user.id)
-
-
-@router.post(
-    "/{scan_id}/resume",
-    response_model=ScanDetail,
-    status_code=status.HTTP_202_ACCEPTED,
-    dependencies=[Depends(require_csrf_header)],
-)
-async def resume_scan(
-    scan_id: UUID,
-    current_user: Annotated[User, Depends(get_current_user)],
-    session: Annotated[AsyncSession, Depends(get_session)],
-) -> ScanDetail:
-    service = ScanService(session)
-    return await service.resume_scan(scan_id=scan_id, user_id=current_user.id)
-
-
 @router.delete(
     "/{scan_id}",
     status_code=status.HTTP_204_NO_CONTENT,

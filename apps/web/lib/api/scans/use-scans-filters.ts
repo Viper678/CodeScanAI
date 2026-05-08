@@ -9,7 +9,6 @@ import type { ScansFilters } from '@/lib/api/scans/types';
 const STATUSES: ReadonlyArray<ScanStatus> = [
   'pending',
   'running',
-  'paused',
   'completed',
   'failed',
   'cancelled',

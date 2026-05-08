@@ -5,7 +5,6 @@ export type Status =
   // Scan lifecycle (apps/api/app/schemas/scan.py)
   | 'pending'
   | 'running'
-  | 'paused'
   | 'completed'
   | 'failed'
   | 'cancelled'
@@ -17,11 +16,6 @@ export type Status =
 const STATUS_STYLES: Record<Status, string> = {
   pending: 'border-zinc-500/30 bg-zinc-500/10 text-zinc-600 dark:text-zinc-300',
   running: 'border-sky-500/30 bg-sky-500/10 text-sky-600 dark:text-sky-300',
-  // amber-500 reads as "stopped, not finished" — distinct from sky (running),
-  // emerald (completed), red (failed), and the theme's primary orange (which
-  // 'cancelled' already claims). See docs/UI_DESIGN.md status palette.
-  paused:
-    'border-amber-500/30 bg-amber-500/10 text-amber-600 dark:text-amber-300',
   completed:
     'border-emerald-500/30 bg-emerald-500/10 text-emerald-600 dark:text-emerald-300',
   failed: 'border-red-500/30 bg-red-500/10 text-red-600 dark:text-red-300',

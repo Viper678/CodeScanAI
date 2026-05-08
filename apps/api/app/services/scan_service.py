@@ -24,14 +24,11 @@ from app.core.exceptions import (
     QueueUnavailable,
     ScanCancelConflict,
     ScanFilesForbidden,
-    ScanNotPausable,
-    ScanNotResumable,
     UnprocessableRerun,
 )
 from app.models.scan import (
     SCAN_STATUS_CANCELLED,
     SCAN_STATUS_FAILED,
-    SCAN_STATUS_PAUSED,
     SCAN_STATUS_PENDING,
     SCAN_STATUS_RUNNING,
     SCAN_TYPE_KEYWORDS,
@@ -219,10 +216,9 @@ class ScanService:
         if scan is None:
             raise NotFound("Scan not found")
 
-        if scan.status in (SCAN_STATUS_PENDING, SCAN_STATUS_RUNNING, SCAN_STATUS_PAUSED):
-            # paused → cancelled is a direct DB-only transition; no worker
-            # wake-up needed because no worker is running. running → cancelled
-            # is observed by the worker on its next between-files poll.
+        if scan.status in (SCAN_STATUS_PENDING, SCAN_STATUS_RUNNING):
+            # running → cancelled is observed by the worker on its next
+            # between-files poll.
             scan.status = SCAN_STATUS_CANCELLED
             scan.finished_at = datetime.now(UTC)
             await self.session.flush()
@@ -234,56 +230,6 @@ class ScanService:
         else:
             raise ScanCancelConflict(f"Cannot cancel a scan in status '{scan.status}'")
 
-        summary = await self._build_summary(scan_id=scan.id)
-        return _scan_to_detail(scan, summary)
-
-    async def pause_scan(self, *, scan_id: UUID, user_id: UUID) -> ScanDetail:
-        """Flip a running scan to ``paused``; idempotent on already-paused.
-
-        Mirrors :meth:`cancel_scan` — pause is a flag the worker polls for
-        between files via the same status column. We don't notify the worker;
-        it observes the new status on its next between-files check, finishes
-        the in-flight file, and exits.
-        """
-
-        scan = await self.scans.get_by_id(scan_id, user_id=user_id)
-        if scan is None:
-            raise NotFound("Scan not found")
-
-        if scan.status == SCAN_STATUS_RUNNING:
-            scan.status = SCAN_STATUS_PAUSED
-            await self.session.flush()
-            await self.session.commit()
-            await self.session.refresh(scan)
-        elif scan.status == SCAN_STATUS_PAUSED:
-            # Idempotent.
-            pass
-        else:
-            raise ScanNotPausable(f"Cannot pause a scan in status '{scan.status}'")
-
-        summary = await self._build_summary(scan_id=scan.id)
-        return _scan_to_detail(scan, summary)
-
-    async def resume_scan(self, *, scan_id: UUID, user_id: UUID) -> ScanDetail:
-        """Flip a paused scan back to ``pending`` and re-enqueue ``run_scan``.
-
-        The worker picks up the task and selects ``scan_files`` rows still in
-        ``pending``, continuing from where the pause left off. If the broker
-        is unreachable, the row stays ``paused`` so the user can retry.
-        """
-
-        scan = await self.scans.get_by_id(scan_id, user_id=user_id)
-        if scan is None:
-            raise NotFound("Scan not found")
-
-        if scan.status != SCAN_STATUS_PAUSED:
-            raise ScanNotResumable(f"Cannot resume a scan in status '{scan.status}'")
-
-        scan.status = SCAN_STATUS_PENDING
-        await self.session.flush()
-        await self.session.commit()
-        await self.session.refresh(scan)
-        await self._enqueue_or_revert_to_paused(scan)
         summary = await self._build_summary(scan_id=scan.id)
         return _scan_to_detail(scan, summary)
 
@@ -412,22 +358,6 @@ class ScanService:
             )
             scan.status = SCAN_STATUS_FAILED
             scan.error = "queue_unavailable"
-            await self.session.commit()
-            raise QueueUnavailable() from None
-
-    async def _enqueue_or_revert_to_paused(self, scan: Scan) -> None:
-        # Resume variant of _enqueue_or_mark_failed: keep the row recoverable
-        # by flipping back to `paused` rather than `failed` so the user can
-        # retry resume once the broker comes back.
-        # justify: kombu/redis raise unrelated types; catch any broker failure.
-        try:
-            self._enqueue(scan.id)
-        except Exception:
-            logger.exception(
-                "failed to enqueue run_scan for scan %s on resume; reverting to paused",
-                scan.id,
-            )
-            scan.status = SCAN_STATUS_PAUSED
             await self.session.commit()
             raise QueueUnavailable() from None
 

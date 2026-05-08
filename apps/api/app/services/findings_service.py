@@ -39,7 +39,7 @@ from app.schemas.scan import (
 _VALID_SEVERITIES: frozenset[str] = frozenset({"critical", "high", "medium", "low", "info"})
 _VALID_SCAN_TYPES: frozenset[str] = frozenset({"security", "bugs", "keywords"})
 _VALID_SCAN_STATUSES: frozenset[str] = frozenset(
-    {"pending", "running", "paused", "completed", "failed", "cancelled"}
+    {"pending", "running", "completed", "failed", "cancelled"}
 )
 
 # CSV columns in the order documented in docs/API.md §"GET /scans/{id}/export".
