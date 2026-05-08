@@ -217,8 +217,6 @@ class ScanService:
             raise NotFound("Scan not found")
 
         if scan.status in (SCAN_STATUS_PENDING, SCAN_STATUS_RUNNING):
-            # running → cancelled is observed by the worker on its next
-            # between-files poll.
             scan.status = SCAN_STATUS_CANCELLED
             scan.finished_at = datetime.now(UTC)
             await self.session.flush()

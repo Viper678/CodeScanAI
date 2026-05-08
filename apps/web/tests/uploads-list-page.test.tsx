@@ -1,27 +1,18 @@
 import React from 'react';
 import { render, screen } from '@testing-library/react';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 
 import UploadsPage from '@/app/(app)/uploads/page';
 import { ApiError } from '@/lib/api/auth/errors';
 import type { UploadDetail, UploadListResponse } from '@/lib/api/uploads/types';
 
-const { useDeleteUploadMutationMock, useUploadsQueryMock } = vi.hoisted(() => ({
-  useDeleteUploadMutationMock: vi.fn(),
+const { useUploadsQueryMock } = vi.hoisted(() => ({
   useUploadsQueryMock: vi.fn(),
 }));
 
 vi.mock('@/lib/api/uploads/use-upload', () => ({
-  useDeleteUploadMutation: () => useDeleteUploadMutationMock(),
   useUploadsQuery: () => useUploadsQueryMock(),
 }));
-
-beforeEach(() => {
-  useDeleteUploadMutationMock.mockReturnValue({
-    isPending: false,
-    mutate: vi.fn(),
-  });
-});
 
 function makeUpload(overrides: Partial<UploadDetail> = {}): UploadDetail {
   return {
@@ -71,21 +62,16 @@ describe('UploadsPage', () => {
     expect(screen.getByText('monorepo.zip')).toBeInTheDocument();
     expect(screen.getByText('wip.zip')).toBeInTheDocument();
 
-    // Row is no longer the anchor itself — the link is now an absolute
-    // overlay inside the row (so the row can host action buttons like
-    // Delete). Assert the overlay anchor exists with the right href.
     const firstRow = screen.getByTestId('upload-row-u-1');
-    expect(
-      firstRow.querySelector(`a[href="/uploads/u-1/tree-preview"]`),
-    ).toBeInTheDocument();
-    const secondRow = screen.getByTestId('upload-row-u-2');
-    expect(
-      secondRow.querySelector(`a[href="/uploads/u-2/tree-preview"]`),
-    ).toBeInTheDocument();
+    expect(firstRow).toHaveAttribute('href', '/uploads/u-1/tree-preview');
+    expect(screen.getByTestId('upload-row-u-2')).toHaveAttribute(
+      'href',
+      '/uploads/u-2/tree-preview',
+    );
 
     // Ready upload shows file count; extracting shows "—".
     expect(firstRow).toHaveTextContent('312 files');
-    expect(secondRow).toHaveTextContent('—');
+    expect(screen.getByTestId('upload-row-u-2')).toHaveTextContent('—');
   });
 
   it('renders the EmptyState when the response has zero items', () => {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { deleteScan, fetchScans, rerunScan } from '@/lib/api/scans/client';
+import { fetchScans, rerunScan } from '@/lib/api/scans/client';
 
 const originalFetch = globalThis.fetch;
 
@@ -100,20 +100,5 @@ describe('rerunScan', () => {
     expect(init.method).toBe('POST');
     const headers = init.headers as Headers;
     expect(headers.get('X-Requested-With')).toBe('codescan');
-  });
-});
-
-describe('deleteScan', () => {
-  it('DELETEs /scans/{id} with the CSRF header and resolves on 204', async () => {
-    const fetchMock = globalThis.fetch as ReturnType<typeof vi.fn>;
-    fetchMock.mockResolvedValueOnce(new Response(null, { status: 204 }));
-
-    await expect(deleteScan('scan-1')).resolves.toBeUndefined();
-
-    const call = fetchMock.mock.calls[0]!;
-    expect((call[0] as string).endsWith('/scans/scan-1')).toBe(true);
-    const init = call[1] as RequestInit;
-    expect(init.method).toBe('DELETE');
-    expect((init.headers as Headers).get('X-Requested-With')).toBe('codescan');
   });
 });

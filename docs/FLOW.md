@@ -101,19 +101,6 @@ pending ──worker picks up──▶ running ──all files done──▶ com
                                     ╲──user cancels───▶ cancelled
 ```
 
-### Dispatch concurrency invariant
-
-**Exactly one `_dispatch` (worker run) is active per `scan_id` at any time.**
-
-Enforced by a Postgres advisory lock keyed on the scan id (`pg_try_advisory_lock(hashtext('scan:' || scan_id))`), acquired at the top of `_dispatch` and released on every exit path (completion, cancel, exception). A second `run_scan(scan_id)` task that picks up while the first holds the lock must **Celery-retry with exponential backoff** (2s, 4s, 8s, 16s, 32s — five attempts, matching the Gemma-5xx retry policy in `SCAN_RULES.md` §"Retry logic"). After the retry budget is exhausted the task marks the scan `failed` with `error="dispatch_lock_timeout"`. The retry path uses Celery's `self.retry(countdown=...)` — non-blocking, the worker slot is freed between attempts.
-
-Why this matters: Celery's at-least-once delivery means a long-running scan can be re-delivered to a second worker (visibility-timeout expiry, broker hiccup, etc.) while the first delivery is still mid-dispatch. Without the lock, both `_dispatch` loops process overlapping `scan_files` rows (anything not yet marked `done`), which:
-
-- Bumps `scan.progress_done` twice for files processed by both runs, producing `progress_done > progress_total`.
-- Inserts duplicate `scan_findings` rows because `_persist_outcome` is not idempotent.
-
-The advisory lock is a **fence with retry**: the second worker can't bulldoze through, but it also doesn't drop the task — Celery retries it until the lock is free.
-
 ### Per-file scan
 ```
 pending ──picked──▶ running ──ok──▶ done
@@ -132,8 +119,7 @@ pending ──picked──▶ running ──ok──▶ done
 | Single Gemma call 429           | Token-bucket pauses; retry after `Retry-After`.                          |
 | Single Gemma call returns invalid JSON | One repair attempt with stricter prompt. If still bad: `scan_files.status=failed`, scan continues for other files. |
 | Scan gets > 10% file failures   | `scans.status=failed` with summary error.                                |
-| Worker process dies mid-scan    | Celery task ack-late + visibility timeout: another worker picks it up; on lock acquisition, per-file `status=running` rows older than `STUCK_THRESHOLD` are reset to `pending` (orphan recovery). |
-| Celery re-delivers a still-running task | Second delivery's `_dispatch` cannot acquire the advisory lock and Celery-retries with exponential backoff (2s/4s/8s/16s/32s). The first delivery owns the run; the redelivery either acquires the lock once the first finishes or eventually fails with `dispatch_lock_timeout` after the retry budget. |
+| Worker process dies mid-scan    | Celery task ack-late + visibility timeout: another worker picks it up; per-file `status=running` rows older than `STUCK_THRESHOLD` are reset to `pending`. |
 
 ---
 

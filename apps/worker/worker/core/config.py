@@ -68,9 +68,6 @@ class Settings(BaseSettings):
     gemma_max_input_tokens: int = 120_000
     # Re-poll scan.status every N completed files to honor cancellation.
     cancel_check_interval_files: int = 4
-    # Per-file orphan-recovery cutoff: scan_files left in `running` longer than
-    # this when a new dispatch acquires the scan lock are reset to `pending`.
-    stuck_threshold_seconds: int = 600
 
 
 settings = Settings()

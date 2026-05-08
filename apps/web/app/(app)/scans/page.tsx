@@ -12,7 +12,6 @@ import {
 import { useState } from 'react';
 
 import { EmptyState } from '@/components/empty-state';
-import { DeleteScanButton } from '@/components/scans/delete-scan-button';
 import { ScansFilterBar } from '@/components/scans/scans-filter-bar';
 import { StatusPill } from '@/components/status-pill';
 import { Badge } from '@/components/ui/badge';
@@ -246,7 +245,6 @@ function ScanRow({ scan }: Readonly<ScanRowProps>) {
               Re-run
             </Button>
           ) : null}
-          <DeleteScanButton scanId={scan.id} scanName={scan.name ?? 'scan'} />
         </div>
       </div>
       {errorText ? (
