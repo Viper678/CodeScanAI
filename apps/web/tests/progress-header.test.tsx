@@ -91,4 +91,80 @@ describe('<ProgressHeader />', () => {
     expect(screen.getByTestId('scan-resume')).toBeDisabled();
     expect(screen.getByTestId('scan-cancel')).toBeDisabled();
   });
+
+  it('keeps Resume visible as "Resuming…" through the paused → pending transition', () => {
+    const onCancel = vi.fn();
+    const onPause = vi.fn();
+    const onResume = vi.fn();
+    const { rerender } = render(
+      <ProgressHeader
+        scan={makeScan('paused')}
+        cancelling={false}
+        pausing={false}
+        resuming={false}
+        onCancel={onCancel}
+        onPause={onPause}
+        onResume={onResume}
+      />,
+    );
+    expect(screen.getByTestId('scan-resume')).toHaveTextContent('Resume');
+
+    rerender(
+      <ProgressHeader
+        scan={makeScan('pending')}
+        cancelling={false}
+        pausing={false}
+        resuming={false}
+        onCancel={onCancel}
+        onPause={onPause}
+        onResume={onResume}
+      />,
+    );
+    const resumeButton = screen.getByTestId('scan-resume');
+    expect(resumeButton).toHaveTextContent('Resuming…');
+    expect(resumeButton).toBeDisabled();
+  });
+
+  it('hides Resume once status advances from pending to running', () => {
+    const onCancel = vi.fn();
+    const onPause = vi.fn();
+    const onResume = vi.fn();
+    const { rerender } = render(
+      <ProgressHeader
+        scan={makeScan('paused')}
+        cancelling={false}
+        pausing={false}
+        resuming={false}
+        onCancel={onCancel}
+        onPause={onPause}
+        onResume={onResume}
+      />,
+    );
+    rerender(
+      <ProgressHeader
+        scan={makeScan('pending')}
+        cancelling={false}
+        pausing={false}
+        resuming={false}
+        onCancel={onCancel}
+        onPause={onPause}
+        onResume={onResume}
+      />,
+    );
+    expect(screen.getByTestId('scan-resume')).toBeInTheDocument();
+
+    rerender(
+      <ProgressHeader
+        scan={makeScan('running')}
+        cancelling={false}
+        pausing={false}
+        resuming={false}
+        onCancel={onCancel}
+        onPause={onPause}
+        onResume={onResume}
+      />,
+    );
+    expect(screen.queryByTestId('scan-resume')).not.toBeInTheDocument();
+    expect(screen.getByTestId('scan-pause')).toBeInTheDocument();
+  });
 });

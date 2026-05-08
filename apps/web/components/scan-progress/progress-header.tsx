@@ -1,11 +1,12 @@
 'use client';
 
+import { useEffect, useRef, useState } from 'react';
 import { Loader2, Pause, Play, X } from 'lucide-react';
 
 import { StatusPill } from '@/components/status-pill';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import type { ScanDetail, ScanType } from '@/lib/api/scans/types';
+import type { ScanDetail, ScanStatus, ScanType } from '@/lib/api/scans/types';
 
 const TYPE_LABELS: Record<ScanType, string> = {
   bugs: 'Bugs',
@@ -33,6 +34,8 @@ type ProgressHeaderProps = {
  * - `running` → Pause + Cancel
  * - `paused`  → Resume + Cancel  (cancel-from-paused is supported by the API)
  * - `pending` → Cancel only      (worker hasn't started yet — pause is N/A)
+ *   exception: if we just transitioned `paused → pending` (resume click),
+ *   Resume stays visible as "Resuming…" until the worker flips to `running`.
  * - terminal  → no controls
  *
  * See docs/UI_DESIGN.md §`/scans/{id}` and docs/API.md §pause/resume.
@@ -46,6 +49,21 @@ export function ProgressHeader({
   onPause,
   onResume,
 }: Readonly<ProgressHeaderProps>) {
+  // The brief `pending` window after a Resume click is invisible to the user
+  // unless we hold Resume's spinner state through it. Track the transition
+  // `paused → pending` and keep "Resuming…" until status advances.
+  const prevStatusRef = useRef<ScanStatus>(scan.status);
+  const [pendingFromResume, setPendingFromResume] = useState(false);
+  useEffect(() => {
+    const prev = prevStatusRef.current;
+    if (prev === 'paused' && scan.status === 'pending') {
+      setPendingFromResume(true);
+    } else if (scan.status !== 'pending') {
+      setPendingFromResume(false);
+    }
+    prevStatusRef.current = scan.status;
+  }, [scan.status]);
+
   // Cancel is valid from pending/running/paused (paused→cancelled is direct
   // per docs/API.md §`POST /scans/{id}/cancel`).
   const cancellable =
@@ -53,12 +71,14 @@ export function ProgressHeader({
     scan.status === 'running' ||
     scan.status === 'paused';
   const pausable = scan.status === 'running';
-  const resumable = scan.status === 'paused';
+  const resumable = scan.status === 'paused' || pendingFromResume;
+  const showResumingSpinner = resuming || pendingFromResume;
   const displayName = scan.name?.trim().length ? scan.name : 'Scan';
 
   // Disable controls while ANY mutation is in flight so a double-click on
-  // Pause doesn't race a Cancel click on the same row.
-  const anyPending = cancelling || pausing || resuming;
+  // Pause doesn't race a Cancel click on the same row. Also disable during
+  // the post-resume `pending` window so the user can't fire a second Resume.
+  const anyPending = cancelling || pausing || resuming || pendingFromResume;
 
   return (
     <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
@@ -103,12 +123,12 @@ export function ProgressHeader({
               onClick={onResume}
               disabled={anyPending}
             >
-              {resuming ? (
+              {showResumingSpinner ? (
                 <Loader2 className="size-4 animate-spin" aria-hidden="true" />
               ) : (
                 <Play className="size-4" aria-hidden="true" />
               )}
-              {resuming ? 'Resuming…' : 'Resume'}
+              {showResumingSpinner ? 'Resuming…' : 'Resume'}
             </Button>
           ) : null}
           {cancellable ? (
