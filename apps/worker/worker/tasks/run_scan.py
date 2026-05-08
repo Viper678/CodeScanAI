@@ -21,10 +21,11 @@ scan_types raised, it's ``failed`` with a joined error message.
 from __future__ import annotations
 
 import logging
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+from contextlib import contextmanager
 from dataclasses import dataclass, field
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -32,6 +33,7 @@ from uuid import UUID
 
 from celery import Task
 from sqlalchemy import func, select, update
+from sqlalchemy.engine import Connection
 from sqlalchemy.orm import Session, attributes, sessionmaker
 
 from worker.celery_app import celery_app
@@ -40,6 +42,7 @@ from worker.core.config import settings
 from worker.core.models import (
     SCAN_FILE_STATUS_DONE,
     SCAN_FILE_STATUS_FAILED,
+    SCAN_FILE_STATUS_PENDING,
     SCAN_FILE_STATUS_RUNNING,
     SCAN_FILE_STATUS_SKIPPED,
     SCAN_STATUS_CANCELLED,
@@ -104,6 +107,90 @@ class _PerFileOutcome:
     final_error: str | None = None
 
 
+# ---- Dispatch lock ----------------------------------------------------------
+
+
+class DispatchLockBusy(Exception):
+    """Raised when ``pg_try_advisory_lock`` for this scan cannot be acquired.
+
+    Surfaced from ``_run`` to the Celery task wrapper, which translates it
+    into ``self.retry`` with exponential backoff. Never raised back to user
+    code — see ``run_scan`` for the retry budget.
+    """
+
+
+# Retry policy mirrors the Gemma 5xx policy in SCAN_RULES.md §"Retry logic".
+_DISPATCH_LOCK_MAX_RETRIES = 5
+
+
+def _dispatch_lock_key_sql(scan_id: UUID) -> Any:
+    """Return the SQLAlchemy expression for the advisory-lock key.
+
+    ``hashtext`` reduces the scan-id string to ``int4`` which Postgres widens
+    to the ``bigint`` advisory-lock key. Same key for any process touching
+    the same scan — that is the fence.
+    """
+
+    return func.pg_catalog.hashtext("scan:" + str(scan_id))
+
+
+@contextmanager
+def _dispatch_lock(maker: sessionmaker[Session], scan_id: UUID) -> Iterator[Connection]:
+    """Hold a Postgres advisory lock on this scan_id for the dispatch lifetime.
+
+    The advisory lock is connection-scoped — keep this connection open through
+    the entire dispatch (orphan recovery, plan build, pre-flight, dispatch
+    loop, finalize). Released on every exit path: success, exception, pause,
+    cancel.
+    """
+
+    engine = maker.kw["bind"]
+    conn: Connection = engine.connect()
+    try:
+        key = _dispatch_lock_key_sql(scan_id)
+        acquired = conn.execute(select(func.pg_try_advisory_lock(key))).scalar()
+        if not acquired:
+            raise DispatchLockBusy(f"scan {scan_id} dispatch lock held by another worker")
+        try:
+            yield conn
+        finally:
+            conn.execute(select(func.pg_advisory_unlock(_dispatch_lock_key_sql(scan_id))))
+    finally:
+        conn.close()
+
+
+def _reset_orphan_running_files(maker: sessionmaker[Session], scan_id: UUID) -> int:
+    """Reset ``scan_files`` left in ``running`` past STUCK_THRESHOLD to ``pending``.
+
+    Runs after lock acquisition and before plan building so a crashed worker's
+    stuck files don't permanently stall the scan. Returns the count reset, for
+    logging.
+    """
+
+    cutoff = datetime.now(UTC) - timedelta(seconds=settings.stuck_threshold_seconds)
+    with maker() as session:
+        stale = list(
+            session.scalars(
+                select(ScanFile.id).where(
+                    ScanFile.scan_id == scan_id,
+                    ScanFile.status == SCAN_FILE_STATUS_RUNNING,
+                    ScanFile.started_at < cutoff,
+                )
+            )
+        )
+        if not stale:
+            return 0
+        for sf_id in stale:
+            logger.warning("orphan scan_file reset to pending: %s", sf_id)
+        session.execute(
+            update(ScanFile)
+            .where(ScanFile.id.in_(stale))
+            .values(status=SCAN_FILE_STATUS_PENDING, started_at=None)
+        )
+        session.commit()
+        return len(stale)
+
+
 # ---- Public task ------------------------------------------------------------
 
 
@@ -113,6 +200,10 @@ class _PerFileOutcome:
 )
 def run_scan(self: Task, scan_id: str) -> dict[str, object]:
     """Run a scan end-to-end. Idempotent on re-delivery (terminal status no-ops).
+
+    On dispatch-lock contention this task Celery-retries with exponential
+    backoff (2s/4s/8s/16s/32s, 5 attempts). After the budget is exhausted the
+    scan is marked ``failed`` with ``error="dispatch_lock_timeout"``.
 
     Args:
         scan_id: String form of the scan's UUID.
@@ -124,8 +215,46 @@ def run_scan(self: Task, scan_id: str) -> dict[str, object]:
         LookupError: scan id does not exist.
     """
 
-    del self  # unused; bound for explicit naming in error traces
-    return _run(scan_id, scanner_registry_factory=_default_scanner_registry)
+    try:
+        return _run(scan_id, scanner_registry_factory=_default_scanner_registry)
+    except DispatchLockBusy as exc:
+        attempt = self.request.retries
+        if attempt >= _DISPATCH_LOCK_MAX_RETRIES:
+            logger.error("dispatch lock timeout for scan %s after %d retries", scan_id, attempt)
+            _mark_dispatch_lock_timeout(scan_id)
+            return _result_for_lock_timeout(scan_id)
+        countdown = 2 ** (attempt + 1)
+        logger.info(
+            "dispatch lock busy for scan %s; retry %d in %ds", scan_id, attempt + 1, countdown
+        )
+        raise self.retry(
+            exc=exc, countdown=countdown, max_retries=_DISPATCH_LOCK_MAX_RETRIES
+        ) from exc
+
+
+def _mark_dispatch_lock_timeout(scan_id: str) -> None:
+    """Finalize a scan as ``failed`` with ``error='dispatch_lock_timeout'``."""
+
+    parsed_id = UUID(scan_id)
+    with worker_db.SessionMaker() as session:
+        scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
+        if scan is None:
+            return
+        if scan.status in (SCAN_STATUS_COMPLETED, SCAN_STATUS_FAILED, SCAN_STATUS_CANCELLED):
+            return
+        scan.status = SCAN_STATUS_FAILED
+        scan.error = "dispatch_lock_timeout"
+        scan.finished_at = datetime.now(UTC)
+        session.commit()
+
+
+def _result_for_lock_timeout(scan_id: str) -> dict[str, object]:
+    parsed_id = UUID(scan_id)
+    with worker_db.SessionMaker() as session:
+        scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
+        if scan is None:
+            return {"status": SCAN_STATUS_FAILED, "progress_done": 0, "progress_total": 0}
+        return _result_dict(scan)
 
 
 def _run(
@@ -142,11 +271,17 @@ def _run(
             Tests inject a fake here to avoid touching the network.
         session_maker: override for ``worker.core.db.SessionMaker``; tests use
             this so per-thread sessions hit the integration DB.
+
+    Raises:
+        DispatchLockBusy: another worker holds the scan's dispatch lock.
+            Surfaced to the Celery task wrapper, which retries with backoff.
     """
 
     parsed_id = UUID(scan_id)
     maker = session_maker if session_maker is not None else worker_db.SessionMaker
 
+    # Pre-lock fast path: terminal / paused status is a no-op without touching
+    # the dispatch lock so re-deliveries on completed scans never contend.
     with maker() as session:
         scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
         if scan is None:
@@ -157,10 +292,41 @@ def _run(
             logger.info("run_scan: scan %s already terminal (%s)", scan_id, scan.status)
             return _result_dict(scan)
 
-        # Re-delivery while the user paused after the API enqueued resume:
-        # honor the pause flag and no-op. Resume re-enqueues anew.
         if scan.status == SCAN_STATUS_PAUSED:
             logger.info("run_scan: scan %s is paused; no-op", scan_id)
+            return _result_dict(scan)
+
+    # Lock fences the rest of the run against concurrent dispatchers (Celery
+    # re-delivery, pause+rapid-resume). Connection-scoped — held open through
+    # orphan recovery, plan build, pre-flight, dispatch loop, and finalize.
+    with _dispatch_lock(maker, parsed_id):
+        return _run_locked(
+            parsed_id,
+            scan_id_str=scan_id,
+            maker=maker,
+            scanner_registry_factory=scanner_registry_factory,
+        )
+
+
+def _run_locked(
+    parsed_id: UUID,
+    *,
+    scan_id_str: str,
+    maker: sessionmaker[Session],
+    scanner_registry_factory: ScannerRegistryFactory,
+) -> dict[str, object]:
+    """Body of ``_run`` executed while holding the dispatch advisory lock."""
+
+    with maker() as session:
+        scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
+        if scan is None:
+            raise LookupError(f"scan disappeared after lock: {scan_id_str}")
+
+        # Re-check status under the lock — another worker may have finalized
+        # between our pre-lock read and lock acquisition.
+        if scan.status in (SCAN_STATUS_COMPLETED, SCAN_STATUS_FAILED, SCAN_STATUS_CANCELLED):
+            return _result_dict(scan)
+        if scan.status == SCAN_STATUS_PAUSED:
             return _result_dict(scan)
 
         # Move pending -> running (allow re-entry from running too — replay).
@@ -181,6 +347,11 @@ def _run(
             return _result_dict(scan)
         extract_root = Path(upload.extract_path)
 
+    # Orphan recovery — reset stuck `running` scan_files before plan build so
+    # they get picked up by this dispatch.
+    _reset_orphan_running_files(maker, parsed_id)
+
+    with maker() as session:
         plans = _build_plans(session, parsed_id, extract_root)
 
     # Pre-flight skip pass — done in a fresh session so we can stream updates.
@@ -203,7 +374,7 @@ def _run(
     try:
         registry = scanner_registry_factory(scan_types, keywords_cfg)
     except Exception as exc:
-        logger.exception("run_scan: failed to build scanner registry for %s", scan_id)
+        logger.exception("run_scan: failed to build scanner registry for %s", scan_id_str)
         with maker() as session:
             scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
             if scan is not None:
@@ -229,7 +400,7 @@ def _run(
     with maker() as session:
         scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
         if scan is None:
-            raise LookupError(f"scan disappeared mid-run: {scan_id}")
+            raise LookupError(f"scan disappeared mid-run: {scan_id_str}")
 
         if cancelled or scan.status == SCAN_STATUS_CANCELLED:
             # Honor the cancellation: don't flip to completed.
