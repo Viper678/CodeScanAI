@@ -106,7 +106,7 @@ Indexes: `(upload_id, path)`, `(upload_id, parent_path)`. UNIQUE `(upload_id, pa
 | `name`          | TEXT          | user-given label, optional                                  |
 | `scan_types`    | TEXT[]        | subset of `{security, bugs, keywords}`                      |
 | `keywords`      | JSONB         | `{ items: ["TODO", "FIXME"], case_sensitive: false, regex: false }` |
-| `status`        | TEXT          | `pending` \| `running` \| `paused` \| `completed` \| `failed` \| `cancelled` |
+| `status`        | TEXT          | `pending` \| `running` \| `completed` \| `failed` \| `cancelled` |
 | `progress_done` | INT           | files completed                                             |
 | `progress_total`| INT           | files queued                                                |
 | `started_at`    | TIMESTAMPTZ NULL |                                                          |
@@ -175,10 +175,7 @@ received → extracting → ready
 pending → running → completed
               ↘ failed
               ↘ cancelled
-              ↕ paused        (running ⇄ paused via pause/resume; cancel still allowed from paused)
 ```
-
-`paused` is a soft-stop: the worker exits cleanly between files, leaves any unprocessed `scan_files` rows in `pending`, and persists a pause flag on the scan row. `resume` re-enqueues `run_scan(scan_id)` and the worker picks up the remaining `pending` rows. No `running` `scan_files` rows are left behind by a pause (in-flight files complete and persist findings before the worker checks the flag — same contract as cancel).
 
 ### `scan_files.status`
 ```

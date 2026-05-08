@@ -25,146 +25,46 @@ function makeScan(status: ScanStatus, overrides: Partial<ScanDetail> = {}) {
 
 function renderWith(
   status: ScanStatus,
-  props: Partial<{
-    cancelling: boolean;
-    pausing: boolean;
-    resuming: boolean;
-  }> = {},
+  props: Partial<{ cancelling: boolean }> = {},
 ) {
   const onCancel = vi.fn();
-  const onPause = vi.fn();
-  const onResume = vi.fn();
   render(
     <ProgressHeader
       scan={makeScan(status)}
       cancelling={props.cancelling ?? false}
-      pausing={props.pausing ?? false}
-      resuming={props.resuming ?? false}
       onCancel={onCancel}
-      onPause={onPause}
-      onResume={onResume}
     />,
   );
-  return { onCancel, onPause, onResume };
+  return { onCancel };
 }
 
 describe('<ProgressHeader />', () => {
-  it('shows Pause + Cancel while running, no Resume', () => {
+  it('shows Cancel while running', () => {
     renderWith('running');
-    expect(screen.getByTestId('scan-pause')).toBeInTheDocument();
     expect(screen.getByTestId('scan-cancel')).toBeInTheDocument();
-    expect(screen.queryByTestId('scan-resume')).not.toBeInTheDocument();
   });
 
-  it('shows Resume + Cancel while paused, no Pause', () => {
-    renderWith('paused');
-    expect(screen.getByTestId('scan-resume')).toBeInTheDocument();
-    expect(screen.getByTestId('scan-cancel')).toBeInTheDocument();
-    expect(screen.queryByTestId('scan-pause')).not.toBeInTheDocument();
-  });
-
-  it('shows only Cancel while pending — pause is N/A before the worker starts', () => {
+  it('shows Cancel while pending', () => {
     renderWith('pending');
     expect(screen.getByTestId('scan-cancel')).toBeInTheDocument();
-    expect(screen.queryByTestId('scan-pause')).not.toBeInTheDocument();
-    expect(screen.queryByTestId('scan-resume')).not.toBeInTheDocument();
   });
 
   it.each<ScanStatus>(['completed', 'failed', 'cancelled'])(
     'shows no controls in terminal state (%s)',
     (status) => {
       renderWith(status);
-      expect(screen.queryByTestId('scan-pause')).not.toBeInTheDocument();
-      expect(screen.queryByTestId('scan-resume')).not.toBeInTheDocument();
       expect(screen.queryByTestId('scan-cancel')).not.toBeInTheDocument();
     },
   );
 
-  it('fires the corresponding handler on click', () => {
-    const { onPause } = renderWith('running');
-    fireEvent.click(screen.getByTestId('scan-pause'));
-    expect(onPause).toHaveBeenCalledTimes(1);
+  it('fires onCancel on click', () => {
+    const { onCancel } = renderWith('running');
+    fireEvent.click(screen.getByTestId('scan-cancel'));
+    expect(onCancel).toHaveBeenCalledTimes(1);
   });
 
-  it('disables every visible control while any mutation is pending', () => {
-    renderWith('paused', { resuming: true });
-    expect(screen.getByTestId('scan-resume')).toBeDisabled();
+  it('disables Cancel while the cancel mutation is pending', () => {
+    renderWith('running', { cancelling: true });
     expect(screen.getByTestId('scan-cancel')).toBeDisabled();
-  });
-
-  it('keeps Resume visible as "Resuming…" through the paused → pending transition', () => {
-    const onCancel = vi.fn();
-    const onPause = vi.fn();
-    const onResume = vi.fn();
-    const { rerender } = render(
-      <ProgressHeader
-        scan={makeScan('paused')}
-        cancelling={false}
-        pausing={false}
-        resuming={false}
-        onCancel={onCancel}
-        onPause={onPause}
-        onResume={onResume}
-      />,
-    );
-    expect(screen.getByTestId('scan-resume')).toHaveTextContent('Resume');
-
-    rerender(
-      <ProgressHeader
-        scan={makeScan('pending')}
-        cancelling={false}
-        pausing={false}
-        resuming={false}
-        onCancel={onCancel}
-        onPause={onPause}
-        onResume={onResume}
-      />,
-    );
-    const resumeButton = screen.getByTestId('scan-resume');
-    expect(resumeButton).toHaveTextContent('Resuming…');
-    expect(resumeButton).toBeDisabled();
-  });
-
-  it('hides Resume once status advances from pending to running', () => {
-    const onCancel = vi.fn();
-    const onPause = vi.fn();
-    const onResume = vi.fn();
-    const { rerender } = render(
-      <ProgressHeader
-        scan={makeScan('paused')}
-        cancelling={false}
-        pausing={false}
-        resuming={false}
-        onCancel={onCancel}
-        onPause={onPause}
-        onResume={onResume}
-      />,
-    );
-    rerender(
-      <ProgressHeader
-        scan={makeScan('pending')}
-        cancelling={false}
-        pausing={false}
-        resuming={false}
-        onCancel={onCancel}
-        onPause={onPause}
-        onResume={onResume}
-      />,
-    );
-    expect(screen.getByTestId('scan-resume')).toBeInTheDocument();
-
-    rerender(
-      <ProgressHeader
-        scan={makeScan('running')}
-        cancelling={false}
-        pausing={false}
-        resuming={false}
-        onCancel={onCancel}
-        onPause={onPause}
-        onResume={onResume}
-      />,
-    );
-    expect(screen.queryByTestId('scan-resume')).not.toBeInTheDocument();
-    expect(screen.getByTestId('scan-pause')).toBeInTheDocument();
   });
 });

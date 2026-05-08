@@ -52,41 +52,12 @@ export async function fetchScanFiles(
 }
 
 /**
- * POST `/scans/{id}/cancel` — flips a pending/running/paused scan to cancelled.
+ * POST `/scans/{id}/cancel` — flips a pending/running scan to cancelled.
  * Returns the freshly updated `ScanDetail` (the API mirrors the GET shape on
  * the cancel response, so a successful call lets the caller skip a refetch).
  */
 export async function cancelScan(scanId: string): Promise<ScanDetail> {
   return apiFetch<ScanDetail>(`/scans/${scanId}/cancel`, {
-    csrf: true,
-    method: 'POST',
-  });
-}
-
-/**
- * POST `/scans/{id}/pause` — flips a running scan to paused. Idempotent on an
- * already-paused scan; the server returns the same body. `409 not_pausable`
- * for any other state. See docs/API.md §`POST /scans/{id}/pause`.
- *
- * Returns the small `{id, status, progress_done, progress_total}` envelope
- * the server sends — same shape as `POST /scans` and `POST /scans/{id}/resume`.
- */
-export async function pauseScan(scanId: string): Promise<ScanCreateResponse> {
-  return apiFetch<ScanCreateResponse>(`/scans/${scanId}/pause`, {
-    csrf: true,
-    method: 'POST',
-  });
-}
-
-/**
- * POST `/scans/{id}/resume` — re-enqueues a paused scan. Server returns `202`
- * with `status: 'pending'`; the worker flips it to `'running'` once it picks
- * the task up. `409 not_resumable` from any non-paused state, `503
- * queue_unavailable` if the broker is down (the scan stays `'paused'`, so the
- * user can retry).
- */
-export async function resumeScan(scanId: string): Promise<ScanCreateResponse> {
-  return apiFetch<ScanCreateResponse>(`/scans/${scanId}/resume`, {
     csrf: true,
     method: 'POST',
   });

@@ -146,7 +146,6 @@ class File(Base):
 
 SCAN_STATUS_PENDING = "pending"
 SCAN_STATUS_RUNNING = "running"
-SCAN_STATUS_PAUSED = "paused"
 SCAN_STATUS_COMPLETED = "completed"
 SCAN_STATUS_FAILED = "failed"
 SCAN_STATUS_CANCELLED = "cancelled"

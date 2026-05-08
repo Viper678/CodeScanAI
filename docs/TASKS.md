@@ -148,8 +148,9 @@ Each task has:
 - **AC:** filtering and re-run both work end-to-end.
 - **Depends on:** T4.1.
 
-### T4.5 — Pause / resume scans
-- **Status:** complete (backend #39, web in this PR).
+### T4.5 — Pause / resume scans  *(REMOVED)*
+- **Status:** removed. Originally shipped across #39 (backend), #40 (web + delete), #42 (dispatch lock spec → impl), #43 (lock leak + UX fix). Reverted because the pause+resume timing model produced repeated bugs the user was unwilling to keep iterating on (over-counting; duplicate findings; lock leaks; "Resume button disappears" UX gap during the brief paused→pending polling window). The dispatch-concurrency-lock infrastructure from T4.7 stays — it is defensive against Celery re-delivery and stands on its own.
+- **Original goal / AC / Touches / Depends-on:** preserved below for historical context. Future agents: do not re-implement without re-opening this design.
 - **Goal:** add `paused` to `scans.status`. Ship `POST /scans/{id}/pause` and `POST /scans/{id}/resume` per `API.md`. Worker observes a pause flag between files (mirrors cancel), exits cleanly with unprocessed `scan_files` left in `pending`. Resume re-enqueues `run_scan(scan_id)`; worker continues from the remaining `pending` rows. Web exposes Pause/Resume on the progress page; the existing findings panel keeps working unchanged on a paused scan (partial findings already persist incrementally). No alembic migration — `scans.status` is `TEXT`, the new value is application-level only.
 - **AC:**
   - `POST /scans/{id}/pause` → `200` from `running`; idempotent `200` from `paused`; `409 not_pausable` from `pending`/`completed`/`failed`/`cancelled`.
