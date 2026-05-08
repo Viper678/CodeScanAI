@@ -977,3 +977,513 @@ def test_run_scan_resume_after_pause_completes(
         assert len(findings) == len(file_ids)
         files_with_findings = {f.file_id for f in findings}
         assert files_with_findings == set(file_ids)
+
+
+# ---- T4.7: dispatch concurrency lock + orphan recovery ---------------------
+
+
+def _slow_registry_factory(per_file_delay_s: float):  # type: ignore[no-untyped-def]
+    """Registry factory that delays each scan_file call by ``per_file_delay_s``.
+
+    Used to keep the first ``_run`` busy long enough for a second ``_run`` on
+    the main thread to race into ``_dispatch_lock``.
+    """
+
+    import time
+
+    from worker.scanners.base import Finding, ScanCallResult, ScanContext
+
+    def _factory(scan_types, keywords_cfg):  # type: ignore[no-untyped-def]
+        del keywords_cfg
+
+        class _SlowSecurity:
+            name = "security"
+
+            def scan_file(self, content: str, ctx: ScanContext) -> ScanCallResult:
+                time.sleep(per_file_delay_s)
+                return ScanCallResult(
+                    findings=[
+                        Finding(
+                            title="security finding",
+                            message="canned",
+                            recommendation=None,
+                            severity="high",
+                            line_start=1,
+                            line_end=1,
+                            rule_id="R-security",
+                            confidence=0.5,
+                        )
+                    ],
+                    tokens_in=10,
+                    tokens_out=5,
+                    latency_ms=1,
+                )
+
+        registry: dict[str, object] = {}
+        if "security" in scan_types:
+            registry["security"] = _SlowSecurity()
+        return registry
+
+    return _factory
+
+
+def test_run_scan_dispatch_lock_blocks_concurrent_dispatch(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The bug: pre-T4.7 a second `_run` overlapping with the first
+    over-bumped progress and inserted duplicate findings. Post-T4.7 the
+    second `_run` raises `DispatchLockBusy` and the first finishes cleanly
+    with no duplication."""
+
+    import threading
+
+    sync_url, _psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+    # Sequential dispatch so the per-file delay paces the run.
+    monkeypatch.setattr(cfg.settings, "scan_concurrency", 1)
+    monkeypatch.setattr(cfg.settings, "cancel_check_interval_files", 4)
+
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    file_count = 6
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id, file_ids = _insert_upload_with_text_files(
+            session, user_id=user_id, extract_root=extract_root, count=file_count
+        )
+
+    from worker.core.models import (
+        SCAN_FILE_STATUS_PENDING,
+        SCAN_STATUS_PENDING,
+        Scan,
+        ScanFile,
+        ScanFinding,
+    )
+    from worker.core.uuid7 import uuid7
+
+    with _engine_session(sync_url) as session:
+        scan = Scan(
+            id=uuid7(),
+            user_id=user_id,
+            upload_id=upload_id,
+            name="t",
+            scan_types=["security"],
+            keywords={},
+            status=SCAN_STATUS_PENDING,
+            progress_done=0,
+            progress_total=len(file_ids),
+            model="gemma-4-31b-it",
+            model_settings={},
+        )
+        session.add(scan)
+        session.flush()
+        scan_id = scan.id
+        for fid in file_ids:
+            session.add(
+                ScanFile(
+                    id=uuid7(),
+                    scan_id=scan_id,
+                    file_id=fid,
+                    status=SCAN_FILE_STATUS_PENDING,
+                )
+            )
+        session.commit()
+
+    from worker.tasks.run_scan import DispatchLockBusy, _run
+
+    thread_result: dict[str, object] = {}
+    thread_error: dict[str, BaseException] = {}
+
+    def _thread_old_worker() -> None:
+        try:
+            thread_result["result"] = _run(
+                str(scan_id),
+                scanner_registry_factory=_slow_registry_factory(0.15),
+                session_maker=new_maker,
+            )
+        except BaseException as exc:  # justify: surface failures back to main
+            thread_error["error"] = exc
+
+    t = threading.Thread(target=_thread_old_worker, daemon=True)
+    t.start()
+
+    # Wait until the old worker is mid-dispatch (progress_done > 0). The slow
+    # scanner takes ~0.15s/file, so this normally returns within ~200ms.
+    deadline = 0
+    saw_progress = False
+    while deadline < 100:
+        with _engine_session(sync_url) as session:
+            row = session.scalar(select(Scan).where(Scan.id == scan_id))
+            assert row is not None
+            if (row.progress_done or 0) > 0:
+                saw_progress = True
+                break
+        import time as _time
+
+        _time.sleep(0.05)
+        deadline += 1
+    assert saw_progress, "old worker never made progress; cannot verify race"
+
+    # Second worker enters mid-dispatch and must hit the lock.
+    with pytest.raises(DispatchLockBusy):
+        _run(
+            str(scan_id),
+            scanner_registry_factory=_slow_registry_factory(0.15),
+            session_maker=new_maker,
+        )
+
+    # Old worker finishes naturally.
+    t.join(timeout=30)
+    assert not t.is_alive(), "old worker did not finish within 30s"
+    assert "error" not in thread_error, f"old worker raised: {thread_error.get('error')}"
+    assert thread_result["result"]["status"] == "completed"  # type: ignore[index]
+
+    # Assertions: no over-counting, no duplicate findings.
+    with _engine_session(sync_url) as session:
+        scan_row = session.scalar(select(Scan).where(Scan.id == scan_id))
+        assert scan_row is not None
+        assert scan_row.status == "completed"
+        assert scan_row.progress_done == scan_row.progress_total == file_count
+
+        sfs = list(session.scalars(select(ScanFile).where(ScanFile.scan_id == scan_id)))
+        terminal = sum(1 for sf in sfs if sf.status in ("done", "skipped", "failed"))
+        assert terminal == file_count
+        assert scan_row.progress_done == terminal
+
+        findings = list(session.scalars(select(ScanFinding).where(ScanFinding.scan_id == scan_id)))
+        # No duplicate (scan_id, file_id, scan_type, line_start, line_end, rule_id) groups.
+        seen: dict[tuple[UUID, UUID, str, int | None, int | None, str], int] = {}
+        for f in findings:
+            key = (
+                f.scan_id,
+                f.file_id,
+                f.scan_type,
+                f.line_start,
+                f.line_end,
+                f.rule_id or "",
+            )
+            seen[key] = seen.get(key, 0) + 1
+        duplicates = [k for k, n in seen.items() if n > 1]
+        assert not duplicates, f"duplicate findings: {duplicates}"
+        # One security finding per file, no more.
+        assert len(findings) == file_count
+
+
+def test_run_scan_celery_retry_called_on_lock_busy(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The Celery wrapper must catch `DispatchLockBusy` and call `self.retry`
+    with the documented exponential backoff (2s/4s/8s/16s/32s)."""
+
+    sync_url, _psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        _upload_id, _file_ids = _insert_upload_with_text_files(
+            session, user_id=user_id, extract_root=extract_root, count=1
+        )
+
+    from worker.tasks import run_scan as run_scan_mod
+
+    # Force `_run` to raise DispatchLockBusy so we exercise the retry branch.
+    def _always_busy(_scan_id, *, scanner_registry_factory):  # type: ignore[no-untyped-def]
+        raise run_scan_mod.DispatchLockBusy("forced for test")
+
+    monkeypatch.setattr(run_scan_mod, "_run", _always_busy)
+
+    class _RetryCalled(Exception):
+        pass
+
+    retries: list[dict[str, object]] = []
+
+    class _FakeRequest:
+        def __init__(self, n: int) -> None:
+            self.retries = n
+
+    class _FakeTask:
+        def __init__(self, attempt: int) -> None:
+            self.request = _FakeRequest(attempt)
+
+        def retry(self, *, exc, countdown, max_retries):  # type: ignore[no-untyped-def]
+            retries.append({"countdown": countdown, "max_retries": max_retries})
+            return _RetryCalled()
+
+    # Bypass celery's task-binding machinery by calling the underlying
+    # function directly with our fake `self`.
+    run_scan_fn = run_scan_mod.run_scan.run.__func__
+
+    # Simulate the first 5 retry attempts.
+    for attempt in range(5):
+        with pytest.raises(_RetryCalled):
+            run_scan_fn(_FakeTask(attempt), str(uuid4()))
+
+    countdowns = [r["countdown"] for r in retries]
+    assert countdowns == [2, 4, 8, 16, 32]
+    assert all(r["max_retries"] == 5 for r in retries)
+
+
+def test_run_scan_celery_retry_exhausted_marks_scan_failed(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After 5 retries on dispatch-lock contention, mark the scan failed
+    with `error="dispatch_lock_timeout"` and finalize."""
+
+    sync_url, _psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id, file_ids = _insert_upload_with_text_files(
+            session, user_id=user_id, extract_root=extract_root, count=2
+        )
+
+    from worker.core.models import (
+        SCAN_FILE_STATUS_PENDING,
+        SCAN_STATUS_RUNNING,
+        Scan,
+        ScanFile,
+    )
+    from worker.core.uuid7 import uuid7
+
+    with _engine_session(sync_url) as session:
+        scan = Scan(
+            id=uuid7(),
+            user_id=user_id,
+            upload_id=upload_id,
+            name="t",
+            scan_types=["security"],
+            keywords={},
+            status=SCAN_STATUS_RUNNING,
+            progress_done=0,
+            progress_total=len(file_ids),
+            model="gemma-4-31b-it",
+            model_settings={},
+        )
+        session.add(scan)
+        session.flush()
+        scan_id = scan.id
+        for fid in file_ids:
+            session.add(
+                ScanFile(
+                    id=uuid7(),
+                    scan_id=scan_id,
+                    file_id=fid,
+                    status=SCAN_FILE_STATUS_PENDING,
+                )
+            )
+        session.commit()
+
+    from worker.tasks import run_scan as run_scan_mod
+
+    def _always_busy(_scan_id, *, scanner_registry_factory):  # type: ignore[no-untyped-def]
+        raise run_scan_mod.DispatchLockBusy("forced for test")
+
+    monkeypatch.setattr(run_scan_mod, "_run", _always_busy)
+
+    class _FakeRequest:
+        def __init__(self, n: int) -> None:
+            self.retries = n
+
+    class _FakeTask:
+        def __init__(self, attempt: int) -> None:
+            self.request = _FakeRequest(attempt)
+
+        def retry(self, *, exc, countdown, max_retries):  # type: ignore[no-untyped-def]
+            raise AssertionError("retry should not be called after budget exhausted")
+
+    run_scan_fn = run_scan_mod.run_scan.run.__func__
+
+    # Pretend the broker has already retried 5 times — this attempt is #6.
+    result = run_scan_fn(_FakeTask(5), str(scan_id))
+    assert result["status"] == "failed"
+
+    with _engine_session(sync_url) as session:
+        row = session.scalar(select(Scan).where(Scan.id == scan_id))
+        assert row is not None
+        assert row.status == "failed"
+        assert row.error == "dispatch_lock_timeout"
+        assert row.finished_at is not None
+
+
+def test_run_scan_orphan_running_files_reset_to_pending(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A `scan_files` row stuck in `running` past STUCK_THRESHOLD must be
+    reset to `pending` on lock acquisition and processed by this dispatch."""
+
+    from datetime import timedelta
+
+    sync_url, _psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(cfg.settings, "scan_concurrency", 1)
+    # Force a tight orphan threshold so a started_at of "1 hour ago" is stuck.
+    monkeypatch.setattr(cfg.settings, "stuck_threshold_seconds", 60)
+
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id, file_ids = _insert_upload_with_text_files(
+            session, user_id=user_id, extract_root=extract_root, count=2
+        )
+
+    from datetime import UTC
+    from datetime import datetime as dt
+
+    from worker.core.models import (
+        SCAN_FILE_STATUS_PENDING,
+        SCAN_FILE_STATUS_RUNNING,
+        SCAN_STATUS_RUNNING,
+        Scan,
+        ScanFile,
+        ScanFinding,
+    )
+    from worker.core.uuid7 import uuid7
+
+    with _engine_session(sync_url) as session:
+        scan = Scan(
+            id=uuid7(),
+            user_id=user_id,
+            upload_id=upload_id,
+            name="t",
+            scan_types=["security"],
+            keywords={},
+            status=SCAN_STATUS_RUNNING,
+            progress_done=0,
+            progress_total=len(file_ids),
+            started_at=dt.now(UTC),
+            model="gemma-4-31b-it",
+            model_settings={},
+        )
+        session.add(scan)
+        session.flush()
+        scan_id = scan.id
+        # First file: stuck in `running` for an hour — orphan.
+        session.add(
+            ScanFile(
+                id=uuid7(),
+                scan_id=scan_id,
+                file_id=file_ids[0],
+                status=SCAN_FILE_STATUS_RUNNING,
+                started_at=dt.now(UTC) - timedelta(hours=1),
+            )
+        )
+        # Second file: normal `pending`.
+        session.add(
+            ScanFile(
+                id=uuid7(),
+                scan_id=scan_id,
+                file_id=file_ids[1],
+                status=SCAN_FILE_STATUS_PENDING,
+            )
+        )
+        session.commit()
+
+    from worker.tasks.run_scan import _run
+
+    result = _run(
+        str(scan_id),
+        scanner_registry_factory=_fake_registry_factory,
+        session_maker=new_maker,
+    )
+    assert result["status"] == "completed"
+    assert result["progress_done"] == len(file_ids)
+
+    with _engine_session(sync_url) as session:
+        sfs = list(session.scalars(select(ScanFile).where(ScanFile.scan_id == scan_id)))
+        # Both rows reach `done` — orphan was reset and re-processed.
+        assert all(sf.status == "done" for sf in sfs)
+        assert all(sf.started_at is not None for sf in sfs)
+        # Each file produced one security finding via the fake registry.
+        findings = list(session.scalars(select(ScanFinding).where(ScanFinding.scan_id == scan_id)))
+        assert len(findings) == len(file_ids)
+
+
+def test_run_scan_lock_released_so_followup_dispatch_succeeds(
+    test_db: tuple[str, str],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """After a successful dispatch the advisory lock must be released — a
+    subsequent `_run` on the same scan_id (e.g. resume after pause) acquires
+    it cleanly and does not raise `DispatchLockBusy`."""
+
+    sync_url, _psycopg_url = test_db
+    from worker.core import config as cfg
+    from worker.core import db as worker_db
+
+    monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
+    monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+
+    new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
+    new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
+    monkeypatch.setattr(worker_db, "engine", new_engine)
+    monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
+
+    extract_root = tmp_path / "uploads" / "extract"
+    with _engine_session(sync_url) as session:
+        user_id = _insert_user(session)
+        upload_id, file_ids = _insert_upload_and_files(
+            session, user_id=user_id, extract_root=extract_root
+        )
+        scan_id = _insert_scan(session, user_id=user_id, upload_id=upload_id, file_ids=file_ids)
+
+    from worker.tasks.run_scan import _run
+
+    first = _run(
+        str(scan_id),
+        scanner_registry_factory=_fake_registry_factory,
+        session_maker=new_maker,
+    )
+    assert first["status"] == "completed"
+
+    # Second invocation against the same scan_id — lock must have been
+    # released. With the scan terminal, this hits the pre-lock fast path,
+    # but it would also succeed if we forced a fresh dispatch.
+    second = _run(
+        str(scan_id),
+        scanner_registry_factory=_fake_registry_factory,
+        session_maker=new_maker,
+    )
+    assert second["status"] == "completed"
