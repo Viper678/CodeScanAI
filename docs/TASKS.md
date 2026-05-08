@@ -172,6 +172,19 @@ Each task has:
 - **Touches:** `apps/web/lib/api/scans/client.ts`, `apps/web/lib/api/uploads/client.ts`, `apps/web/lib/api/scans/use-scans.ts`, `apps/web/lib/api/uploads/use-upload.ts`, `apps/web/components/ui/alert-dialog.tsx` (new primitive on `@base-ui/react`), `apps/web/components/scans/delete-scan-button.tsx`, `apps/web/components/upload/delete-upload-button.tsx`, `apps/web/app/(app)/scans/page.tsx`, `apps/web/app/(app)/uploads/page.tsx`, plus tests.
 - **Depends on:** T4.4 (scan list page), T2.2 (uploads list page).
 
+### T4.7 — Worker dispatch concurrency lock + orphan-running recovery
+- **Goal:** fix the pause+rapid-resume race (and the underlying Celery re-delivery race) by fencing `_dispatch` behind a Postgres advisory lock keyed on `scan_id`. Concurrency invariant + retry policy live in `docs/FLOW.md` §"Dispatch concurrency invariant". On lock acquisition, also reset orphaned `scan_files.status='running'` rows older than `STUCK_THRESHOLD` back to `pending` so a crashed worker's stuck files don't stall the scan forever (already documented in `FLOW.md` failure table, never implemented).
+- **Why:** post-#39 we observed `progress_done > progress_total` and duplicate `scan_findings` rows when a user paused and quickly resumed. Two concurrent `_dispatch` loops both processed in-flight + queued files and bumped progress / inserted findings independently. The lock is a fence; Celery retry handles the queue.
+- **AC:**
+  - `_dispatch` acquires `pg_try_advisory_lock(hashtext('scan:' || scan_id))` at entry and releases on every exit path (success, pause, cancel, exception). Released lock verified via integration test that asserts a follow-up `_dispatch` succeeds.
+  - On lock-acquisition failure, the Celery task `self.retry(countdown=2**attempt)` with max 5 attempts (matches Gemma 5xx retry policy in `SCAN_RULES.md`). Final failure marks scan `failed` with `error="dispatch_lock_timeout"`.
+  - Orphan recovery: after lock acquisition, reset `scan_files.status='running'` rows where `started_at < now() - STUCK_THRESHOLD` to `pending`. New env var `STUCK_THRESHOLD_SECONDS` (default 600) on the worker `Settings`; documented in `DEPLOYMENT.md` and `.env.example`.
+  - **Concurrency regression test:** drive two `_run` invocations against the same `scan_id` simultaneously (one in a thread, one on the main thread, with a status flip mid-run); assert `progress_done == terminal scan_files count == progress_total at completion`, and assert no `scan_findings` rows are duplicated for any `(scan_id, file_id, scan_type, line_start, line_end, rule_id)` tuple.
+  - Existing pause/resume integration tests continue to pass unchanged.
+  - Existing cancel integration tests continue to pass unchanged.
+- **Touches:** `apps/worker/worker/tasks/run_scan.py`, `apps/worker/worker/core/config.py` (new `stuck_threshold_seconds` field), `apps/worker/tests/integration/test_run_scan.py`, `.env.example`, `docs/DEPLOYMENT.md` (env var entry).
+- **Depends on:** T4.5 (pause/resume implementation merged in #39).
+
 ---
 
 ## Phase 5 — Hardening & polish
