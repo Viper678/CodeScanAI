@@ -223,6 +223,12 @@ def test_request_id_reused_when_header_valid() -> None:
         "x" * 65,  # too long
         "",
         "name@with-at",
+        # Trailing-newline edge: Python's ``$`` matches before a final
+        # ``\n`` by default, so an ``re.match(r"^…$", "abc\n")`` succeeds.
+        # We use ``fullmatch`` to reject this — pin the case here so a
+        # future "simplification" doesn't reintroduce the leak.
+        "abc\n",
+        "abc\r",
     ],
 )
 def test_request_id_rejected_when_header_invalid(bad: str) -> None:

@@ -226,7 +226,13 @@ _REQUEST_ID_PATTERN: Final = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
 def _coerce_request_id(raw: str | None) -> str:
-    if raw is not None and _REQUEST_ID_PATTERN.match(raw):
+    # ``fullmatch`` (not ``match``) — Python's ``$`` anchor matches before a
+    # *trailing* newline by default, so ``re.match(r"^…$", "abc\n")``
+    # succeeds and the trailing ``\n`` would slip into the access log line
+    # AND get echoed back as the ``X-Request-ID`` response header. The
+    # existing parametrized test for `"has\nnewline"` covered mid-string
+    # newlines but missed the trailing case.
+    if raw is not None and _REQUEST_ID_PATTERN.fullmatch(raw):
         return raw
     return uuid.uuid4().hex
 
