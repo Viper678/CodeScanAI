@@ -47,9 +47,11 @@ test.describe('happy path: register → upload → scan → findings → export'
 
     // ---- Leg 1: register ---------------------------------------------------
     await page.goto('/register');
-    await expect(
-      page.getByRole('heading', { name: /create your account/i }),
-    ).toBeVisible();
+    // shadcn's ``CardTitle`` renders as ``<div>`` (not h1-h6), so the title
+    // has no heading role — match the text directly. The string is unique
+    // on the register page; the submit button reads "Create account" (no
+    // "your"), so the regex doesn't double-match.
+    await expect(page.getByText(/create your account/i)).toBeVisible();
 
     await page.getByLabel(/email/i).fill(email);
     await page.getByLabel(/password/i).fill(PASSWORD);
