@@ -266,6 +266,22 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 if isinstance(user_id, str):
                     error_extras["user_id"] = user_id
                 self._logger.exception("request errored", extra=error_extras)
+                # Notify Sentry explicitly: we're about to convert the
+                # exception into a Response, which means Starlette's
+                # FastAPI / Starlette integrations won't see it as an
+                # unhandled exception. Without this call, the only Sentry
+                # trace would be the ``logger.exception`` line above —
+                # which the LoggingIntegration captures as a *handled*
+                # log event (different severity, different grouping) and
+                # which a high ``LOG_LEVEL`` could suppress entirely.
+                # ``capture_exception()`` with no args uses the active
+                # ``sys.exc_info`` and is a no-op when no DSN is set.
+                try:
+                    import sentry_sdk
+
+                    sentry_sdk.capture_exception()
+                except ImportError:
+                    pass
                 response = JSONResponse(
                     status_code=500,
                     content={

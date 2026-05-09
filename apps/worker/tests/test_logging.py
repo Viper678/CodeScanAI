@@ -225,6 +225,50 @@ def test_init_sentry_skipped_when_dsn_unset(monkeypatch: Any) -> None:
 # ---- Sentry before_send scrub (Codex round-4 P1) ----------------------------
 
 
+def test_init_sentry_calls_ignore_logger_for_task_failure_module(
+    monkeypatch: Any,
+) -> None:
+    """Codex round-5 P2: ``CeleryIntegration`` already captures task
+    exceptions with ``mechanism=celery``. Our ``_on_task_failure`` signal
+    handler emits a structured ERROR log to keep correlation IDs in the
+    JSON pipeline — but Sentry's ``LoggingIntegration`` would capture that
+    ERROR as a *second* event. ``init_sentry_if_configured`` must call
+    ``ignore_logger`` on this module's logger name to suppress the
+    duplicate.
+    """
+
+    import sys
+
+    from worker.core import config as cfg
+    from worker.core import observability as obs
+
+    monkeypatch.setattr(
+        cfg.settings,
+        "sentry_dsn",
+        type("DSN", (), {"get_secret_value": lambda self: "https://x@example.io/1"})(),
+    )
+
+    fake_sdk = MagicMock()
+    fake_celery_integration = MagicMock()
+    fake_logging_module = MagicMock()
+    fake_logging_module.ignore_logger = MagicMock()
+
+    monkeypatch.setitem(sys.modules, "sentry_sdk", fake_sdk)
+    monkeypatch.setitem(
+        sys.modules,
+        "sentry_sdk.integrations.celery",
+        MagicMock(CeleryIntegration=fake_celery_integration),
+    )
+    monkeypatch.setitem(sys.modules, "sentry_sdk.integrations.logging", fake_logging_module)
+
+    obs.init_sentry_if_configured()
+
+    fake_sdk.init.assert_called_once()
+    # ``ignore_logger`` must be called with the observability module's name —
+    # that's where ``_on_task_failure`` lives and emits the duplicate ERROR.
+    fake_logging_module.ignore_logger.assert_called_once_with("worker.core.observability")
+
+
 def test_sentry_before_send_redacts_api_key_in_exception_value() -> None:
     """Codex round-4: Sentry's CeleryIntegration captures exceptions via
     ``event_from_exception`` — bypassing our log-side scrub. The

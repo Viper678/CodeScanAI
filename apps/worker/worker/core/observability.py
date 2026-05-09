@@ -166,6 +166,7 @@ def init_sentry_if_configured() -> None:
         return
     import sentry_sdk
     from sentry_sdk.integrations.celery import CeleryIntegration
+    from sentry_sdk.integrations.logging import ignore_logger
 
     sentry_sdk.init(
         dsn=settings.sentry_dsn.get_secret_value(),
@@ -177,4 +178,14 @@ def init_sentry_if_configured() -> None:
         # message includes ``AIza…`` would otherwise ship to Sentry verbatim.
         before_send=_sentry_before_send,
     )
+    # Avoid double-reporting task failures. ``CeleryIntegration`` already
+    # captures the raised exception with ``mechanism=celery`` (unhandled).
+    # Our ``_on_task_failure`` signal handler emits a structured ERROR log
+    # for the JSON pipeline (operators want to grep correlation IDs), but
+    # Sentry's default ``LoggingIntegration`` would also capture that ERROR
+    # as a separate generic event — two Sentry events per task failure with
+    # different grouping. Tell Sentry to ignore this module's logger so the
+    # structured log keeps flowing to stdout while Sentry only sees the one
+    # canonical task-failure event from CeleryIntegration.
+    ignore_logger(__name__)
     logger.info("sentry initialized for worker")
