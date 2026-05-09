@@ -52,11 +52,16 @@ services:
       redis:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "curl", "-fsS", "http://localhost:8000/healthz"]
+      # T5.3: gate on dependency readiness, not just process liveness.
+      # ``/readyz`` runs DB + Redis pings (2s budget per check, parallel)
+      # so the worst-case probe is ~2s. ``start_period`` bumped to 30s —
+      # cold starts now wait for the api process to come up *and* dial up
+      # Postgres/Redis pools before the first probe is taken seriously.
+      test: ["CMD", "curl", "-fsS", "http://localhost:8000/readyz"]
       interval: 10s
-      timeout: 3s
+      timeout: 5s
       retries: 5
-      start_period: 20s
+      start_period: 30s
 
   worker:
     build:
