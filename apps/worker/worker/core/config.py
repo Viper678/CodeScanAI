@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import SecretStr, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -68,6 +68,35 @@ class Settings(BaseSettings):
     gemma_max_input_tokens: int = 120_000
     # Re-poll scan.status every N completed files to honor cancellation.
     cancel_check_interval_files: int = 4
+
+    # ---- Retention (T5.2) -----------------------------------------------------
+    # Daily cleanup beat task purges uploads whose ``created_at`` is older than
+    # ``retention_days``. **Disabled by default** — operators opt in by setting
+    # ``RETENTION_DAYS=<positive int>`` in the environment. When ``None``, the
+    # beat task still ticks daily but no-ops with a single DEBUG log line. Zero
+    # and negative values are rejected: ``0`` is "delete everything older than
+    # zero days = everything", which is a footgun, not a config.
+    retention_days: int | None = None
+
+    @field_validator("retention_days", mode="before")
+    @classmethod
+    def _coerce_retention_days(cls, value: object) -> object:
+        # Pydantic-settings reads env strings; an empty ``RETENTION_DAYS=`` and
+        # an unset var both arrive as ``""`` or absent. Treat empty as None so
+        # operators can comment-out / clear the env var to disable.
+        if value in (None, "", "null"):
+            return None
+        return value
+
+    @field_validator("retention_days")
+    @classmethod
+    def _validate_retention_days(cls, value: int | None) -> int | None:
+        if value is None:
+            return None
+        if value <= 0:
+            msg = f"retention_days must be a positive integer or unset; got {value}"
+            raise ValueError(msg)
+        return value
 
 
 settings = Settings()

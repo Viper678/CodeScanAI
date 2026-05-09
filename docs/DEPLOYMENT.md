@@ -99,7 +99,8 @@ See `.env.example` for the complete list. Categories:
 - **Redis:** `REDIS_URL`
 - **Storage:** `DATA_DIR` (default `/data`)
 - **LLM:** `GOOGLE_AI_API_KEY`, `GEMMA_MODEL` (`gemma-4-31b-it`), `LLM_PARALLELISM`, `LLM_MAX_TOKENS_INPUT`
-- **Limits:** `MAX_UPLOAD_SIZE_MB`, `MAX_LOOSE_FILES`, `MAX_FILES_PER_SCAN`, `MAX_SCAN_FILE_SIZE_MB`, `RETENTION_DAYS`
+- **Limits:** `MAX_UPLOAD_SIZE_MB`, `MAX_LOOSE_FILES`, `MAX_FILES_PER_SCAN`, `MAX_SCAN_FILE_SIZE_MB`
+- **Retention:** `RETENTION_DAYS` (positive integer; **disabled when unset / empty**; daily cleanup beat task in the worker — see `docs/FILE_HANDLING.md` §"Garbage collection")
 - **Rate limits:** `RATE_LIMIT_LOGIN_PER_MINUTE`, `RATE_LIMIT_REGISTER_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_HOUR`, `RATE_LIMIT_SCAN_PER_HOUR` (sliding-window; defaults match `docs/API.md` §"Rate limits")
 - **CORS / hosts:** `ALLOWED_ORIGINS`, `TRUSTED_HOSTS`
 - **Web:** `NEXT_PUBLIC_API_BASE_URL`

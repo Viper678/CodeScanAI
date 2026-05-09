@@ -85,7 +85,7 @@ flowchart LR
 
 - Path is namespaced by `upload_id` (UUID) — never user-derived names — to neutralize path traversal.
 - Volume mounted RW into `api` (writes uploads, extracts) and `worker` (reads files for scanning).
-- Cleanup: a periodic Celery beat task deletes extracts older than `RETENTION_DAYS` (default 30; **TODO confirm**).
+- Cleanup: a periodic Celery beat task (T5.2, runs daily at 03:00 UTC) deletes uploads older than `RETENTION_DAYS` and their on-disk artifacts. **Disabled by default** — operators set `RETENTION_DAYS=<positive int>` to enable. See `docs/FILE_HANDLING.md` §"Garbage collection".
 
 ---
 
