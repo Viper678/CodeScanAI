@@ -19,10 +19,14 @@ const SAMPLE_ZIP = resolve(__dirname, 'fixtures', 'tiny_repo.zip');
  */
 
 function uniqueEmail(): string {
-  // Per-run unique so ``register`` never hits a 409 conflict.
+  // Per-run unique so ``register`` never hits a 409 conflict. The api
+  // validates with Pydantic ``EmailStr`` (email-validator), which rejects
+  // RFC 6761 reserved TLDs (``.test``, ``.example``, ``.invalid``,
+  // ``.localhost``) — ``example.com`` is the documented test address that
+  // passes the validator's reserved-name check.
   const stamp = Date.now().toString(36);
   const rand = Math.floor(Math.random() * 1e9).toString(36);
-  return `e2e+${stamp}.${rand}@codescan.test`;
+  return `e2e+${stamp}.${rand}@example.com`;
 }
 
 const PASSWORD = 'CorrectHorseBattery!9';
