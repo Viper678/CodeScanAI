@@ -1,8 +1,9 @@
 import os
-from typing import Final
+from typing import Any, Final
 
 from celery import Celery
 from celery.schedules import crontab
+from celery.signals import setup_logging
 
 from worker.core.config import settings
 from worker.core.logging import configure_logging
@@ -11,9 +12,24 @@ from worker.core.observability import (
     register_signal_handlers,
 )
 
-# Configure structured JSON logging + correlation context vars at import
-# time so even pre-task chatter (Celery boot messages) emits in the right
-# shape. ``configure_logging`` is idempotent; signal handlers connect once.
+
+# Take over Celery's logging setup entirely. Without this, when the worker
+# is started via ``celery worker --loglevel=info`` the Celery bootstrap
+# would run AFTER our import-time ``configure_logging`` and reset the root
+# logger's level to the CLI loglevel — silently overriding the
+# ``LOG_LEVEL`` env knob we advertise as the source of truth.
+# Connecting any handler to ``setup_logging`` tells Celery "I've handled
+# logging, don't touch it" — the CLI ``--loglevel`` flag becomes a no-op
+# and ``settings.log_level`` (env-driven) wins.
+@setup_logging.connect  # type: ignore[misc]  # justify: celery signal decorators are untyped
+def _setup_logging(**_kwargs: Any) -> None:
+    configure_logging(level=settings.log_level)
+
+
+# Run once at module import time as a backup — covers code paths that
+# import the celery_app module without going through ``celery worker``
+# (e.g. the api enqueueing tasks, unit tests). The signal handler above
+# re-runs on actual worker startup. ``configure_logging`` is idempotent.
 configure_logging(level=settings.log_level)
 register_signal_handlers()
 init_sentry_if_configured()

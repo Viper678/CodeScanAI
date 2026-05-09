@@ -82,7 +82,10 @@ services:
     # daily retention sweep (T5.2) ticks without standing up a separate
     # ``celery beat`` service. Fine for v1 — split into a sidecar if we
     # scale workers horizontally.
-    command: ["uv", "run", "celery", "-A", "worker.celery_app", "worker", "--beat", "--loglevel=info"]
+    # No ``--loglevel`` flag: the worker hijacks Celery's ``setup_logging``
+    # signal (T5.4) so logging is fully driven by ``LOG_LEVEL`` env, and
+    # the CLI flag would be a confusing no-op.
+    command: ["uv", "run", "celery", "-A", "worker.celery_app", "worker", "--beat"]
     volumes:
       - data:/data
     depends_on:

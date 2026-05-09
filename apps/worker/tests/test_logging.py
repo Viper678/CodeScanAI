@@ -240,6 +240,43 @@ def test_celery_app_disables_root_logger_hijack() -> None:
     )
 
 
+def test_celery_setup_logging_signal_is_hijacked() -> None:
+    """Codex round-3 P2: Celery's ``celery worker --loglevel=info`` would
+    reset the root logger level after our import-time ``configure_logging``
+    runs, silently overriding the LOG_LEVEL env knob we advertise. The fix
+    connects to the ``setup_logging`` signal — a connected handler tells
+    Celery "I've handled logging, don't touch it" so the CLI flag becomes
+    a no-op and ``settings.log_level`` (env-driven) wins.
+    """
+
+    from celery.signals import setup_logging
+
+    # ``setup_logging.receivers`` is a list of (lookup_key, weakref-or-callable)
+    # tuples. Any non-empty receivers list is enough to short-circuit Celery's
+    # default logging setup.
+    assert setup_logging.receivers, (
+        "setup_logging signal must have a connected handler — without one, "
+        "Celery resets root level to --loglevel and ignores LOG_LEVEL env"
+    )
+
+
+def test_configure_logging_sets_handler_level() -> None:
+    """Codex round-3 P3: same fix as the api copy — the handler must carry
+    the configured level so propagated child records (celery.app.trace,
+    kombu, sqlalchemy, …) get filtered, not just records emitted at root.
+    """
+
+    from worker.core.logging import configure_logging
+
+    configure_logging(level="error")
+    root = logging.getLogger()
+    assert root.handlers
+    handler = root.handlers[0]
+    assert (
+        handler.level == logging.ERROR
+    ), f"handler must inherit the configured level (ERROR=40); got {handler.level}"
+
+
 # ---- ContextVar propagation across ThreadPoolExecutor (Codex P2) ------------
 
 

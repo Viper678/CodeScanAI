@@ -231,6 +231,50 @@ def test_formatter_scrubs_api_key_in_exception_traceback() -> None:
 # ---- Codex P2b follow-up: uvicorn loggers wired into JSON handler -----------
 
 
+def test_configure_logging_sets_handler_level_so_propagated_records_are_filtered() -> None:
+    """Codex round-3 P3: setting only the ROOT LOGGER level isn't enough —
+    Python checks ``record.levelno >= hdlr.level`` on each handler when
+    walking the propagation chain (see ``Logger.callHandlers``). If the
+    handler stays at ``NOTSET`` (0), an INFO record from a child logger
+    with ``level=INFO`` will still reach the root handler even when we set
+    the root level to ERROR. ``configure_logging`` must set the handler
+    level so the LOG_LEVEL contract actually filters propagated traffic.
+    """
+
+    import io
+
+    from app.core.logging import configure_logging
+
+    configure_logging(level="error")
+    root = logging.getLogger()
+    assert root.handlers, "configure_logging must install a handler"
+    handler = root.handlers[0]
+    assert (
+        handler.level == logging.ERROR
+    ), f"handler must inherit the configured level (ERROR=40); got {handler.level}"
+
+    # End-to-end: redirect the handler's stream to a buffer, emit an INFO
+    # record from a child logger that has its own INFO level, and confirm
+    # nothing lands in the buffer.
+    buf = io.StringIO()
+    assert isinstance(handler, logging.StreamHandler)
+    original_stream = handler.stream
+    handler.stream = buf
+    try:
+        child = logging.getLogger("propagation.test.child")
+        child.setLevel(logging.INFO)
+        child.info("this should not be emitted at LOG_LEVEL=error")
+        child.error("this SHOULD be emitted")
+    finally:
+        handler.stream = original_stream
+
+    output = buf.getvalue()
+    assert (
+        "should not be emitted" not in output
+    ), f"INFO record bypassed handler level filter: {output!r}"
+    assert "SHOULD be emitted" in output, f"ERROR record was filtered too aggressively: {output!r}"
+
+
 def test_configure_logging_routes_uvicorn_error_through_root() -> None:
     """Codex P2b: Uvicorn configures ``uvicorn.error`` with its own
     handler + ``propagate=False`` BEFORE ``app.main`` is imported, which

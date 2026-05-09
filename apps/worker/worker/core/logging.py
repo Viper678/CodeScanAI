@@ -203,12 +203,19 @@ def configure_logging(*, level: str | int = "INFO") -> None:
     stack lines.
     """
 
+    coerced = _coerce_level(level)
     root = logging.getLogger()
-    root.setLevel(_coerce_level(level))
+    root.setLevel(coerced)
     for handler in list(root.handlers):
         root.removeHandler(handler)
 
     handler = logging.StreamHandler()
+    # Set the HANDLER level too — see the api copy's rationale at
+    # ``apps/api/app/core/logging.py``: records propagated up from child
+    # loggers (celery.app.trace, kombu, sqlalchemy.engine, …) bypass the
+    # root logger's level filter and reach this handler regardless if it
+    # stays at NOTSET. Setting handler.level honors the LOG_LEVEL contract.
+    handler.setLevel(coerced)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(ApiKeyScrubFilter())
     handler.addFilter(CorrelationFilter())

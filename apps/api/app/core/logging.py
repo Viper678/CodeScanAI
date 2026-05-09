@@ -323,12 +323,22 @@ def configure_logging(*, level: str | int = "INFO") -> None:
     (e.g. via test fixtures or a hot-reload) doesn't stack lines.
     """
 
+    coerced = _coerce_level(level)
     root = logging.getLogger()
-    root.setLevel(_coerce_level(level))
+    root.setLevel(coerced)
     for handler in list(root.handlers):
         root.removeHandler(handler)
 
     handler = logging.StreamHandler()
+    # Set the HANDLER level too, not just the root logger level. Otherwise
+    # records propagated up from child loggers (uvicorn at INFO,
+    # sqlalchemy.engine, asyncio, …) bypass the root level filter and
+    # always reach this handler — Python checks ``record.levelno >=
+    # hdlr.level`` per ``Logger.callHandlers``, NOT the parent logger's
+    # level. Setting the handler level enforces the documented LOG_LEVEL
+    # contract: an operator who exports ``LOG_LEVEL=error`` shouldn't see
+    # INFO lines from child loggers slipping through.
+    handler.setLevel(coerced)
     handler.setFormatter(JsonFormatter())
     handler.addFilter(ApiKeyScrubFilter())
     handler.addFilter(CorrelationFilter())
