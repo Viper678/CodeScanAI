@@ -37,6 +37,7 @@ from sqlalchemy.orm import Session, attributes, sessionmaker
 from worker.celery_app import celery_app
 from worker.core import db as worker_db
 from worker.core.config import settings
+from worker.core.logging import file_id_var
 from worker.core.models import (
     SCAN_FILE_STATUS_DONE,
     SCAN_FILE_STATUS_FAILED,
@@ -357,22 +358,31 @@ def _process_file(
     Each thread owns its own SQLAlchemy session — sessions are not thread-safe.
     """
 
-    # Mark running in its own short transaction.
-    with maker() as session:
-        sf = session.scalar(select(ScanFile).where(ScanFile.id == plan.scan_file_id))
-        if sf is not None:
-            sf.status = SCAN_FILE_STATUS_RUNNING
-            sf.started_at = datetime.now(UTC)
-            session.commit()
+    # Stamp file_id correlation for the duration of this per-file work so
+    # log lines emitted from the scanners + persistence helpers carry it.
+    # ContextVar is thread-local in the absence of an explicit Context;
+    # the worker thread runs in the Celery prefork pool's child process
+    # and gets its own isolated context here.
+    file_id_token = file_id_var.set(str(plan.file_id))
+    try:
+        # Mark running in its own short transaction.
+        with maker() as session:
+            sf = session.scalar(select(ScanFile).where(ScanFile.id == plan.scan_file_id))
+            if sf is not None:
+                sf.status = SCAN_FILE_STATUS_RUNNING
+                sf.started_at = datetime.now(UTC)
+                session.commit()
 
-    outcome = _process_file_no_db(
-        plan,
-        scan_types=scan_types,
-        keywords_cfg=keywords_cfg,
-        registry=registry,
-    )
-    _persist_outcome(plan, outcome, maker)
-    return outcome
+        outcome = _process_file_no_db(
+            plan,
+            scan_types=scan_types,
+            keywords_cfg=keywords_cfg,
+            registry=registry,
+        )
+        _persist_outcome(plan, outcome, maker)
+        return outcome
+    finally:
+        file_id_var.reset(file_id_token)
 
 
 def _process_file_no_db(

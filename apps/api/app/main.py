@@ -16,12 +16,43 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import settings
 from app.core.db import engine
 from app.core.exceptions import AppError, RateLimited
+from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
 from app.routers.scans import router as scans_router
 from app.routers.uploads import router as uploads_router
 
+# Configure structured JSON logging at import time so any startup logs
+# (database connectivity check in lifespan, uvicorn boot messages) emit in
+# the right shape. ``configure_logging`` is idempotent.
+configure_logging(level=settings.log_level)
+
 logger = logging.getLogger(__name__)
+
+
+def _init_sentry_if_configured() -> None:
+    """Initialize Sentry when ``SENTRY_DSN`` is set; no-op otherwise.
+
+    Imports happen lazily so that an install without ``sentry-sdk`` (e.g. a
+    minimal smoke build) doesn't crash on import. ``traces_sample_rate=0``
+    means no perf data is shipped by default — operators tune it via
+    ``SENTRY_TRACES_SAMPLE_RATE`` if they want tracing.
+    """
+
+    if settings.sentry_dsn is None:
+        return
+    import sentry_sdk
+    from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.starlette import StarletteIntegration
+
+    sentry_sdk.init(
+        dsn=settings.sentry_dsn.get_secret_value(),
+        integrations=[FastApiIntegration(), StarletteIntegration()],
+        traces_sample_rate=0.0,
+        send_default_pii=False,
+    )
+    logger.info("sentry initialized for api")
+
 
 HTTP_ERROR_CODES = {
     400: "validation_error",
@@ -137,6 +168,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
+    _init_sentry_if_configured()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     # Browser → API is cross-origin (web on 3000/3001, API on 8000). The
     # frontend sets credentials:'include' for the cookie session, so we must
@@ -149,6 +181,11 @@ def create_app() -> FastAPI:
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
         allow_headers=["Content-Type", "Accept", "X-Requested-With"],
     )
+    # Starlette wraps middlewares in reverse insertion order: the LAST
+    # ``add_middleware`` becomes the OUTERMOST handler. Adding the request
+    # logger last means every request — including CORS preflights — gets a
+    # request_id stamped + an access line emitted on its way out.
+    app.add_middleware(RequestLoggingMiddleware)
     # The RateLimited handler must be registered BEFORE the AppError one so
     # FastAPI's MRO-walking dispatch picks the more specific subclass and
     # we get the ``Retry-After`` header on 429s.

@@ -4,6 +4,20 @@ from typing import Final
 from celery import Celery
 from celery.schedules import crontab
 
+from worker.core.config import settings
+from worker.core.logging import configure_logging
+from worker.core.observability import (
+    init_sentry_if_configured,
+    register_signal_handlers,
+)
+
+# Configure structured JSON logging + correlation context vars at import
+# time so even pre-task chatter (Celery boot messages) emits in the right
+# shape. ``configure_logging`` is idempotent; signal handlers connect once.
+configure_logging(level=settings.log_level)
+register_signal_handlers()
+init_sentry_if_configured()
+
 DEFAULT_BROKER_URL: Final = "redis://redis:6379/1"
 DEFAULT_RESULT_BACKEND: Final = "redis://redis:6379/2"
 

@@ -97,6 +97,25 @@ class Settings(BaseSettings):
     # gap leaves headroom for "I uploaded it loose, let me look at it".
     max_viewable_file_size_mb: int = 2
 
+    # ---- Logging / observability (T5.4) ---------------------------------------
+    # Root log level. Accepts the standard Python names (debug/info/warning/...)
+    # case-insensitive. Anything unrecognized falls back to INFO at configure
+    # time rather than crashing — operators sometimes typo this in env files.
+    log_level: str = "info"
+
+    # Optional Sentry hook. When set, ``app.main`` calls ``sentry_sdk.init`` in
+    # ``create_app()`` with the FastAPI + Starlette integrations. Off by
+    # default; PII / traces sample rates default to zero so we never ship
+    # request bodies to Sentry without the operator opting in.
+    sentry_dsn: SecretStr | None = None
+
+    @field_validator("sentry_dsn", mode="before")
+    @classmethod
+    def _coerce_sentry_dsn(cls, value: object) -> object:
+        if value in (None, "", "null"):
+            return None
+        return value
+
     @field_validator("jwt_secret")
     @classmethod
     def validate_jwt_secret(cls, value: SecretStr) -> SecretStr:

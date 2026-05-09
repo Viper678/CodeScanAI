@@ -14,7 +14,10 @@ database_url = config.get_main_option("sqlalchemy.url") or settings.database_syn
 config.set_main_option("sqlalchemy.url", database_url)
 
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    # ``disable_existing_loggers=False`` so re-running alembic in-process
+    # (CI / pytest) doesn't silently disable the api's structured-log loggers
+    # configured by ``app.core.logging.configure_logging`` (T5.4).
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 target_metadata = Base.metadata
 
