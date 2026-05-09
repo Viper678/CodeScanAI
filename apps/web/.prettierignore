@@ -2,3 +2,6 @@
 node_modules
 .pnpm-store
 tsconfig.tsbuildinfo
+playwright-report
+test-results
+e2e/fixtures/tiny_repo.zip

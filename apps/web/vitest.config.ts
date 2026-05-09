@@ -17,5 +17,9 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: ['./tests/setup.ts'],
+    // The Playwright e2e suite under ``e2e/`` shares the .spec.ts suffix
+    // with vitest's default match. Exclude it so unit tests don't try to
+    // run browser specs.
+    exclude: ['e2e/**', 'node_modules/**', '.next/**', 'playwright-report/**'],
   },
 });
