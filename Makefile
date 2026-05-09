@@ -19,6 +19,12 @@ E2E_COMPOSE := docker compose -p codescan-e2e -f docker-compose.yml -f docker-co
 # hasn't exported the vars.
 E2E_ENV := JWT_SECRET=$${JWT_SECRET:-e2e-jwt-secret-32-bytes-long-padding} GOOGLE_AI_API_KEY=$${GOOGLE_AI_API_KEY:-mock-not-used}
 
+# Web base URL used by the Playwright suite. Matches the alt host port
+# pinned in ``docker-compose.e2e.yml`` so the e2e stack coexists with a
+# dev stack on 3000. Override via ``E2E_WEB_BASE_URL=…`` in the env if
+# you've remapped the port for some reason.
+E2E_WEB_BASE_URL ?= http://localhost:3010
+
 setup:
 	cd apps/api && $(UV) sync --locked
 	cd apps/worker && $(UV) sync --locked
@@ -62,9 +68,10 @@ e2e-fixtures:
 	python3 apps/web/e2e/fixtures/build_sample_zip.py
 
 # Bring the full e2e stack up (api + worker + web + postgres + redis) with
-# LLM_MOCK_MODE=true. Run BEFORE ``make e2e``.
+# LLM_MOCK_MODE=true. ``--wait`` blocks until every service reports
+# ``healthy``, so when this returns the stack is ready for Playwright.
 e2e-up:
-	$(E2E_ENV) $(E2E_COMPOSE) up -d --build
+	$(E2E_ENV) $(E2E_COMPOSE) up -d --build --wait
 	$(E2E_ENV) $(E2E_COMPOSE) ps
 
 # Tear down + delete the e2e volumes (postgres data + uploads). Safe to
@@ -72,13 +79,19 @@ e2e-up:
 e2e-down:
 	$(E2E_ENV) $(E2E_COMPOSE) down -v --remove-orphans
 
-# Headless run — what CI uses. Assumes ``make e2e-up`` ran first.
-e2e: e2e-fixtures
+# Headless run — what CI uses. Self-contained: brings the e2e stack up
+# (idempotent) and runs ``pnpm install`` so the playwright binary
+# resolves on a host that's only ever run docker (host node_modules
+# would otherwise be empty since the dev override mounts them as a
+# named volume inside the container).
+e2e: e2e-fixtures e2e-up
+	pnpm --dir apps/web install
 	pnpm --dir apps/web exec playwright install --with-deps chromium
-	pnpm --dir apps/web exec playwright test
+	E2E_WEB_BASE_URL=$(E2E_WEB_BASE_URL) pnpm --dir apps/web exec playwright test
 
 # Headed / interactive UI mode for local development. The slowMo configured
 # in playwright.config.ts makes the journey readable in real time.
-e2e-ui: e2e-fixtures
+e2e-ui: e2e-fixtures e2e-up
+	pnpm --dir apps/web install
 	pnpm --dir apps/web exec playwright install chromium
-	pnpm --dir apps/web exec playwright test --ui
+	E2E_WEB_BASE_URL=$(E2E_WEB_BASE_URL) pnpm --dir apps/web exec playwright test --ui

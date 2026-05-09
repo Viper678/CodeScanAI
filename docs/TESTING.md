@@ -81,18 +81,37 @@ What gets unit-tested:
 - Severity sorting / filtering helpers.
 
 What gets e2e-tested:
-- Register → login (one path).
-- Upload tiny zip → tree appears → select-all → start security scan → results render. (Uses a deterministic fake-Gemma mode in the worker, enabled via `LLM_MODE=fake` env.)
+- One full-happy-path test (`apps/web/e2e/full-scan.spec.ts`) covering all five legs in a single browser session: register → upload sample repo → run a scan covering all three scan types → assert findings render → export JSON and parse the download. Real Gemma is replaced by a worker-side mock transport (`apps/worker/worker/llm/mock_transport.py`), wired in by `LLM_MOCK_MODE=true` on the e2e compose stack — so the suite is deterministic and offline. The pyramid stays narrow at the top: regressions in form labels, polling, finding rendering, and CSV/JSON export each have unit / integration coverage closer to the source.
 
 Layout:
 ```
 apps/web/
-├── components/__tests__/
-├── lib/__tests__/
-└── e2e/
-    ├── auth.spec.ts
-    └── full-scan.spec.ts
+├── tests/                          # vitest unit + component tests
+│   ├── auth-redirect.test.ts
+│   ├── findings-table.test.tsx
+│   └── …
+└── e2e/                            # Playwright suite
+    ├── full-scan.spec.ts
+    ├── global-setup.ts             # rebuilds the sample zip on every run
+    └── fixtures/
+        ├── build_sample_zip.py     # generates tiny_repo.zip at runtime
+        └── tiny_repo.zip           # gitignored — the AIzaSy… literal lives only here
 ```
+
+### Running e2e locally
+
+The e2e stack runs on alt host ports (web `3010`, api `8010`) so it coexists with a dev stack on `3000` / `8000` — no need to stop dev to run e2e.
+
+```bash
+make e2e            # headless run — what CI does
+make e2e-ui         # headed + Playwright UI mode for debugging
+make e2e-up         # bring the e2e stack up only (auto-runs as a dep of e2e / e2e-ui)
+make e2e-down       # tear it down + drop the e2e named volumes
+```
+
+`make e2e` and `make e2e-ui` are self-contained: they build the sample-repo zip, bring the compose stack up (`-p codescan-e2e` keeps it isolated from a dev project), wait for healthchecks (`docker compose up --wait`), `pnpm install` on the host so the `playwright` binary resolves, install browser binaries, and run the suite against `http://localhost:3010`.
+
+The Playwright config sets `slowMo: 300ms` so a headed run looks like a real user clicking through (override via `E2E_SLOW_MO_MS=…`). Failures retain a trace artifact in `apps/web/test-results/`; CI uploads `playwright-report/` + `test-results/` as a workflow artifact for post-mortem analysis.
 
 ---
 

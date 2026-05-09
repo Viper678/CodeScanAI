@@ -57,13 +57,15 @@ jobs:
         run: make e2e-up
 
       - name: Wait for web to be reachable
-        # The base compose healthcheck targets ``/scans`` which 401s while
-        # unauthed; that still indicates the Next.js server is up. Loop
-        # until we get any HTTP response (max 90s).
+        # ``make e2e-up`` already runs ``docker compose up --wait`` which
+        # blocks on each service's healthcheck. This loop is a belt-and-
+        # suspenders against a healthcheck that flips green before the
+        # actual Next.js page is renderable; it polls the alt host port
+        # the e2e overlay pins (3010) for any HTTP response.
         run: |
           for i in $(seq 1 30); do
-            if curl -sSf -o /dev/null --max-time 2 http://localhost:3000 \
-              || curl -s -o /dev/null --max-time 2 http://localhost:3000 -w "%{http_code}\n" | grep -E "^(200|301|302|307|308|401|404)$" > /dev/null; then
+            if curl -sSf -o /dev/null --max-time 2 http://localhost:3010 \
+              || curl -s -o /dev/null --max-time 2 http://localhost:3010 -w "%{http_code}\n" | grep -E "^(200|301|302|307|308|401|404)$" > /dev/null; then
               echo "web responded (attempt $i)"
               exit 0
             fi
@@ -77,6 +79,8 @@ jobs:
       - name: Run Playwright suite
         env:
           CI: "true"
+          # Match the alt port pinned in ``docker-compose.e2e.yml``.
+          E2E_WEB_BASE_URL: http://localhost:3010
         run: pnpm --dir apps/web exec playwright test
 
       - name: Upload Playwright report
