@@ -16,12 +16,19 @@ from sqlalchemy.exc import SQLAlchemyError
 from app.core.config import settings
 from app.core.db import engine
 from app.core.exceptions import AppError, RateLimited
+from app.core.logging import RequestLoggingMiddleware, configure_logging
 from app.routers.auth import router as auth_router
 from app.routers.health import router as health_router
 from app.routers.scans import router as scans_router
 from app.routers.uploads import router as uploads_router
 
+# Configure structured JSON logging at import time so any startup logs
+# (database connectivity check in lifespan, uvicorn boot messages) emit in
+# the right shape. ``configure_logging`` is idempotent.
+configure_logging(level=settings.log_level)
+
 logger = logging.getLogger(__name__)
+
 
 HTTP_ERROR_CODES = {
     400: "validation_error",
@@ -138,6 +145,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    # Starlette wraps middlewares in reverse insertion order: the LAST
+    # ``add_middleware`` is the OUTERMOST handler. We add the request
+    # logger FIRST and the CORS middleware LAST so:
+    #
+    # - CORS is the outermost layer, which means the 500 response we
+    #   build inside ``RequestLoggingMiddleware`` (when an inner route
+    #   raises) still flows back through CORS on its way out — gaining
+    #   ``Access-Control-Allow-Origin`` / ``Access-Control-Expose-
+    #   Headers``. Without this ordering a cross-origin browser would
+    #   see an opaque CORS failure on every 500 (no headers, can't
+    #   read the X-Request-ID we attached, can't read the error body).
+    # - The trade-off: CORS preflight ``OPTIONS`` responses are now
+    #   built by CORSMiddleware without going through our access logger,
+    #   so we don't emit an access line / X-Request-ID for them. Fine —
+    #   preflights are protocol noise, not application traffic.
+    app.add_middleware(RequestLoggingMiddleware)
     # Browser → API is cross-origin (web on 3000/3001, API on 8000). The
     # frontend sets credentials:'include' for the cookie session, so we must
     # echo back a specific origin (wildcard is not allowed with credentials)
@@ -147,7 +170,14 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_allow_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Accept", "X-Requested-With"],
+        # ``X-Request-ID`` appears in both lists: ``allow_headers`` lets a
+        # browser-side caller forward an upstream id (e.g. from the gateway)
+        # via fetch / XHR; ``expose_headers`` lets the JS client read the
+        # echoed id off the response so the UI can show / report it.
+        # Without ``expose_headers`` browsers strip the header out of the
+        # JS-visible response object even though it's on the wire.
+        allow_headers=["Content-Type", "Accept", "X-Requested-With", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
     # The RateLimited handler must be registered BEFORE the AppError one so
     # FastAPI's MRO-walking dispatch picks the more specific subclass and
@@ -156,6 +186,13 @@ def create_app() -> FastAPI:
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
+    # Note: there is no ``add_exception_handler(Exception, ...)`` here on
+    # purpose. Starlette routes that registration to ``ServerErrorMiddleware``
+    # (the OUTERMOST middleware), so the 500 response would be built outside
+    # ``RequestLoggingMiddleware``'s response path and the ``X-Request-ID``
+    # header would never be attached. Instead, the middleware itself catches
+    # unhandled exceptions and constructs the 500 response — see
+    # ``RequestLoggingMiddleware.dispatch`` in ``app.core.logging``.
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(uploads_router)

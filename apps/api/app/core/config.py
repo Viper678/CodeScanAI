@@ -97,6 +97,12 @@ class Settings(BaseSettings):
     # gap leaves headroom for "I uploaded it loose, let me look at it".
     max_viewable_file_size_mb: int = 2
 
+    # ---- Logging / observability (T5.4) ---------------------------------------
+    # Root log level. Accepts the standard Python names (debug/info/warning/...)
+    # case-insensitive. Anything unrecognized falls back to INFO at configure
+    # time rather than crashing — operators sometimes typo this in env files.
+    log_level: str = "info"
+
     @field_validator("jwt_secret")
     @classmethod
     def validate_jwt_secret(cls, value: SecretStr) -> SecretStr:

@@ -60,6 +60,9 @@ class Settings(BaseSettings):
     gemma_model: str = "gemma-4-31b-it"
     prompt_version: str = "v1"
 
+    # ---- Logging / observability (T5.4) ---------------------------------------
+    log_level: str = "info"
+
     # ---- Scans ----
     scan_concurrency: int = 4
     # Per-call token budget; sourced from docs/SCAN_RULES.md §"Token budget &
