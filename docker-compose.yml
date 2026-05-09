@@ -68,6 +68,12 @@ services:
       DATA_DIR: ${DATA_DIR:-/data}
       GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:?GOOGLE_AI_API_KEY is required for the worker (security/bugs scanners call Gemma)}
       GEMMA_MODEL: ${GEMMA_MODEL:-gemma-4-31b-it}
+      RETENTION_DAYS: ${RETENTION_DAYS:-}
+    # ``--beat`` runs an embedded scheduler in the same process so the
+    # daily retention sweep (T5.2) ticks without standing up a separate
+    # ``celery beat`` service. Fine for v1 — split into a sidecar if we
+    # scale workers horizontally.
+    command: ["uv", "run", "celery", "-A", "worker.celery_app", "worker", "--beat", "--loglevel=info"]
     volumes:
       - data:/data
     depends_on:

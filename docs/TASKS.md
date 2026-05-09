@@ -159,7 +159,8 @@ Each task has:
 
 ### T5.2 — Cleanup beat task
 - **Goal:** daily cleanup of uploads older than `RETENTION_DAYS`. Cascades to extracts on disk.
-- **AC:** unit tested with frozen time. **TODO:** confirm retention default.
+- **AC:** unit tested with frozen time.
+- **Default:** disabled. Operators set `RETENTION_DAYS=<positive int>` to enable; the beat task ticks daily regardless and no-ops when retention is unset.
 - **Depends on:** T2.2.
 
 ### T5.3 — Healthz / readyz

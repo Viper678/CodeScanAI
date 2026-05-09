@@ -189,7 +189,7 @@ Decoded with `errors='replace'` so an exotic encoding doesn't kill the scan; the
 
 ## Garbage collection
 
-Daily Celery beat task (`cleanup_old_uploads`):
-- Delete `extracts/<upload_id>/` and the raw zip for any upload whose `created_at < now - RETENTION_DAYS`.
-- Cascade-delete the `uploads` row, which cascades to files / scans / findings.
-- Configurable; default 30 days. **TODO:** confirm retention policy with product owner.
+Daily Celery beat task (`worker.tasks.cleanup.cleanup_old_uploads`, ticks at 03:00 UTC):
+- For each upload whose `created_at < now - retention_days`: wipe `data_dir/uploads/<upload_id>/` and `extract_path` from disk, then delete the `uploads` row. The DB cascade fans out through `files` → `scans` → `scan_files` / `scan_findings` (FKs are `ON DELETE CASCADE` per PR #47).
+- Per-row resilience: if disk wipe fails for one upload, that row is left in place (better DB+disk-consistent than orphaned) and the sweep continues with the next. The task returns `{"swept": N, "errors": M}`.
+- **Disabled by default**: set `RETENTION_DAYS=<positive int>` to enable. When unset (the default), the beat task still ticks daily but no-ops with a single DEBUG log line. Zero / negative values are rejected at config load — `0` would read as "delete everything older than zero days = everything", a footgun.
