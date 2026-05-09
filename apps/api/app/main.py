@@ -211,6 +211,22 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 def create_app() -> FastAPI:
     _init_sentry_if_configured()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
+    # Starlette wraps middlewares in reverse insertion order: the LAST
+    # ``add_middleware`` is the OUTERMOST handler. We add the request
+    # logger FIRST and the CORS middleware LAST so:
+    #
+    # - CORS is the outermost layer, which means the 500 response we
+    #   build inside ``RequestLoggingMiddleware`` (when an inner route
+    #   raises) still flows back through CORS on its way out — gaining
+    #   ``Access-Control-Allow-Origin`` / ``Access-Control-Expose-
+    #   Headers``. Without this ordering a cross-origin browser would
+    #   see an opaque CORS failure on every 500 (no headers, can't
+    #   read the X-Request-ID we attached, can't read the error body).
+    # - The trade-off: CORS preflight ``OPTIONS`` responses are now
+    #   built by CORSMiddleware without going through our access logger,
+    #   so we don't emit an access line / X-Request-ID for them. Fine —
+    #   preflights are protocol noise, not application traffic.
+    app.add_middleware(RequestLoggingMiddleware)
     # Browser → API is cross-origin (web on 3000/3001, API on 8000). The
     # frontend sets credentials:'include' for the cookie session, so we must
     # echo back a specific origin (wildcard is not allowed with credentials)
@@ -229,11 +245,6 @@ def create_app() -> FastAPI:
         allow_headers=["Content-Type", "Accept", "X-Requested-With", "X-Request-ID"],
         expose_headers=["X-Request-ID"],
     )
-    # Starlette wraps middlewares in reverse insertion order: the LAST
-    # ``add_middleware`` becomes the OUTERMOST handler. Adding the request
-    # logger last means every request — including CORS preflights — gets a
-    # request_id stamped + an access line emitted on its way out.
-    app.add_middleware(RequestLoggingMiddleware)
     # The RateLimited handler must be registered BEFORE the AppError one so
     # FastAPI's MRO-walking dispatch picks the more specific subclass and
     # we get the ``Retry-After`` header on 429s.

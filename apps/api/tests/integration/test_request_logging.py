@@ -214,6 +214,47 @@ async def test_unhandled_500_from_authed_route_logs_user_id(
     assert isinstance(line["user_id"], str)
 
 
+async def test_cors_headers_present_on_middleware_built_500(
+    client: httpx.AsyncClient,
+) -> None:
+    """Codex round-6 P2: a 500 response built INSIDE
+    ``RequestLoggingMiddleware`` must still carry CORS headers so a
+    cross-origin browser can read the error envelope + X-Request-ID.
+
+    The fix is middleware ordering: CORSMiddleware is added LAST so it's
+    the outermost layer; our hand-built 500 flows back through it on
+    the way out and picks up ``Access-Control-Allow-Origin`` /
+    ``Access-Control-Expose-Headers``.
+    """
+
+    from app.main import app
+
+    @app.get("/__test_cors_500__")
+    async def boom() -> None:
+        raise RuntimeError("simulated unhandled error for cors test")
+
+    try:
+        response = await client.get(
+            "/__test_cors_500__",
+            headers={"Origin": "http://localhost:3000"},
+        )
+    finally:
+        app.router.routes = [
+            route
+            for route in app.router.routes
+            if getattr(route, "path", None) != "/__test_cors_500__"
+        ]
+
+    assert response.status_code == 500
+    assert response.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000", (
+        "500 response missing CORS Allow-Origin — cross-origin browser would "
+        "see an opaque failure"
+    )
+    expose = response.headers.get("Access-Control-Expose-Headers", "")
+    assert "X-Request-ID" in expose, f"X-Request-ID not exposed via CORS on the 500: {expose!r}"
+    assert response.headers.get("X-Request-ID")
+
+
 async def test_unhandled_500_calls_sentry_capture_exception(
     client: httpx.AsyncClient,
     monkeypatch: pytest.MonkeyPatch,
