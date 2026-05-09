@@ -36,3 +36,7 @@ coverage/
 
 # Data (created at runtime by the app)
 data/
+
+# Playwright (T5.5 e2e suite)
+apps/web/playwright-report/
+apps/web/test-results/

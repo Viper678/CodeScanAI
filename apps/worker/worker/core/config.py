@@ -59,6 +59,11 @@ class Settings(BaseSettings):
     google_ai_api_key: SecretStr | None = None
     gemma_model: str = "gemma-4-31b-it"
     prompt_version: str = "v1"
+    # Test-only switch: when true, ``run_scan`` swaps ``_DefaultGemmaTransport``
+    # for ``MockGemmaTransport`` so security/bugs scanners produce canned
+    # findings without an HTTP call. Used by the Playwright e2e suite (T5.5);
+    # never set in production deployments.
+    llm_mock_mode: bool = False
 
     # ---- Logging / observability (T5.4) ---------------------------------------
     log_level: str = "info"

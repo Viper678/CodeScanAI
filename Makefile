@@ -1,6 +1,12 @@
-.PHONY: setup lint test lint-api lint-worker lint-web test-api test-worker test-web
+.PHONY: setup lint test lint-api lint-worker lint-web test-api test-worker test-web \
+	e2e e2e-ui e2e-up e2e-down e2e-fixtures
 
 UV ?= uv
+
+# Compose stack used by the e2e suite (T5.5). NOT the dev override — the
+# stock images run without host-volume mounts so Next.js doesn't reload
+# while the spec is exercising the UI.
+E2E_COMPOSE := docker compose -f docker-compose.yml -f docker-compose.e2e.yml
 
 setup:
 	cd apps/api && $(UV) sync --locked
@@ -39,3 +45,30 @@ test-worker:
 
 test-web:
 	pnpm --dir apps/web test
+
+# Build the deterministic sample zip used by the Playwright suite. Idempotent.
+e2e-fixtures:
+	python3 apps/web/e2e/fixtures/build_sample_zip.py
+
+# Bring the full e2e stack up (api + worker + web + postgres + redis) with
+# LLM_MOCK_MODE=true. Run BEFORE ``make e2e``.
+e2e-up:
+	JWT_SECRET=$${JWT_SECRET:-e2e-jwt-secret-32-bytes-long-padding} \
+	$(E2E_COMPOSE) up -d --build
+	$(E2E_COMPOSE) ps
+
+# Tear down + delete the e2e volumes (postgres data + uploads). Safe to
+# call repeatedly; idempotent and doesn't touch the dev stack.
+e2e-down:
+	$(E2E_COMPOSE) down -v --remove-orphans
+
+# Headless run — what CI uses. Assumes ``make e2e-up`` ran first.
+e2e: e2e-fixtures
+	pnpm --dir apps/web exec playwright install --with-deps chromium
+	pnpm --dir apps/web exec playwright test
+
+# Headed / interactive UI mode for local development. The slowMo configured
+# in playwright.config.ts makes the journey readable in real time.
+e2e-ui: e2e-fixtures
+	pnpm --dir apps/web exec playwright install chromium
+	pnpm --dir apps/web exec playwright test --ui

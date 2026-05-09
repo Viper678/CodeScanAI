@@ -265,9 +265,20 @@ def _default_scanner_registry(
     registry: ScannerRegistry = {}
     needs_llm = any(t in (SCAN_TYPE_SECURITY, SCAN_TYPE_BUGS) for t in scan_types)
     if needs_llm:
-        api_key_secret = settings.google_ai_api_key
-        api_key = api_key_secret.get_secret_value() if api_key_secret else ""
-        client = GemmaClient(api_key=api_key, model=settings.gemma_model)
+        if settings.llm_mock_mode:
+            # T5.5 e2e: deterministic canned findings, no outbound HTTP. The
+            # mock transport ignores the api_key, so we pass a placeholder.
+            from worker.llm.mock_transport import MockGemmaTransport
+
+            client = GemmaClient(
+                api_key="mock-not-used",
+                model=settings.gemma_model,
+                transport=MockGemmaTransport(),
+            )
+        else:
+            api_key_secret = settings.google_ai_api_key
+            api_key = api_key_secret.get_secret_value() if api_key_secret else ""
+            client = GemmaClient(api_key=api_key, model=settings.gemma_model)
         if SCAN_TYPE_SECURITY in scan_types:
             registry[SCAN_TYPE_SECURITY] = SecurityScanner(client)
         if SCAN_TYPE_BUGS in scan_types:

@@ -105,6 +105,23 @@ Then:
 - Postgres → `localhost:5432`
 - Redis → `localhost:6379`
 
+### Tests
+
+```bash
+make lint        # ruff + black + mypy + prettier + eslint + tsc
+make test        # pytest (api + worker) + vitest (web)
+make e2e-up      # bring up docker-compose with mocked Gemma
+make e2e         # run the Playwright happy-path suite (headless)
+make e2e-ui      # same suite, headed + Playwright UI mode
+make e2e-down    # tear down the e2e stack and volumes
+```
+
+The Playwright suite drives the full register → upload → scan → findings →
+export journey end-to-end. Real Gemma is replaced by a deterministic
+fixture transport (`LLM_MOCK_MODE=true`) so CI stays offline and finishes
+in well under 10 minutes; failures upload `playwright-report/` and
+`test-results/` (which carries the trace files) as a CI artifact.
+
 ---
 
 ## Where to start reading
@@ -122,7 +139,7 @@ If you are an AI agent picking up work on this project, read in this order:
 
 ## Status
 
-🟡 In active development. Phase 4 complete — findings list/export API (T4.1), results page (T4.2), in-app file viewer (T4.3), and the `/scans` index polish (T4.4) are all in.
+🟡 In active development. Phase 5 hardening complete — rate limiting (T5.1), retention sweep (T5.2), health probes (T5.3), structured logging (T5.4), and the Playwright end-to-end suite (T5.5) are all in.
 
 Shipped:
 
@@ -138,5 +155,6 @@ Shipped:
 - Retention sweep: daily Celery beat task (`worker.tasks.cleanup.cleanup_old_uploads`, ticks at 03:00 UTC) purges uploads older than `RETENTION_DAYS` plus their on-disk artifacts and cascaded files / scans / scan_files / scan_findings; **disabled by default** (operators set a positive integer to enable), per-row resilience so a single bad disk wipe doesn't abort the sweep
 - Health probes: cheap `GET /healthz` (process-up) plus dependency-aware `GET /readyz` that pings Postgres + Redis in parallel with a 2-second per-check timeout and returns a stable schema (`{"status","db","redis"}`) on both 200 and 503; docker-compose's api healthcheck now gates on `/readyz` so traffic only flows once the dependency pools are warm
 - Structured logging: stdlib `logging` with a JSON formatter on both api and worker; per-request `request_id` (echoed via `X-Request-ID`) + `user_id` correlation on api, `task_id` / `scan_id` / `upload_id` / `file_id` on worker via Celery signals; Google API key scrub at filter + formatter + interpolation layers; `LOG_LEVEL` env-driven and enforced on both root logger and handler so propagated child records actually filter
+- End-to-end suite: Playwright covers the full happy path (register → upload sample repo → run scan → see findings → export JSON) with realistic-pacing slowMo so a headed run looks like a real user; mocks Gemma via a worker-side `LLM_MOCK_MODE=true` switch so CI is deterministic and offline; `make e2e` runs the headless suite against a `docker-compose.e2e.yml` stack (under 10 minutes wall-clock), `make e2e-ui` opens the headed Playwright UI locally; failures upload `playwright-report` + `test-results` (with traces) as a CI artifact
 
-Next up: Phase 5 hardening — T5.5 end-to-end test suite (Playwright covering register → upload → scan → results → export, runs in CI in < 10 min).
+Next up: Phase 6 backlog — SARIF export, SSE / WebSocket progress, password reset, and the self-hosted Gemma path.

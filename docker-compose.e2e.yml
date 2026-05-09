@@ -1,0 +1,23 @@
+# docker-compose override for the Playwright e2e suite (T5.5).
+#
+# Used as the SECOND ``-f`` after ``docker-compose.yml`` (NOT after the dev
+# override) so the worker / api / web containers run the production-style
+# images without live-reload mounts. The mock LLM transport is wired in via
+# ``LLM_MOCK_MODE=true`` on the worker — no outbound Gemma traffic.
+#
+# Invocation (handled by ``make e2e-up``):
+#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+services:
+  worker:
+    environment:
+      LLM_MOCK_MODE: "true"
+      # The worker config refuses to start without GOOGLE_AI_API_KEY when
+      # LLM_MOCK_MODE is off. Mock mode skips the SDK init entirely, but the
+      # compose-file ``required`` syntax still demands a value — pass any
+      # string so docker-compose stops complaining.
+      GOOGLE_AI_API_KEY: "mock-not-used"
+
+  # No web service overrides — the base ``docker-compose.yml`` already runs
+  # ``pnpm dev`` in the image without host-volume mounts when the dev
+  # override (``docker-compose.override.yml``) is omitted from the ``-f``
+  # chain. That gives us a stable Next.js without the dev reload churn.
