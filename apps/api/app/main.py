@@ -179,7 +179,14 @@ def create_app() -> FastAPI:
         allow_origins=settings.cors_allow_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
-        allow_headers=["Content-Type", "Accept", "X-Requested-With"],
+        # ``X-Request-ID`` appears in both lists: ``allow_headers`` lets a
+        # browser-side caller forward an upstream id (e.g. from the gateway)
+        # via fetch / XHR; ``expose_headers`` lets the JS client read the
+        # echoed id off the response so the UI can show / report it.
+        # Without ``expose_headers`` browsers strip the header out of the
+        # JS-visible response object even though it's on the wire.
+        allow_headers=["Content-Type", "Accept", "X-Requested-With", "X-Request-ID"],
+        expose_headers=["X-Request-ID"],
     )
     # Starlette wraps middlewares in reverse insertion order: the LAST
     # ``add_middleware`` becomes the OUTERMOST handler. Adding the request
@@ -193,6 +200,13 @@ def create_app() -> FastAPI:
     app.add_exception_handler(AppError, app_error_handler)
     app.add_exception_handler(RequestValidationError, validation_error_handler)
     app.add_exception_handler(HTTPException, http_exception_handler)
+    # Note: there is no ``add_exception_handler(Exception, ...)`` here on
+    # purpose. Starlette routes that registration to ``ServerErrorMiddleware``
+    # (the OUTERMOST middleware), so the 500 response would be built outside
+    # ``RequestLoggingMiddleware``'s response path and the ``X-Request-ID``
+    # header would never be attached. Instead, the middleware itself catches
+    # unhandled exceptions and constructs the 500 response — see
+    # ``RequestLoggingMiddleware.dispatch`` in ``app.core.logging``.
     app.include_router(health_router)
     app.include_router(auth_router)
     app.include_router(uploads_router)

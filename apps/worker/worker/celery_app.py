@@ -39,6 +39,13 @@ celery_app.conf.update(
     result_serializer="json",
     accept_content=["json"],
     timezone="UTC",
+    # T5.4: keep our JSON formatter + scrub filter on the root logger.
+    # Celery's default ``worker_hijack_root_logger=True`` would replace
+    # the handlers we install in ``configure_logging`` once the worker
+    # bootstrap finishes, silently downgrading task logs to Celery's
+    # ColorFormatter and bypassing the API-key scrub. Disabling the
+    # hijack lets our setup survive into task execution.
+    worker_hijack_root_logger=False,
     # Daily retention sweep — beat ticks at 03:00 UTC. The task itself reads
     # ``settings.retention_days`` and short-circuits when retention is None
     # (the default), so an "always-scheduled, sometimes no-op" shape lets

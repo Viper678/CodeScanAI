@@ -137,3 +137,90 @@ async def test_contextvars_clear_between_requests(
     await client.get("/healthz")
     assert request_id_var.get() is None
     assert user_id_var.get() is None
+
+
+async def test_cors_exposes_request_id_header_for_browser_clients(
+    client: httpx.AsyncClient,
+) -> None:
+    """Codex P3: with credentialed CORS, browsers can only read response
+    headers listed in ``Access-Control-Expose-Headers`` AND can only send
+    ones listed in ``Access-Control-Allow-Headers``. ``X-Request-ID`` must
+    be in both or the JS frontend can't read the echoed id (even though
+    it's on the wire) or forward an upstream id from the gateway.
+
+    We assert two responses: the OPTIONS preflight echoes the allow list,
+    and the actual GET response echoes the expose list (Starlette splits
+    them across the two response types).
+    """
+
+    # 1. Preflight: ``Access-Control-Allow-Headers`` must include the header.
+    preflight = await client.options(
+        "/healthz",
+        headers={
+            "Origin": "http://localhost:3000",
+            "Access-Control-Request-Method": "GET",
+            "Access-Control-Request-Headers": "X-Request-ID",
+        },
+    )
+    assert preflight.status_code == 200
+    allow = preflight.headers.get("Access-Control-Allow-Headers", "")
+    assert "X-Request-ID" in allow, f"X-Request-ID missing from preflight Allow-Headers: {allow!r}"
+
+    # 2. Actual response: ``Access-Control-Expose-Headers`` must include it.
+    response = await client.get("/healthz", headers={"Origin": "http://localhost:3000"})
+    assert response.status_code == 200
+    expose = response.headers.get("Access-Control-Expose-Headers", "")
+    assert (
+        "X-Request-ID" in expose
+    ), f"X-Request-ID missing from response Expose-Headers: {expose!r}"
+
+
+async def test_unhandled_500_carries_request_id_header(
+    client: httpx.AsyncClient,
+    captured_access_log: pytest.LogCaptureFixture,
+) -> None:
+    """Codex P2: when a route raises an unhandled exception, the 500 response
+    must still carry ``X-Request-ID`` so a user can quote the same id that
+    appears in the access log.
+
+    Without the ``Exception`` handler in ``app.main``, Starlette's outer
+    ``ServerErrorMiddleware`` builds the 500 outside our middleware's
+    response path and the header never lands.
+    """
+
+    from app.main import app
+
+    # Register a temporary route on the live app that raises. We stash the
+    # original router state so cleanup doesn't bleed into other tests.
+    @app.get("/__test_boom__")
+    async def boom() -> None:
+        raise RuntimeError("simulated unhandled error")
+
+    try:
+        response = await client.get("/__test_boom__")
+    finally:
+        # Pop the route off the live app so this test stays self-contained.
+        app.router.routes = [
+            route for route in app.router.routes if getattr(route, "path", None) != "/__test_boom__"
+        ]
+
+    assert response.status_code == 500
+    request_id = response.headers.get("X-Request-ID")
+    assert (
+        request_id is not None and len(request_id) == 32
+    ), f"X-Request-ID missing or malformed on 500: got {request_id!r}"
+    body = response.json()
+    assert body == {
+        "error": {
+            "code": "internal_error",
+            "message": "Internal server error",
+            "details": [],
+        }
+    }
+
+    # The access line still gets emitted with the same request_id.
+    lines = _formatted_access_lines(captured_access_log)
+    assert any(
+        line.get("path") == "/__test_boom__" and line.get("request_id") == request_id
+        for line in lines
+    ), f"no matching access line for the 500 in {lines}"

@@ -20,6 +20,7 @@ scan_types raised, it's ``failed`` with a joined error message.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 from collections.abc import Callable
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -497,9 +498,20 @@ def _dispatch(
     cancelled = False
     completed = 0
     futures: dict[Future[_PerFileOutcome], _FilePlan] = {}
+    # Each worker thread runs inside its OWN copy of the parent task's
+    # correlation context (task_id, scan_id set by Celery signals on the
+    # main thread). ``ThreadPoolExecutor`` does not propagate ContextVars
+    # across the thread boundary by default — without this snapshot the
+    # per-file scanner logs would carry only ``file_id`` and lose
+    # ``scan_id`` / ``task_id``, breaking the worker correlation contract
+    # advertised in T5.4. ``Context.run`` raises ``RuntimeError`` when
+    # called on the same context object from more than one OS thread, so
+    # we copy per submission.
     with ThreadPoolExecutor(max_workers=settings.scan_concurrency) as executor:
         for plan in plans:
+            ctx = contextvars.copy_context()
             fut = executor.submit(
+                ctx.run,
                 _process_file,
                 plan,
                 scan_types=scan_types,

@@ -220,3 +220,59 @@ def test_init_sentry_skipped_when_dsn_unset(monkeypatch: Any) -> None:
     monkeypatch.setitem(__import__("sys").modules, "sentry_sdk", fake_sdk)
     obs.init_sentry_if_configured()
     fake_sdk.init.assert_not_called()
+
+
+# ---- Celery root-logger hijack (Codex P1) -----------------------------------
+
+
+def test_celery_app_disables_root_logger_hijack() -> None:
+    """Codex P1: Celery's ``worker_hijack_root_logger`` defaults to True,
+    which would replace the JsonFormatter + ApiKeyScrubFilter we install
+    in ``configure_logging`` once the worker bootstrap finishes. The conf
+    must opt out so structured logs survive into task execution.
+    """
+
+    from worker.celery_app import celery_app
+
+    assert celery_app.conf.worker_hijack_root_logger is False, (
+        "worker_hijack_root_logger must be False or our JSON formatter + "
+        "API-key scrub filter get silently replaced by Celery's ColorFormatter"
+    )
+
+
+# ---- ContextVar propagation across ThreadPoolExecutor (Codex P2) ------------
+
+
+def test_contextvar_propagates_into_thread_pool_via_copy_context() -> None:
+    """Codex P2: ``run_scan._dispatch`` copies the current context per
+    submission so worker threads inherit ``task_id`` / ``scan_id`` set on
+    the main thread by Celery signals. This test pins down the propagation
+    pattern itself; the per-file thread sees the parent's context vars.
+    """
+
+    import contextvars
+    from concurrent.futures import ThreadPoolExecutor
+
+    task_id_var.set("task-T-PROP-1")
+    scan_id_var.set("scan-S-PROP-1")
+
+    def _read_context_vars() -> tuple[str | None, str | None]:
+        return task_id_var.get(), scan_id_var.get()
+
+    try:
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            ctx_a = contextvars.copy_context()
+            ctx_b = contextvars.copy_context()
+            fut_a = pool.submit(ctx_a.run, _read_context_vars)
+            fut_b = pool.submit(ctx_b.run, _read_context_vars)
+            assert fut_a.result() == ("task-T-PROP-1", "scan-S-PROP-1")
+            assert fut_b.result() == ("task-T-PROP-1", "scan-S-PROP-1")
+
+            # Sanity check: without copy_context the thread starts with
+            # the default (None) — verifies the propagation actually
+            # depends on copy_context, not on some thread-local accident.
+            fut_c = pool.submit(_read_context_vars)
+            assert fut_c.result() == (None, None)
+    finally:
+        task_id_var.set(None)
+        scan_id_var.set(None)

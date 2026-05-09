@@ -33,7 +33,7 @@ from typing import Any, Final
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
-from starlette.responses import Response
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp
 
 # ---- Correlation context vars ----------------------------------------------
@@ -234,55 +234,64 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
         request_id_token = request_id_var.set(request_id)
         user_id_token = user_id_var.set(None)
         started = time.perf_counter()
-        status_code = 500
         try:
-            response = await call_next(request)
-            status_code = response.status_code
-        except Exception:
-            # Log the access line for the failed request, then re-raise so
-            # FastAPI's exception handlers still run. Without this the only
-            # log evidence of a 500 would be the traceback, with no request
-            # context attached.
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            self._logger.exception(
-                "request errored",
-                extra={
+            try:
+                response = await call_next(request)
+            except Exception:
+                # Build the 500 response ourselves rather than re-raising —
+                # if we let it bubble to Starlette's outer
+                # ``ServerErrorMiddleware``, the 500 is constructed AFTER
+                # this middleware has exited and the ``X-Request-ID`` header
+                # never lands. The standard error envelope is documented in
+                # ``docs/API.md`` §"Error response".
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                self._logger.exception(
+                    "request errored",
+                    extra={
+                        "method": request.method,
+                        "path": request.url.path,
+                        "status": 500,
+                        "latency_ms": elapsed_ms,
+                    },
+                )
+                response = JSONResponse(
+                    status_code=500,
+                    content={
+                        "error": {
+                            "code": "internal_error",
+                            "message": "Internal server error",
+                            "details": [],
+                        },
+                    },
+                )
+            else:
+                elapsed_ms = int((time.perf_counter() - started) * 1000)
+                extras: dict[str, Any] = {
                     "method": request.method,
                     "path": request.url.path,
-                    "status": status_code,
+                    "status": response.status_code,
                     "latency_ms": elapsed_ms,
-                },
-            )
-            request_id_var.reset(request_id_token)
-            user_id_var.reset(user_id_token)
-            raise
-        else:
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            extras: dict[str, Any] = {
-                "method": request.method,
-                "path": request.url.path,
-                "status": status_code,
-                "latency_ms": elapsed_ms,
-            }
-            # Pull user_id off ``request.state`` if the auth dep stamped it
-            # there. We can't read ``user_id_var`` here — Starlette's
-            # ``BaseHTTPMiddleware`` ran ``call_next`` in a child task, and
-            # contextvar mutations inside the child don't propagate back to
-            # this parent task. ``request.state`` is shared so we use that.
-            user_id = getattr(request.state, "user_id", None)
-            if isinstance(user_id, str):
-                extras["user_id"] = user_id
-            self._logger.info("request", extra=extras)
+                }
+                # Pull user_id off ``request.state`` if the auth dep stamped
+                # it there. We can't read ``user_id_var`` here — Starlette's
+                # ``BaseHTTPMiddleware`` ran ``call_next`` in a child task,
+                # and contextvar mutations inside the child don't propagate
+                # back to this parent task. ``request.state`` is shared so
+                # we use that.
+                user_id = getattr(request.state, "user_id", None)
+                if isinstance(user_id, str):
+                    extras["user_id"] = user_id
+                self._logger.info("request", extra=extras)
             response.headers["X-Request-ID"] = request_id
             return response
         finally:
-            # The contextvar reset must still happen so the next request
-            # starts clean. ``suppress`` covers the rare case where the
-            # error branch above already reset the token (LookupError /
-            # ValueError on double-reset).
-            with suppress(LookupError, ValueError):
+            # Reset both contextvars so the next request starts clean.
+            # Single reset path now (no early reset in the error branch),
+            # so the suppression is a defensive belt rather than a real
+            # double-reset guard.
+            with suppress(RuntimeError, LookupError, ValueError):
                 request_id_var.reset(request_id_token)
-            with suppress(LookupError, ValueError):
+            with suppress(RuntimeError, LookupError, ValueError):
                 user_id_var.reset(user_id_token)
 
 
