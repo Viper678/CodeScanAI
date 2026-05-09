@@ -29,10 +29,12 @@ export default defineConfig({
     baseURL: WEB_BASE_URL,
     actionTimeout: 30_000,
     navigationTimeout: 30_000,
-    // Always emit a trace for the failing run so CI artifacts have
-    // everything needed to diagnose. Local runs default to off-on-success
-    // (cheap) but capture-on-retry (informative).
-    trace: isCI ? 'on-first-retry' : 'retain-on-failure',
+    // ``retain-on-failure`` captures a trace on the FIRST failed run.
+    // ``on-first-retry`` would silently produce nothing in CI here:
+    // Playwright's default ``retries`` is 0, so a failure never hits a
+    // retry, so no trace is recorded — and the README/workflow promise
+    // failure traces.
+    trace: 'retain-on-failure',
     screenshot: 'only-on-failure',
     video: isCI ? 'retain-on-failure' : 'off',
     launchOptions: {

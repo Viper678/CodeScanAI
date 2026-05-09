@@ -71,7 +71,7 @@ jobs:
             sleep 3
           done
           echo "web never came up" >&2
-          docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs web | tail -120
+          docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs web | tail -120
           exit 1
 
       - name: Run Playwright suite
@@ -92,7 +92,7 @@ jobs:
 
       - name: Dump compose logs on failure
         if: failure()
-        run: docker compose -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color | tail -500
+        run: docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color | tail -500
 
       - name: Tear down compose
         if: always()
