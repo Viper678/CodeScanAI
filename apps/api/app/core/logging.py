@@ -131,13 +131,21 @@ class JsonFormatter(logging.Formatter):
     """
 
     def format(self, record: logging.LogRecord) -> str:
+        # Scrub the FORMATTED message — ``record.getMessage()`` interpolates
+        # ``record.args`` after the scrub filter has already run, so an
+        # exception object (or any non-string ``%s`` arg) whose ``__str__``
+        # contains an API key would leak the key here even though the
+        # filter "ran". Applying the regex to the final rendered string
+        # is the only way to catch interpolation-time leaks.
+        rendered_message = _API_KEY_PATTERN.sub(_REDACTED, record.getMessage())
+
         payload: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(
                 timespec="milliseconds"
             ),
             "level": record.levelname,
             "logger": record.name,
-            "message": record.getMessage(),
+            "message": rendered_message,
         }
 
         # Forward record extras — both the contextvar snapshots set by

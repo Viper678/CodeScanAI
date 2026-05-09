@@ -164,13 +164,39 @@ def init_sentry_if_configured() -> None:
 
     if settings.sentry_dsn is None:
         return
+    import logging as _logging
+
     import sentry_sdk
     from sentry_sdk.integrations.celery import CeleryIntegration
-    from sentry_sdk.integrations.logging import ignore_logger
+    from sentry_sdk.integrations.logging import LoggingIntegration
 
+    # Disable Sentry's LoggingIntegration event capture entirely — keep
+    # breadcrumbs (so logs leading up to a failure still attach to the
+    # exception event) but stop generating standalone events from log
+    # records. Reasoning:
+    #
+    # - ``CeleryIntegration`` already captures every unhandled task
+    #   exception with ``mechanism=celery``. That's the canonical event
+    #   we want.
+    # - Many task code paths do ``logger.exception(...)`` and then
+    #   ``raise`` — without this, Sentry would receive both a logging
+    #   event (mechanism=logging, handled=True) AND the celery event
+    #   (mechanism=celery, unhandled). Dedupe behaviour between the two
+    #   isn't deterministic; we'd see duplicates or, worse, the weaker
+    #   logging event winning and the unhandled one getting dropped.
+    # - The previous approach (``ignore_logger(__name__)``) only covered
+    #   THIS module — task-side loggers (run_scan, scanners, …) still
+    #   double-captured.
+    #
+    # ``event_level=None`` disables event capture; ``level=INFO`` keeps
+    # log records as breadcrumbs on whatever exception event eventually
+    # fires.
     sentry_sdk.init(
         dsn=settings.sentry_dsn.get_secret_value(),
-        integrations=[CeleryIntegration()],
+        integrations=[
+            CeleryIntegration(),
+            LoggingIntegration(level=_logging.INFO, event_level=None),
+        ],
         traces_sample_rate=0.0,
         send_default_pii=False,
         # Last-line API-key scrub: the Celery integration captures exceptions
@@ -178,14 +204,4 @@ def init_sentry_if_configured() -> None:
         # message includes ``AIza…`` would otherwise ship to Sentry verbatim.
         before_send=_sentry_before_send,
     )
-    # Avoid double-reporting task failures. ``CeleryIntegration`` already
-    # captures the raised exception with ``mechanism=celery`` (unhandled).
-    # Our ``_on_task_failure`` signal handler emits a structured ERROR log
-    # for the JSON pipeline (operators want to grep correlation IDs), but
-    # Sentry's default ``LoggingIntegration`` would also capture that ERROR
-    # as a separate generic event — two Sentry events per task failure with
-    # different grouping. Tell Sentry to ignore this module's logger so the
-    # structured log keeps flowing to stdout while Sentry only sees the one
-    # canonical task-failure event from CeleryIntegration.
-    ignore_logger(__name__)
     logger.info("sentry initialized for worker")

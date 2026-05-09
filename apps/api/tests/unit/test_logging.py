@@ -156,6 +156,27 @@ def test_scrub_filter_leaves_non_string_args_alone() -> None:
     assert record.args == (200, 42)
 
 
+def test_formatter_redacts_api_key_in_object_arg_after_interpolation() -> None:
+    """Codex round-7 P1: an arg whose ``__str__`` contains the key bypasses
+    the scrub filter (filter only walks string args). The key only
+    materializes during ``record.getMessage()``'s ``%`` interpolation,
+    which runs at format time. ``JsonFormatter`` must scrub the rendered
+    message as a backstop. Mirrored from the worker copy.
+    """
+
+    class _LeakyError(Exception):
+        def __str__(self) -> str:
+            return f"https://api.example.com/?key={_FAKE_KEY}"
+
+    record = _record(msg="upstream call failed: %s", args=(_LeakyError(),))
+    ApiKeyScrubFilter().filter(record)
+    payload = json.loads(JsonFormatter().format(record))
+    assert (
+        _FAKE_KEY not in payload["message"]
+    ), f"API key leaked through %s interpolation: {payload['message']!r}"
+    assert "AIza<redacted>" in payload["message"]
+
+
 # ---- Request-ID coercion ---------------------------------------------------
 
 

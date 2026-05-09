@@ -108,6 +108,29 @@ def test_scrub_filter_redacts_nested_extras() -> None:
     assert _FAKE_KEY not in nested[0]["value"]
 
 
+def test_formatter_redacts_api_key_in_object_arg_after_interpolation() -> None:
+    """Codex round-7 P1: an arg whose ``__str__`` contains the key bypasses
+    the scrub filter (filter only walks string args). The key only
+    materializes during ``record.getMessage()``'s ``%`` interpolation,
+    which runs at format time. ``JsonFormatter`` must scrub the rendered
+    message as a backstop.
+    """
+
+    class _LeakyError(Exception):
+        def __str__(self) -> str:
+            return f"https://api.example.com/?key={_FAKE_KEY}"
+
+    record = _record(msg="upstream call failed: %s", args=(_LeakyError(),))
+    # Run the scrub filter (it leaves the non-string arg untouched).
+    ApiKeyScrubFilter().filter(record)
+    # Format and assert the rendered message has been redacted.
+    payload = json.loads(JsonFormatter().format(record))
+    assert (
+        _FAKE_KEY not in payload["message"]
+    ), f"API key leaked through %s interpolation: {payload['message']!r}"
+    assert "AIza<redacted>" in payload["message"]
+
+
 # ---- Celery signal handlers ------------------------------------------------
 
 
@@ -225,16 +248,20 @@ def test_init_sentry_skipped_when_dsn_unset(monkeypatch: Any) -> None:
 # ---- Sentry before_send scrub (Codex round-4 P1) ----------------------------
 
 
-def test_init_sentry_calls_ignore_logger_for_task_failure_module(
+def test_init_sentry_disables_logging_integration_event_capture(
     monkeypatch: Any,
 ) -> None:
-    """Codex round-5 P2: ``CeleryIntegration`` already captures task
-    exceptions with ``mechanism=celery``. Our ``_on_task_failure`` signal
-    handler emits a structured ERROR log to keep correlation IDs in the
-    JSON pipeline — but Sentry's ``LoggingIntegration`` would capture that
-    ERROR as a *second* event. ``init_sentry_if_configured`` must call
-    ``ignore_logger`` on this module's logger name to suppress the
-    duplicate.
+    """Codex round-7 P2: ``ignore_logger(__name__)`` from round 5 only
+    covered the observability module. Other task code does
+    ``logger.exception`` then re-raises (e.g. ``run_scan`` scanner-registry
+    failures), so Sentry's default LoggingIntegration captures those as
+    standalone events while CeleryIntegration captures the same exception
+    on re-raise — duplicate Sentry events with non-deterministic dedupe.
+
+    The proper fix is to disable LoggingIntegration's *event* capture
+    entirely (keep breadcrumbs) so only CeleryIntegration produces task
+    failure events. This test pins down: ``LoggingIntegration`` is in the
+    integrations list with ``event_level=None``.
     """
 
     import sys
@@ -250,8 +277,13 @@ def test_init_sentry_calls_ignore_logger_for_task_failure_module(
 
     fake_sdk = MagicMock()
     fake_celery_integration = MagicMock()
-    fake_logging_module = MagicMock()
-    fake_logging_module.ignore_logger = MagicMock()
+
+    captured_logging_init: dict[str, Any] = {}
+
+    class _FakeLoggingIntegration:
+        def __init__(self, *, level: Any = None, event_level: Any = None) -> None:
+            captured_logging_init["level"] = level
+            captured_logging_init["event_level"] = event_level
 
     monkeypatch.setitem(sys.modules, "sentry_sdk", fake_sdk)
     monkeypatch.setitem(
@@ -259,14 +291,19 @@ def test_init_sentry_calls_ignore_logger_for_task_failure_module(
         "sentry_sdk.integrations.celery",
         MagicMock(CeleryIntegration=fake_celery_integration),
     )
-    monkeypatch.setitem(sys.modules, "sentry_sdk.integrations.logging", fake_logging_module)
+    monkeypatch.setitem(
+        sys.modules,
+        "sentry_sdk.integrations.logging",
+        MagicMock(LoggingIntegration=_FakeLoggingIntegration),
+    )
 
     obs.init_sentry_if_configured()
 
     fake_sdk.init.assert_called_once()
-    # ``ignore_logger`` must be called with the observability module's name —
-    # that's where ``_on_task_failure`` lives and emits the duplicate ERROR.
-    fake_logging_module.ignore_logger.assert_called_once_with("worker.core.observability")
+    assert captured_logging_init["event_level"] is None, (
+        "LoggingIntegration must be configured with event_level=None "
+        "or task-side logger.exception calls will create duplicate Sentry events"
+    )
 
 
 def test_sentry_before_send_redacts_api_key_in_exception_value() -> None:

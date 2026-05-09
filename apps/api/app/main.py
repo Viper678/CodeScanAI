@@ -80,13 +80,27 @@ def _init_sentry_if_configured() -> None:
 
     if settings.sentry_dsn is None:
         return
+    import logging as _logging
+
     import sentry_sdk
     from sentry_sdk.integrations.fastapi import FastApiIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
     from sentry_sdk.integrations.starlette import StarletteIntegration
 
+    # Disable Sentry's LoggingIntegration event capture (keep breadcrumbs).
+    # The middleware's ``capture_exception()`` call (see
+    # ``RequestLoggingMiddleware.dispatch``) is the canonical Sentry event
+    # for unhandled 500s. Without this, the subsequent ``logger.exception``
+    # would also fire as a Sentry event and we'd be relying on Dedupe's
+    # ordering to drop it — which is fragile. Mirror of the worker-side
+    # config in ``worker.core.observability``.
     sentry_sdk.init(
         dsn=settings.sentry_dsn.get_secret_value(),
-        integrations=[FastApiIntegration(), StarletteIntegration()],
+        integrations=[
+            FastApiIntegration(),
+            StarletteIntegration(),
+            LoggingIntegration(level=_logging.INFO, event_level=None),
+        ],
         traces_sample_rate=0.0,
         send_default_pii=False,
         # Last-line API-key scrub — see ``_sentry_before_send`` rationale.
