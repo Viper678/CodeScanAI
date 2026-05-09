@@ -175,6 +175,45 @@ async def test_cors_exposes_request_id_header_for_browser_clients(
     ), f"X-Request-ID missing from response Expose-Headers: {expose!r}"
 
 
+async def test_unhandled_500_from_authed_route_logs_user_id(
+    authed_client: httpx.AsyncClient,
+    captured_access_log: pytest.LogCaptureFixture,
+) -> None:
+    """Codex P2a follow-up: an authenticated route that raises after
+    ``get_current_user`` has stamped ``request.state.user_id`` should still
+    produce an access line carrying that ``user_id``. Otherwise 500s from
+    authed requests lose the user correlation operators rely on for
+    triage.
+    """
+
+    from fastapi import Depends
+
+    from app.core.deps import get_current_user
+    from app.main import app
+
+    @app.get("/__test_authed_boom__", dependencies=[Depends(get_current_user)])
+    async def authed_boom() -> None:
+        raise RuntimeError("simulated unhandled error from authed route")
+
+    try:
+        response = await authed_client.get("/__test_authed_boom__")
+    finally:
+        app.router.routes = [
+            route
+            for route in app.router.routes
+            if getattr(route, "path", None) != "/__test_authed_boom__"
+        ]
+
+    assert response.status_code == 500
+    lines = _formatted_access_lines(captured_access_log)
+    err_lines = [line for line in lines if line.get("path") == "/__test_authed_boom__"]
+    assert err_lines, f"no access line for the authed 500 in {lines}"
+    line = err_lines[-1]
+    assert line.get("status") == 500
+    assert "user_id" in line, f"user_id missing from authed 500 access line: {line!r}"
+    assert isinstance(line["user_id"], str)
+
+
 async def test_unhandled_500_carries_request_id_header(
     client: httpx.AsyncClient,
     captured_access_log: pytest.LogCaptureFixture,

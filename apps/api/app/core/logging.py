@@ -149,9 +149,14 @@ class JsonFormatter(logging.Formatter):
             payload[key] = value
 
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            # ``formatException`` walks ``exc_info`` directly; the scrub
+            # filter only mutates ``record.msg`` / ``record.args`` /
+            # extras, so an API key embedded in the exception message or
+            # a chained ``__cause__`` would otherwise survive into the
+            # serialized traceback. Re-apply the scrub here.
+            payload["exc"] = _API_KEY_PATTERN.sub(_REDACTED, self.formatException(record.exc_info))
         if record.stack_info:
-            payload["stack"] = self.formatStack(record.stack_info)
+            payload["stack"] = _API_KEY_PATTERN.sub(_REDACTED, self.formatStack(record.stack_info))
 
         return json.dumps(payload, default=str, ensure_ascii=False)
 
@@ -245,15 +250,22 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 # never lands. The standard error envelope is documented in
                 # ``docs/API.md`` §"Error response".
                 elapsed_ms = int((time.perf_counter() - started) * 1000)
-                self._logger.exception(
-                    "request errored",
-                    extra={
-                        "method": request.method,
-                        "path": request.url.path,
-                        "status": 500,
-                        "latency_ms": elapsed_ms,
-                    },
-                )
+                error_extras: dict[str, Any] = {
+                    "method": request.method,
+                    "path": request.url.path,
+                    "status": 500,
+                    "latency_ms": elapsed_ms,
+                }
+                # Mirror the success-path enrichment: the auth dep stamps
+                # ``request.state.user_id`` BEFORE the route raises, so
+                # 500s from authenticated requests should still carry the
+                # user correlation. (``user_id_var`` is unset in this
+                # parent task — see the success branch below for the same
+                # rationale.)
+                user_id = getattr(request.state, "user_id", None)
+                if isinstance(user_id, str):
+                    error_extras["user_id"] = user_id
+                self._logger.exception("request errored", extra=error_extras)
                 response = JSONResponse(
                     status_code=500,
                     content={
@@ -325,12 +337,22 @@ def configure_logging(*, level: str | int = "INFO") -> None:
     # fires before any handler (incl. pytest ``caplog``) sees the record.
     _install_correlation_record_factory()
 
-    # Silence uvicorn's access log — our middleware emits a structured one
-    # per request and we don't want duplicates. Uvicorn's error / startup
-    # logs (logger ``uvicorn.error``) stay at the root level so startup
-    # messages still surface.
+    # Silence uvicorn's access log — our middleware emits a structured
+    # access line per request and we don't want duplicates.
     logging.getLogger("uvicorn.access").handlers = []
     logging.getLogger("uvicorn.access").propagate = False
+    # Route uvicorn's startup / error log records through our JSON handler.
+    # Uvicorn configures the parent ``uvicorn`` logger with its own
+    # ``DefaultFormatter`` handler and ``propagate=False`` BEFORE importing
+    # ``app.main``; if we leave that wiring in place, ``uvicorn.error``
+    # records (server boot, "Application startup complete", lifespan errors)
+    # emit as plaintext while every other line in the api emits as JSON.
+    # Strip uvicorn's own handlers and re-enable propagation so the records
+    # reach the root JSON handler we just installed above.
+    for uv_name in ("uvicorn", "uvicorn.error"):
+        uv_logger = logging.getLogger(uv_name)
+        uv_logger.handlers = []
+        uv_logger.propagate = True
 
     # Quiet noisy libs unless the operator deliberately bumped LOG_LEVEL.
     if root.level > logging.DEBUG:

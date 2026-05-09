@@ -192,3 +192,75 @@ def test_request_id_rejected_when_header_invalid(bad: str) -> None:
     # We don't echo the bad value back; we generate a fresh one.
     assert rid != bad
     assert len(rid) == 32
+
+
+# ---- Codex P1 follow-up: redact API keys in serialized exception text -------
+
+
+def test_formatter_scrubs_api_key_in_exception_traceback() -> None:
+    """Codex P1 follow-up: ``logger.exception`` serializes the exception
+    via ``formatException``, which the scrub filter doesn't touch — so an
+    API key embedded in the exception MESSAGE (e.g. a Gemma SDK
+    ``HTTPError`` whose ``url`` includes the key) would leak into the
+    ``exc`` field. The formatter applies the regex to the formatted text
+    as a hard backstop. This test pins that down.
+    """
+
+    import sys
+
+    leaky = "AIza" + "x" * 35
+    try:
+        raise RuntimeError(f"upstream call failed for key {leaky}")
+    except RuntimeError:
+        record = logging.LogRecord(
+            name="app.test",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=0,
+            msg="boom",
+            args=None,
+            exc_info=sys.exc_info(),
+        )
+
+    formatted = json.loads(JsonFormatter().format(record))
+    assert "exc" in formatted
+    assert leaky not in formatted["exc"], f"API key leaked into exc field: {formatted['exc']!r}"
+    assert "AIza<redacted>" in formatted["exc"]
+
+
+# ---- Codex P2b follow-up: uvicorn loggers wired into JSON handler -----------
+
+
+def test_configure_logging_routes_uvicorn_error_through_root() -> None:
+    """Codex P2b: Uvicorn configures ``uvicorn.error`` with its own
+    handler + ``propagate=False`` BEFORE ``app.main`` is imported, which
+    leaves startup / lifespan logs in plaintext. ``configure_logging``
+    must strip those handlers and flip propagate back on so records
+    reach our root JSON handler.
+    """
+
+    from app.core.logging import configure_logging
+
+    # Simulate Uvicorn's pre-configuration: install a handler on
+    # ``uvicorn.error`` and disable propagation, the way uvicorn.config does.
+    uv_logger = logging.getLogger("uvicorn.error")
+    uv_logger.addHandler(logging.NullHandler())
+    uv_logger.propagate = False
+    try:
+        configure_logging(level="info")
+        assert uv_logger.handlers == [], (
+            f"uvicorn.error still has handlers after configure_logging: " f"{uv_logger.handlers!r}"
+        )
+        assert (
+            uv_logger.propagate is True
+        ), "uvicorn.error must propagate so records reach our root JSON handler"
+        # Same treatment for the parent ``uvicorn`` logger.
+        parent = logging.getLogger("uvicorn")
+        assert parent.handlers == []
+        assert parent.propagate is True
+    finally:
+        # Reset so unrelated tests aren't affected by our pre-config.
+        for name in ("uvicorn", "uvicorn.error"):
+            lg = logging.getLogger(name)
+            lg.handlers = []
+            lg.propagate = True

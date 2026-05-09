@@ -135,9 +135,16 @@ class JsonFormatter(logging.Formatter):
             payload[key] = value
 
         if record.exc_info:
-            payload["exc"] = self.formatException(record.exc_info)
+            # ``formatException`` walks ``exc_info`` directly; the scrub
+            # filter only mutates ``record.msg`` / ``record.args`` /
+            # extras. The worker holds ``GOOGLE_AI_API_KEY`` so a Gemma
+            # SDK exception whose message includes the key (e.g. a
+            # request-URL-with-querystring trace) would otherwise leak
+            # the key into the serialized traceback. Re-apply the scrub
+            # to ``formatException``'s output as a hard backstop.
+            payload["exc"] = _API_KEY_PATTERN.sub(_REDACTED, self.formatException(record.exc_info))
         if record.stack_info:
-            payload["stack"] = self.formatStack(record.stack_info)
+            payload["stack"] = _API_KEY_PATTERN.sub(_REDACTED, self.formatStack(record.stack_info))
 
         return json.dumps(payload, default=str, ensure_ascii=False)
 

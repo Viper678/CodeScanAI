@@ -276,3 +276,37 @@ def test_contextvar_propagates_into_thread_pool_via_copy_context() -> None:
     finally:
         task_id_var.set(None)
         scan_id_var.set(None)
+
+
+# ---- Codex P1 follow-up: redact API keys in serialized exception text -------
+
+
+def test_formatter_scrubs_api_key_in_exception_traceback() -> None:
+    """Codex P1 follow-up: ``logger.exception`` serializes the exception
+    via ``formatException``. The worker holds ``GOOGLE_AI_API_KEY``, so a
+    Gemma SDK exception whose message includes the key (e.g. an
+    ``HTTPError`` carrying the request URL) would otherwise leak the key
+    into the ``exc`` field of every error log. The formatter applies the
+    scrub regex to the formatted exception text as a hard backstop.
+    """
+
+    import sys
+
+    leaky = "AIza" + "y" * 35
+    try:
+        raise RuntimeError(f"gemma call failed for key {leaky}")
+    except RuntimeError:
+        record = logging.LogRecord(
+            name="worker.test",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=0,
+            msg="upstream gemma error",
+            args=None,
+            exc_info=sys.exc_info(),
+        )
+
+    formatted = json.loads(JsonFormatter().format(record))
+    assert "exc" in formatted
+    assert leaky not in formatted["exc"], f"API key leaked into exc field: {formatted['exc']!r}"
+    assert "AIza<redacted>" in formatted["exc"]
