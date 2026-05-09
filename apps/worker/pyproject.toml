@@ -9,7 +9,6 @@ dependencies = [
     "psycopg[binary]==3.2.3",
     "pydantic-settings==2.7.0",
     "redis==5.2.1",
-    "sentry-sdk==2.18.0",
     "sqlalchemy==2.0.36",
 ]
 

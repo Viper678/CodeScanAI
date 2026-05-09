@@ -255,46 +255,6 @@ async def test_cors_headers_present_on_middleware_built_500(
     assert response.headers.get("X-Request-ID")
 
 
-async def test_unhandled_500_calls_sentry_capture_exception(
-    client: httpx.AsyncClient,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Codex round-5 P2: when the middleware catches an unhandled exception
-    to build a 500, Starlette's Sentry integration never sees it as
-    unhandled — so we must call ``sentry_sdk.capture_exception()``
-    explicitly. Without this, the only Sentry trace would be a handled
-    log event (weaker severity / grouping) and a high ``LOG_LEVEL`` could
-    suppress it entirely.
-
-    Asserts the explicit capture happens by patching the sentry module.
-    """
-
-    import sys
-    from unittest.mock import MagicMock
-
-    from app.main import app
-
-    fake_sdk = MagicMock()
-    fake_sdk.capture_exception = MagicMock()
-    monkeypatch.setitem(sys.modules, "sentry_sdk", fake_sdk)
-
-    @app.get("/__test_sentry_boom__")
-    async def boom() -> None:
-        raise RuntimeError("simulated for sentry capture test")
-
-    try:
-        response = await client.get("/__test_sentry_boom__")
-    finally:
-        app.router.routes = [
-            route
-            for route in app.router.routes
-            if getattr(route, "path", None) != "/__test_sentry_boom__"
-        ]
-
-    assert response.status_code == 500
-    fake_sdk.capture_exception.assert_called_once()
-
-
 async def test_unhandled_500_carries_request_id_header(
     client: httpx.AsyncClient,
     captured_access_log: pytest.LogCaptureFixture,

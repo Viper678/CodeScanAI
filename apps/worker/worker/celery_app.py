@@ -7,10 +7,7 @@ from celery.signals import setup_logging
 
 from worker.core.config import settings
 from worker.core.logging import configure_logging
-from worker.core.observability import (
-    init_sentry_if_configured,
-    register_signal_handlers,
-)
+from worker.core.observability import register_signal_handlers
 
 
 # Take over Celery's logging setup entirely. Without this, when the worker
@@ -32,7 +29,6 @@ def _setup_logging(**_kwargs: Any) -> None:
 # re-runs on actual worker startup. ``configure_logging`` is idempotent.
 configure_logging(level=settings.log_level)
 register_signal_handlers()
-init_sentry_if_configured()
 
 DEFAULT_BROKER_URL: Final = "redis://redis:6379/1"
 DEFAULT_RESULT_BACKEND: Final = "redis://redis:6379/2"

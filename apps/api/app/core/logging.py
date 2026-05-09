@@ -273,30 +273,6 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
                 user_id = getattr(request.state, "user_id", None)
                 if isinstance(user_id, str):
                     error_extras["user_id"] = user_id
-                # Notify Sentry explicitly BEFORE logging. We're about to
-                # convert the exception into a Response, which means
-                # Starlette's FastAPI / Starlette Sentry integrations
-                # won't see it as unhandled. The explicit capture here
-                # gives Sentry the exception with a proper mechanism.
-                #
-                # **Order matters**: ``logger.exception`` below would
-                # otherwise be captured by Sentry's LoggingIntegration
-                # FIRST (mechanism=logging, handled=True), and the SDK's
-                # DedupeIntegration would then drop our explicit
-                # ``capture_exception()`` as a duplicate — leaving the
-                # 500 recorded as a handled log event instead of a real
-                # unhandled exception. By capturing first, our explicit
-                # event wins dedupe and the LoggingIntegration's capture
-                # gets dropped instead.
-                #
-                # ``capture_exception()`` with no args uses the active
-                # ``sys.exc_info`` and is a no-op when no DSN is set.
-                try:
-                    import sentry_sdk
-
-                    sentry_sdk.capture_exception()
-                except ImportError:
-                    pass
                 self._logger.exception("request errored", extra=error_extras)
                 response = JSONResponse(
                     status_code=500,

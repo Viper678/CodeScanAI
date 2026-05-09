@@ -224,7 +224,6 @@ dependencies = [
     { name = "pyjwt" },
     { name = "python-multipart" },
     { name = "redis" },
-    { name = "sentry-sdk", extra = ["fastapi"] },
     { name = "sqlalchemy" },
     { name = "uvicorn", extra = ["standard"] },
 ]
@@ -253,7 +252,6 @@ requires-dist = [
     { name = "pyjwt", specifier = "==2.10.1" },
     { name = "python-multipart", specifier = "==0.0.20" },
     { name = "redis", specifier = "==5.3.1" },
-    { name = "sentry-sdk", extras = ["fastapi"], specifier = "==2.18.0" },
     { name = "sqlalchemy", specifier = "==2.0.36" },
     { name = "uvicorn", extras = ["standard"], specifier = "==0.34.0" },
 ]
@@ -741,24 +739,6 @@ wheels = [
 ]
 
 [[package]]
-name = "sentry-sdk"
-version = "2.18.0"
-source = { registry = "https://pypi.org/simple" }
-dependencies = [
-    { name = "certifi" },
-    { name = "urllib3" },
-]
-sdist = { url = "https://files.pythonhosted.org/packages/24/cc/0d87cc8246f52d92228aa6718a24e1988a2893f4abe2f64ec5a8bcba4185/sentry_sdk-2.18.0.tar.gz", hash = "sha256:0dc21febd1ab35c648391c664df96f5f79fb0d92d7d4225cd9832e53a617cafd", size = 293615 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/76/9b/2d512efdb0de203d1f0312fae53433c3009ba70b0078421d25baaedc960a/sentry_sdk-2.18.0-py2.py3-none-any.whl", hash = "sha256:ee70e27d1bbe4cd52a38e1bd28a5fadb9b17bc29d91b5f2b97ae29c0a7610442", size = 317514 },
-]
-
-[package.optional-dependencies]
-fastapi = [
-    { name = "fastapi" },
-]
-
-[[package]]
 name = "six"
 version = "1.17.0"
 source = { registry = "https://pypi.org/simple" }
@@ -828,15 +808,6 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/ba/19/1b9b0e29f30c6d35cb345486df41110984ea67ae69dddbc0e8a100999493/tzdata-2026.2.tar.gz", hash = "sha256:9173fde7d80d9018e02a662e168e5a2d04f87c41ea174b139fbef642eda62d10", size = 198254 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/ce/e4/dccd7f47c4b64213ac01ef921a1337ee6e30e8c6466046018326977efd95/tzdata-2026.2-py2.py3-none-any.whl", hash = "sha256:bbe9af844f658da81a5f95019480da3a89415801f6cc966806612cc7169bffe7", size = 349321 },
-]
-
-[[package]]
-name = "urllib3"
-version = "2.7.0"
-source = { registry = "https://pypi.org/simple" }
-sdist = { url = "https://files.pythonhosted.org/packages/53/0c/06f8b233b8fd13b9e5ee11424ef85419ba0d8ba0b3138bf360be2ff56953/urllib3-2.7.0.tar.gz", hash = "sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c", size = 433602 }
-wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/3e/5db95bcf282c52709639744ca2a8b149baccf648e39c8cc87553df9eae0c/urllib3-2.7.0-py3-none-any.whl", hash = "sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897", size = 131087 },
 ]
 
 [[package]]

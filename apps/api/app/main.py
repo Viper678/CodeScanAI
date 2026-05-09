@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -29,126 +28,6 @@ from app.routers.uploads import router as uploads_router
 configure_logging(level=settings.log_level)
 
 logger = logging.getLogger(__name__)
-
-
-_SENTRY_API_KEY_PATTERN = re.compile(r"AIza[A-Za-z0-9_-]{35}")
-_SENTRY_REDACTED = "AIza<redacted>"
-
-
-def _scrub_sentry_value(value: Any) -> Any:
-    """Recursive scrub for Sentry event payloads.
-
-    Sentry captures exceptions directly via ``event_from_exception`` —
-    bypassing :class:`app.core.logging.ApiKeyScrubFilter`. The api
-    doesn't hold ``GOOGLE_AI_API_KEY`` directly, but a worker-side error
-    surfaced through the api (e.g. a ``QueueUnavailable`` whose chained
-    cause carries the key) could still ship through this process's
-    Sentry hook. Defense in depth: redact ``AIza…`` shapes here too,
-    matching the worker's ``observability._sentry_before_send`` so the
-    two surfaces stay consistent.
-    """
-
-    if isinstance(value, str):
-        return _SENTRY_API_KEY_PATTERN.sub(_SENTRY_REDACTED, value)
-    if isinstance(value, dict):
-        return {k: _scrub_sentry_value(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_scrub_sentry_value(item) for item in value]
-    if isinstance(value, tuple):
-        return tuple(_scrub_sentry_value(item) for item in value)
-    return value
-
-
-def _sentry_before_send(event: Any, _hint: dict[str, Any]) -> Any:
-    """``sentry_sdk`` ``before_send`` hook — last-line scrub for API keys
-    AND a hard strip of request bodies / stack-frame locals.
-
-    The init flags ``max_request_body_size='never'`` and
-    ``include_local_variables=False`` are the primary defenses against
-    PII leakage (passwords on ``/auth/register``, session tokens in
-    ``Authorization`` headers, etc). This hook re-applies the same
-    invariant defensively in case a future SDK version flips a default
-    or an integration we haven't audited adds new fields.
-
-    Typed as ``Any`` to match ``sentry_sdk``'s typed ``Event`` TypedDict
-    without importing it at module scope (the SDK is an optional dep).
-    """
-
-    if isinstance(event, dict):
-        request = event.get("request")
-        if isinstance(request, dict):
-            # Strip the request body; preserve method/url/headers (those
-            # are scrubbed by ``send_default_pii=False`` for sensitive
-            # ones like cookies and Authorization).
-            request.pop("data", None)
-        # Strip ``vars`` from every stack frame in every exception value
-        # — local variables can carry passwords, tokens, anything the
-        # function had in scope at the point of failure.
-        exception = event.get("exception")
-        if isinstance(exception, dict):
-            for value in exception.get("values", []):
-                if not isinstance(value, dict):
-                    continue
-                stacktrace = value.get("stacktrace")
-                if isinstance(stacktrace, dict):
-                    for frame in stacktrace.get("frames", []):
-                        if isinstance(frame, dict):
-                            frame.pop("vars", None)
-
-    return _scrub_sentry_value(event)
-
-
-def _init_sentry_if_configured() -> None:
-    """Initialize Sentry when ``SENTRY_DSN`` is set; no-op otherwise.
-
-    Imports happen lazily so that an install without ``sentry-sdk`` (e.g. a
-    minimal smoke build) doesn't crash on import. ``traces_sample_rate=0``
-    means no perf data is shipped by default — operators tune it via
-    ``SENTRY_TRACES_SAMPLE_RATE`` if they want tracing.
-    """
-
-    if settings.sentry_dsn is None:
-        return
-    import logging as _logging
-
-    import sentry_sdk
-    from sentry_sdk.integrations.fastapi import FastApiIntegration
-    from sentry_sdk.integrations.logging import LoggingIntegration
-    from sentry_sdk.integrations.starlette import StarletteIntegration
-
-    # Disable Sentry's LoggingIntegration event capture (keep breadcrumbs).
-    # The middleware's ``capture_exception()`` call (see
-    # ``RequestLoggingMiddleware.dispatch``) is the canonical Sentry event
-    # for unhandled 500s. Without this, the subsequent ``logger.exception``
-    # would also fire as a Sentry event and we'd be relying on Dedupe's
-    # ordering to drop it — which is fragile. Mirror of the worker-side
-    # config in ``worker.core.observability``.
-    sentry_sdk.init(
-        dsn=settings.sentry_dsn.get_secret_value(),
-        integrations=[
-            FastApiIntegration(),
-            StarletteIntegration(),
-            LoggingIntegration(level=_logging.INFO, event_level=None),
-        ],
-        traces_sample_rate=0.0,
-        send_default_pii=False,
-        # PII-by-default that ``send_default_pii=False`` does NOT cover:
-        # - HTTP request bodies (default ``max_request_body_size='medium'``,
-        #   ~10KB). A 500 during ``/auth/register`` would otherwise ship
-        #   the user's email + password to Sentry. Hard-disable.
-        # - Local variables in stack frames (default ``include_local_variables
-        #   =True``). On any exception, every frame's locals get serialized
-        #   into the event — ``password``, JWTs, refresh tokens, file
-        #   contents, anything in scope. Hard-disable.
-        # ``_sentry_before_send`` re-applies the same invariants
-        # defensively in case a future SDK version flips a default.
-        max_request_body_size="never",
-        include_local_variables=False,
-        # Last-line API-key + request-body + stack-frame-vars scrub —
-        # see ``_sentry_before_send`` rationale.
-        before_send=_sentry_before_send,
-    )
-    logger.info("sentry initialized for api")
 
 
 HTTP_ERROR_CODES = {
@@ -265,7 +144,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 
 def create_app() -> FastAPI:
-    _init_sentry_if_configured()
     app = FastAPI(title=settings.app_name, lifespan=lifespan)
     # Starlette wraps middlewares in reverse insertion order: the LAST
     # ``add_middleware`` is the OUTERMOST handler. We add the request

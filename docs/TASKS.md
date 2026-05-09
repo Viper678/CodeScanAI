@@ -168,11 +168,11 @@ Each task has:
 - **AC:** kill redis → `/readyz` 503 within 5s; restart → 200 again.
 - **Depends on:** T0.1.
 
-### T5.4 — Logging & error tracking
-- **Goal:** structured JSON logs (request id, user id, scan id) across api + worker. Optional Sentry hook behind env flag (OTel deferred to a follow-up).
+### T5.4 — Logging
+- **Goal:** structured JSON logs (request id, user id, scan id) across api + worker. (Sentry / OTel error-tracker hooks intentionally deferred — add in a focused follow-up PR if/when operators actually plan to send data to a third-party tracker.)
 - **AC:** every request log has correlation id; worker logs include `scan_id` / `file_id`.
 - **Depends on:** T0.1.
-- **Notes:** Sentry shipped (`SENTRY_DSN` env, off by default; FastAPI + Starlette integrations on api, Celery integration on worker). OTel hook deferred to keep this PR focused — `OTEL_EXPORTER_OTLP_ENDPOINT` is reserved in `.env.example` so the eventual follow-up doesn't break ops scripts.
+- **Notes:** Structured JSON logs + correlation IDs + Google-API-key scrub at filter / formatter / interpolation layers shipped. `LOG_LEVEL` env-driven and enforced at both root-logger and handler levels.
 
 ### T5.5 — End-to-end test suite
 - **Goal:** Playwright tests covering the full happy path: register → upload sample repo → run scan → see findings → export.

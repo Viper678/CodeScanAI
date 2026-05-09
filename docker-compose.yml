@@ -40,7 +40,6 @@ services:
       MAX_LOOSE_FILE_SIZE_MB: ${MAX_LOOSE_FILE_SIZE_MB:-50}
       API_WORKERS: ${API_WORKERS:-2}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      SENTRY_DSN: ${SENTRY_DSN:-}
     command: >
       sh -c "uv run alembic upgrade head &&
              uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2}"
@@ -77,7 +76,6 @@ services:
       GEMMA_MODEL: ${GEMMA_MODEL:-gemma-4-31b-it}
       RETENTION_DAYS: ${RETENTION_DAYS:-}
       LOG_LEVEL: ${LOG_LEVEL:-info}
-      SENTRY_DSN: ${SENTRY_DSN:-}
     # ``--beat`` runs an embedded scheduler in the same process so the
     # daily retention sweep (T5.2) ticks without standing up a separate
     # ``celery beat`` service. Fine for v1 — split into a sidecar if we

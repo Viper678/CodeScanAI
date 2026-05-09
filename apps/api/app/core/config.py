@@ -103,19 +103,6 @@ class Settings(BaseSettings):
     # time rather than crashing — operators sometimes typo this in env files.
     log_level: str = "info"
 
-    # Optional Sentry hook. When set, ``app.main`` calls ``sentry_sdk.init`` in
-    # ``create_app()`` with the FastAPI + Starlette integrations. Off by
-    # default; PII / traces sample rates default to zero so we never ship
-    # request bodies to Sentry without the operator opting in.
-    sentry_dsn: SecretStr | None = None
-
-    @field_validator("sentry_dsn", mode="before")
-    @classmethod
-    def _coerce_sentry_dsn(cls, value: object) -> object:
-        if value in (None, "", "null"):
-            return None
-        return value
-
     @field_validator("jwt_secret")
     @classmethod
     def validate_jwt_secret(cls, value: SecretStr) -> SecretStr:

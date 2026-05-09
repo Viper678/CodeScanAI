@@ -62,17 +62,6 @@ class Settings(BaseSettings):
 
     # ---- Logging / observability (T5.4) ---------------------------------------
     log_level: str = "info"
-    # Optional Sentry hook. When set, ``worker.celery_app`` initializes the
-    # SDK with the Celery integration. Off by default — operators opt in by
-    # exporting ``SENTRY_DSN``.
-    sentry_dsn: SecretStr | None = None
-
-    @field_validator("sentry_dsn", mode="before")
-    @classmethod
-    def _coerce_sentry_dsn(cls, value: object) -> object:
-        if value in (None, "", "null"):
-            return None
-        return value
 
     # ---- Scans ----
     scan_concurrency: int = 4
