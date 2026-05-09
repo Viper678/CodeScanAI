@@ -5,9 +5,53 @@
 # images without live-reload mounts. The mock LLM transport is wired in via
 # ``LLM_MOCK_MODE=true`` on the worker — no outbound Gemma traffic.
 #
+# Why alt host ports (web 3010, api 8010): both stacks bind localhost on
+# default ports; running e2e on 3000/8000 either collides with a dev stack
+# running in the same checkout or — worse — silently hits it. The latter
+# happens if a dev runs ``make e2e`` while ``docker compose up -d`` is
+# already on 3000: Playwright connects to the dev stack with the real
+# Gemma key, the canned-finding assertions fail with non-deterministic
+# real-LLM output, and CI passes while local fails. Postgres / Redis don't
+# need port overrides — the base file doesn't expose them, and the e2e
+# overlay deliberately omits the dev override that does.
+#
 # Invocation (handled by ``make e2e-up``):
-#   docker compose -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
+#   docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
 services:
+  api:
+    environment:
+      # The browser fetches api from ``http://localhost:3010`` (web's
+      # alt port) so CORS must allow that exact origin.
+      #
+      # JSON-encoded list rather than the comma-separated form the
+      # ``split_cors_origins`` validator handles: pydantic-settings
+      # JSON-decodes ``list[str]`` env vars BEFORE validators run, so a
+      # plain string like ``http://localhost:3010`` raises
+      # ``SettingsError`` at api startup. The validator's intent is only
+      # honored if the field carries a ``NoDecode`` annotation (latent
+      # config bug, separate fix). JSON form sidesteps the parser.
+      CORS_ALLOW_ORIGINS: '["http://localhost:3010"]'
+    # ``!override`` replaces the base file's ``ports`` rather than
+    # merging with it (compose's default for sequence fields is append).
+    # Without this, the e2e container would bind ``3000:3000`` AND
+    # ``3010:3000`` simultaneously, defeating the isolation: a dev stack
+    # already on 3000 would block the e2e stack from starting.
+    ports: !override
+      - "8010:8000"
+
+  web:
+    environment:
+      # Client-side fetches use this URL — it's read at Next.js dev-server
+      # startup and inlined into bundles. The ``apps/web/Dockerfile`` runs
+      # ``pnpm dev``, so a runtime override here is honored (a ``pnpm
+      # build`` image would have inlined the value at build time and
+      # ignored runtime overrides).
+      NEXT_PUBLIC_API_BASE_URL: "http://localhost:8010/api/v1"
+    # See api ports comment — ``!override`` replaces 3000:3000 with the
+    # e2e-only 3010:3000 binding.
+    ports: !override
+      - "3010:3000"
+
   worker:
     environment:
       LLM_MOCK_MODE: "true"
@@ -16,8 +60,3 @@ services:
       # compose-file ``required`` syntax still demands a value — pass any
       # string so docker-compose stops complaining.
       GOOGLE_AI_API_KEY: "mock-not-used"
-
-  # No web service overrides — the base ``docker-compose.yml`` already runs
-  # ``pnpm dev`` in the image without host-volume mounts when the dev
-  # override (``docker-compose.override.yml``) is omitted from the ``-f``
-  # chain. That gives us a stable Next.js without the dev reload churn.
