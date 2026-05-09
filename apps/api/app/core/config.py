@@ -1,8 +1,9 @@
+import json
 from pathlib import Path
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import SecretStr, field_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
 def _env_file() -> Path | None:
@@ -72,7 +73,13 @@ class Settings(BaseSettings):
     # origins are not allowed. Defaults cover both the docker-compose web
     # (3000) and a local `pnpm dev` instance bumped to 3001 by Next when 3000
     # is busy. Override via CORS_ALLOW_ORIGINS env (comma-separated) for prod.
-    cors_allow_origins: list[str] = [
+    #
+    # ``NoDecode`` defers env parsing to the ``split_cors_origins`` validator
+    # below. Without it, pydantic-settings JSON-decodes ``list[str]`` env
+    # values BEFORE validators run, so a plain string like
+    # ``CORS_ALLOW_ORIGINS=https://app.example.com`` raises ``SettingsError``
+    # at startup — which contradicts the validator's documented intent.
+    cors_allow_origins: Annotated[list[str], NoDecode] = [
         "http://localhost:3000",
         "http://localhost:3001",
     ]
@@ -80,9 +87,25 @@ class Settings(BaseSettings):
     @field_validator("cors_allow_origins", mode="before")
     @classmethod
     def split_cors_origins(cls, value: object) -> object:
-        if isinstance(value, str):
-            return [item.strip() for item in value.split(",") if item.strip()]
-        return value
+        """Accept either a comma-separated string or a JSON-encoded list.
+
+        Comma form is the documented prod operator interface
+        (``CORS_ALLOW_ORIGINS=https://a,https://b``). JSON form
+        (``["https://a","https://b"]``) is also accepted because the
+        e2e compose overlay uses it; either works.
+        """
+        if not isinstance(value, str):
+            return value
+        stripped = value.strip()
+        if stripped.startswith("["):
+            try:
+                decoded = json.loads(stripped)
+            except json.JSONDecodeError:
+                pass
+            else:
+                if isinstance(decoded, list):
+                    return decoded
+        return [item.strip() for item in value.split(",") if item.strip()]
 
     # ---- Scans ----
     # Cap on file_ids per POST /scans payload. Sourced from docs/API.md §Scans.
