@@ -106,6 +106,26 @@ def test_scrub_filter_redacts_nested_extras() -> None:
     assert _FAKE_KEY not in nested[0]["value"]
 
 
+def test_formatter_redacts_api_key_in_extras_serialized_via_default_str() -> None:
+    """Codex final round (worker mirror): an ``extra={"obj": some_object}``
+    where the object's ``__str__`` contains the key would otherwise leak
+    through — the scrub filter only walks string-typed values, so the
+    object is added to ``payload`` as-is and ``json.dumps(..., default=str)``
+    stringifies it AFTER all scrubbing. The formatter applies the regex
+    to the final serialized JSON line as a hard backstop.
+    """
+
+    class _Carrier:
+        def __str__(self) -> str:
+            return f"err: key={_FAKE_KEY}"
+
+    record = _record(extra={"obj": _Carrier()})
+    ApiKeyScrubFilter().filter(record)
+    serialized = JsonFormatter().format(record)
+    assert _FAKE_KEY not in serialized, f"API key leaked through extras default=str: {serialized!r}"
+    assert "AIza<redacted>" in serialized
+
+
 def test_formatter_redacts_api_key_in_object_arg_after_interpolation() -> None:
     """Codex round-7 P1: an arg whose ``__str__`` contains the key bypasses
     the scrub filter (filter only walks string args). The key only

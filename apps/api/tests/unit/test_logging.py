@@ -156,6 +156,27 @@ def test_scrub_filter_leaves_non_string_args_alone() -> None:
     assert record.args == (200, 42)
 
 
+def test_formatter_redacts_api_key_in_extras_serialized_via_default_str() -> None:
+    """Codex final round: an ``extra={"obj": some_object}`` where the
+    object's ``__str__`` contains the key would otherwise leak through —
+    the scrub filter walks ``record.__dict__`` for strings/dicts/lists,
+    not arbitrary objects, so the object is added to ``payload`` as-is
+    and ``json.dumps(..., default=str)`` stringifies it AFTER all
+    scrubbing has run. The formatter applies the regex to the final
+    serialized JSON line as a hard backstop. Mirrors the worker fix.
+    """
+
+    class _Carrier:
+        def __str__(self) -> str:
+            return f"err: key={_FAKE_KEY}"
+
+    record = _record(extra={"obj": _Carrier()})
+    ApiKeyScrubFilter().filter(record)
+    serialized = JsonFormatter().format(record)
+    assert _FAKE_KEY not in serialized, f"API key leaked through extras default=str: {serialized!r}"
+    assert "AIza<redacted>" in serialized
+
+
 def test_formatter_redacts_api_key_in_object_arg_after_interpolation() -> None:
     """Codex round-7 P1: an arg whose ``__str__`` contains the key bypasses
     the scrub filter (filter only walks string args). The key only

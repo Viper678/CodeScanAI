@@ -166,7 +166,14 @@ class JsonFormatter(logging.Formatter):
         if record.stack_info:
             payload["stack"] = _API_KEY_PATTERN.sub(_REDACTED, self.formatStack(record.stack_info))
 
-        return json.dumps(payload, default=str, ensure_ascii=False)
+        # Final-line scrub. ``json.dumps(..., default=str)`` stringifies any
+        # non-JSON-serializable extras (Exception instances, Pydantic
+        # models, custom dataclasses) AFTER the scrub filter has already
+        # run — and the filter only walks string-typed values, so a
+        # non-string ``extra={"err": some_object}`` whose ``__str__``
+        # contains the key would slip through. One regex pass over the
+        # rendered line catches anything ``default=str`` produces.
+        return _API_KEY_PATTERN.sub(_REDACTED, json.dumps(payload, default=str, ensure_ascii=False))
 
 
 # ---- Scrub filter ----------------------------------------------------------
