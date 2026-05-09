@@ -306,6 +306,43 @@ def test_init_sentry_disables_logging_integration_event_capture(
     )
 
 
+def test_sentry_before_send_strips_frame_locals() -> None:
+    """Codex round-8 P1 (mirror of the api fix): even with
+    ``include_local_variables=False`` set on init, scrub frame ``vars``
+    in the before_send hook as defense-in-depth — a Gemma SDK error's
+    stack could otherwise expose ``api_key`` or scanner locals.
+    """
+
+    from worker.core.observability import _sentry_before_send
+
+    event = {
+        "exception": {
+            "values": [
+                {
+                    "type": "RuntimeError",
+                    "value": "gemma call failed",
+                    "stacktrace": {
+                        "frames": [
+                            {
+                                "function": "scan_file",
+                                "vars": {
+                                    "api_key": "should-not-ship",
+                                    "file_content": "import secrets\n…",
+                                },
+                            },
+                        ]
+                    },
+                }
+            ]
+        },
+    }
+
+    cleaned = _sentry_before_send(event, {})
+    frame = cleaned["exception"]["values"][0]["stacktrace"]["frames"][0]
+    assert "vars" not in frame
+    assert frame["function"] == "scan_file"
+
+
 def test_sentry_before_send_redacts_api_key_in_exception_value() -> None:
     """Codex round-4: Sentry's CeleryIntegration captures exceptions via
     ``event_from_exception`` — bypassing our log-side scrub. The

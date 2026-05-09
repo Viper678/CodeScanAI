@@ -52,14 +52,34 @@ def _scrub_sentry_value(value: Any) -> Any:
 
 
 def _sentry_before_send(event: Any, _hint: dict[str, Any]) -> Any:
-    """``sentry_sdk`` ``before_send`` hook — last-line scrub for API keys.
+    """``sentry_sdk`` ``before_send`` hook — last-line PII / API-key scrub.
 
     Typed as ``Any`` to match ``sentry_sdk``'s typed ``Event`` TypedDict
     without importing it at module scope (the SDK is an optional dep).
     Returning the event passes it through to Sentry; returning ``None``
     drops it. We always return a (possibly-mutated) event so legitimate
     error tracking still works.
+
+    Defensive strip mirrors the api-side hook: even though
+    ``include_local_variables=False`` and ``max_request_body_size='never'``
+    are set on init, we re-apply the invariant here in case a future SDK
+    version flips a default.
     """
+
+    if isinstance(event, dict):
+        request = event.get("request")
+        if isinstance(request, dict):
+            request.pop("data", None)
+        exception = event.get("exception")
+        if isinstance(exception, dict):
+            for value in exception.get("values", []):
+                if not isinstance(value, dict):
+                    continue
+                stacktrace = value.get("stacktrace")
+                if isinstance(stacktrace, dict):
+                    for frame in stacktrace.get("frames", []):
+                        if isinstance(frame, dict):
+                            frame.pop("vars", None)
 
     return _scrub_sentry_value(event)
 
@@ -199,6 +219,13 @@ def init_sentry_if_configured() -> None:
         ],
         traces_sample_rate=0.0,
         send_default_pii=False,
+        # Mirror of the api-side hardening — locals on stack frames could
+        # leak ``GOOGLE_AI_API_KEY`` (in scope where the SDK is invoked)
+        # or file content captured into a scanner local before the
+        # Gemma call raised. Worker has no HTTP request body, but
+        # disable for symmetry / future-proofing if we ever add HTTP.
+        max_request_body_size="never",
+        include_local_variables=False,
         # Last-line API-key scrub: the Celery integration captures exceptions
         # via ``event_from_exception`` directly, so a Gemma SDK error whose
         # message includes ``AIza…`` would otherwise ship to Sentry verbatim.

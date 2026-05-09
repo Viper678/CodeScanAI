@@ -60,11 +60,40 @@ def _scrub_sentry_value(value: Any) -> Any:
 
 
 def _sentry_before_send(event: Any, _hint: dict[str, Any]) -> Any:
-    """``sentry_sdk`` ``before_send`` hook — last-line scrub for API keys.
+    """``sentry_sdk`` ``before_send`` hook — last-line scrub for API keys
+    AND a hard strip of request bodies / stack-frame locals.
+
+    The init flags ``max_request_body_size='never'`` and
+    ``include_local_variables=False`` are the primary defenses against
+    PII leakage (passwords on ``/auth/register``, session tokens in
+    ``Authorization`` headers, etc). This hook re-applies the same
+    invariant defensively in case a future SDK version flips a default
+    or an integration we haven't audited adds new fields.
 
     Typed as ``Any`` to match ``sentry_sdk``'s typed ``Event`` TypedDict
     without importing it at module scope (the SDK is an optional dep).
     """
+
+    if isinstance(event, dict):
+        request = event.get("request")
+        if isinstance(request, dict):
+            # Strip the request body; preserve method/url/headers (those
+            # are scrubbed by ``send_default_pii=False`` for sensitive
+            # ones like cookies and Authorization).
+            request.pop("data", None)
+        # Strip ``vars`` from every stack frame in every exception value
+        # — local variables can carry passwords, tokens, anything the
+        # function had in scope at the point of failure.
+        exception = event.get("exception")
+        if isinstance(exception, dict):
+            for value in exception.get("values", []):
+                if not isinstance(value, dict):
+                    continue
+                stacktrace = value.get("stacktrace")
+                if isinstance(stacktrace, dict):
+                    for frame in stacktrace.get("frames", []):
+                        if isinstance(frame, dict):
+                            frame.pop("vars", None)
 
     return _scrub_sentry_value(event)
 
@@ -103,7 +132,20 @@ def _init_sentry_if_configured() -> None:
         ],
         traces_sample_rate=0.0,
         send_default_pii=False,
-        # Last-line API-key scrub — see ``_sentry_before_send`` rationale.
+        # PII-by-default that ``send_default_pii=False`` does NOT cover:
+        # - HTTP request bodies (default ``max_request_body_size='medium'``,
+        #   ~10KB). A 500 during ``/auth/register`` would otherwise ship
+        #   the user's email + password to Sentry. Hard-disable.
+        # - Local variables in stack frames (default ``include_local_variables
+        #   =True``). On any exception, every frame's locals get serialized
+        #   into the event — ``password``, JWTs, refresh tokens, file
+        #   contents, anything in scope. Hard-disable.
+        # ``_sentry_before_send`` re-applies the same invariants
+        # defensively in case a future SDK version flips a default.
+        max_request_body_size="never",
+        include_local_variables=False,
+        # Last-line API-key + request-body + stack-frame-vars scrub —
+        # see ``_sentry_before_send`` rationale.
         before_send=_sentry_before_send,
     )
     logger.info("sentry initialized for api")

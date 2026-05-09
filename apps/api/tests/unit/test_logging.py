@@ -296,6 +296,61 @@ def test_configure_logging_sets_handler_level_so_propagated_records_are_filtered
     assert "SHOULD be emitted" in output, f"ERROR record was filtered too aggressively: {output!r}"
 
 
+def test_sentry_before_send_strips_request_body_and_frame_locals() -> None:
+    """Codex round-8 P1: Sentry's default ``max_request_body_size='medium'``
+    captures up to ~10KB of request body, and ``include_local_variables=
+    True`` captures stack-frame ``vars``. Either path can leak passwords,
+    JWTs, refresh tokens, file contents on a 500.
+
+    Init-time we hard-disable both, but ``before_send`` strips them as
+    defense-in-depth in case a future SDK version flips a default.
+    """
+
+    from app.main import _sentry_before_send
+
+    event = {
+        "request": {
+            "method": "POST",
+            "url": "/api/v1/auth/register",
+            "data": {
+                "email": "victim@example.com",
+                "password": "should-never-leave-the-process",
+            },
+        },
+        "exception": {
+            "values": [
+                {
+                    "type": "RuntimeError",
+                    "value": "boom",
+                    "stacktrace": {
+                        "frames": [
+                            {
+                                "function": "register",
+                                "vars": {
+                                    "password": "p4ssw0rd",
+                                    "jwt": "eyJhbGciOi...secret",
+                                },
+                            },
+                        ]
+                    },
+                }
+            ]
+        },
+    }
+
+    cleaned = _sentry_before_send(event, {})
+
+    assert (
+        "data" not in cleaned["request"]
+    ), f"request body survived before_send strip: {cleaned['request']!r}"
+    frame = cleaned["exception"]["values"][0]["stacktrace"]["frames"][0]
+    assert "vars" not in frame, f"frame locals survived strip: {frame!r}"
+    # Non-PII fields are preserved.
+    assert cleaned["request"]["method"] == "POST"
+    assert cleaned["request"]["url"] == "/api/v1/auth/register"
+    assert frame["function"] == "register"
+
+
 def test_sentry_before_send_redacts_api_key_in_event_payload() -> None:
     """Codex round-4 P1: Sentry's integrations capture exceptions via
     ``event_from_exception`` directly, bypassing our log filter. The
