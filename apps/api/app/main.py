@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from typing import Any, cast
@@ -30,6 +31,44 @@ configure_logging(level=settings.log_level)
 logger = logging.getLogger(__name__)
 
 
+_SENTRY_API_KEY_PATTERN = re.compile(r"AIza[A-Za-z0-9_-]{35}")
+_SENTRY_REDACTED = "AIza<redacted>"
+
+
+def _scrub_sentry_value(value: Any) -> Any:
+    """Recursive scrub for Sentry event payloads.
+
+    Sentry captures exceptions directly via ``event_from_exception`` —
+    bypassing :class:`app.core.logging.ApiKeyScrubFilter`. The api
+    doesn't hold ``GOOGLE_AI_API_KEY`` directly, but a worker-side error
+    surfaced through the api (e.g. a ``QueueUnavailable`` whose chained
+    cause carries the key) could still ship through this process's
+    Sentry hook. Defense in depth: redact ``AIza…`` shapes here too,
+    matching the worker's ``observability._sentry_before_send`` so the
+    two surfaces stay consistent.
+    """
+
+    if isinstance(value, str):
+        return _SENTRY_API_KEY_PATTERN.sub(_SENTRY_REDACTED, value)
+    if isinstance(value, dict):
+        return {k: _scrub_sentry_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_sentry_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_scrub_sentry_value(item) for item in value)
+    return value
+
+
+def _sentry_before_send(event: Any, _hint: dict[str, Any]) -> Any:
+    """``sentry_sdk`` ``before_send`` hook — last-line scrub for API keys.
+
+    Typed as ``Any`` to match ``sentry_sdk``'s typed ``Event`` TypedDict
+    without importing it at module scope (the SDK is an optional dep).
+    """
+
+    return _scrub_sentry_value(event)
+
+
 def _init_sentry_if_configured() -> None:
     """Initialize Sentry when ``SENTRY_DSN`` is set; no-op otherwise.
 
@@ -50,6 +89,8 @@ def _init_sentry_if_configured() -> None:
         integrations=[FastApiIntegration(), StarletteIntegration()],
         traces_sample_rate=0.0,
         send_default_pii=False,
+        # Last-line API-key scrub — see ``_sentry_before_send`` rationale.
+        before_send=_sentry_before_send,
     )
     logger.info("sentry initialized for api")
 

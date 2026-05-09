@@ -9,7 +9,8 @@ need to run when ``worker.celery_app`` is imported.
 from __future__ import annotations
 
 import logging
-from typing import Any
+import re
+from typing import Any, Final
 
 from celery.signals import task_failure, task_postrun, task_prerun
 
@@ -20,6 +21,48 @@ from worker.core.logging import (
     task_id_var,
     upload_id_var,
 )
+
+# Mirror of the regex in ``worker.core.logging`` — kept as a local copy here
+# rather than imported because the Sentry ``before_send`` path runs OUTSIDE
+# Python's logging system (so depending on log-internal symbols would invite
+# an import cycle). Same shape: ``AIza`` followed by 35 chars of [A-Za-z0-9_-].
+_SENTRY_API_KEY_PATTERN: Final = re.compile(r"AIza[A-Za-z0-9_-]{35}")
+_SENTRY_REDACTED: Final = "AIza<redacted>"
+
+
+def _scrub_sentry_value(value: Any) -> Any:
+    """Recursive scrub for Sentry event payloads.
+
+    Sentry's ``CeleryIntegration`` captures task failures via
+    ``event_from_exception(exc_info, …)`` — the exception value, args, and
+    chained traceback strings land in the event dict directly, bypassing
+    our log scrub. Redact any ``AIza…`` shape we encounter so the worker
+    never ships the Google API key to Sentry's ingest.
+    """
+
+    if isinstance(value, str):
+        return _SENTRY_API_KEY_PATTERN.sub(_SENTRY_REDACTED, value)
+    if isinstance(value, dict):
+        return {k: _scrub_sentry_value(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_scrub_sentry_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_scrub_sentry_value(item) for item in value)
+    return value
+
+
+def _sentry_before_send(event: Any, _hint: dict[str, Any]) -> Any:
+    """``sentry_sdk`` ``before_send`` hook — last-line scrub for API keys.
+
+    Typed as ``Any`` to match ``sentry_sdk``'s typed ``Event`` TypedDict
+    without importing it at module scope (the SDK is an optional dep).
+    Returning the event passes it through to Sentry; returning ``None``
+    drops it. We always return a (possibly-mutated) event so legitimate
+    error tracking still works.
+    """
+
+    return _scrub_sentry_value(event)
+
 
 logger = logging.getLogger(__name__)
 
@@ -129,5 +172,9 @@ def init_sentry_if_configured() -> None:
         integrations=[CeleryIntegration()],
         traces_sample_rate=0.0,
         send_default_pii=False,
+        # Last-line API-key scrub: the Celery integration captures exceptions
+        # via ``event_from_exception`` directly, so a Gemma SDK error whose
+        # message includes ``AIza…`` would otherwise ship to Sentry verbatim.
+        before_send=_sentry_before_send,
     )
     logger.info("sentry initialized for worker")

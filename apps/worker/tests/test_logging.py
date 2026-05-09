@@ -222,6 +222,48 @@ def test_init_sentry_skipped_when_dsn_unset(monkeypatch: Any) -> None:
     fake_sdk.init.assert_not_called()
 
 
+# ---- Sentry before_send scrub (Codex round-4 P1) ----------------------------
+
+
+def test_sentry_before_send_redacts_api_key_in_exception_value() -> None:
+    """Codex round-4: Sentry's CeleryIntegration captures exceptions via
+    ``event_from_exception`` — bypassing our log-side scrub. The
+    ``before_send`` hook is the last line of defense for ``AIza…`` shapes
+    in the event payload (exception messages, breadcrumbs, log entries).
+    """
+
+    from worker.core.observability import _sentry_before_send
+
+    leaky = "AIza" + "z" * 35
+    event: dict[str, Any] = {
+        "exception": {
+            "values": [
+                {
+                    "type": "RuntimeError",
+                    "value": f"Gemma call failed for {leaky}",
+                    "stacktrace": {"frames": [{"vars": {"url": f"https://api/?key={leaky}"}}]},
+                }
+            ]
+        },
+        "breadcrumbs": {
+            "values": [{"message": f"sent request with {leaky}"}],
+        },
+        "extra": {"context": [f"context line with {leaky}", "ok"]},
+    }
+
+    cleaned = _sentry_before_send(event, {})
+
+    serialized = json.dumps(cleaned)
+    assert leaky not in serialized, f"API key survived sentry before_send scrub: {serialized!r}"
+    # All four sites should be redacted.
+    assert cleaned["exception"]["values"][0]["value"].startswith("Gemma call failed")
+    assert "AIza<redacted>" in cleaned["exception"]["values"][0]["value"]
+    assert "AIza<redacted>" in cleaned["breadcrumbs"]["values"][0]["message"]
+    assert "AIza<redacted>" in cleaned["extra"]["context"][0]
+    # Non-string siblings stay intact.
+    assert cleaned["extra"]["context"][1] == "ok"
+
+
 # ---- Celery root-logger hijack (Codex P1) -----------------------------------
 
 

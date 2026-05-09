@@ -275,6 +275,36 @@ def test_configure_logging_sets_handler_level_so_propagated_records_are_filtered
     assert "SHOULD be emitted" in output, f"ERROR record was filtered too aggressively: {output!r}"
 
 
+def test_sentry_before_send_redacts_api_key_in_event_payload() -> None:
+    """Codex round-4 P1: Sentry's integrations capture exceptions via
+    ``event_from_exception`` directly, bypassing our log filter. The
+    ``before_send`` hook is the last-line defense — this test pins down
+    that any ``AIza…`` shape in the event dict (exception value, breadcrumb,
+    extras) is redacted before leaving the process.
+    """
+
+    from app.main import _sentry_before_send
+
+    leaky = "AIza" + "x" * 35
+    event = {
+        "exception": {
+            "values": [{"type": "RuntimeError", "value": f"upstream failed for {leaky}"}]
+        },
+        "breadcrumbs": {
+            "values": [{"message": f"trace: {leaky}"}],
+        },
+        "extra": {"key_in_string": leaky},
+    }
+
+    cleaned = _sentry_before_send(event, {})
+
+    serialized = json.dumps(cleaned)
+    assert leaky not in serialized, f"API key survived before_send scrub: {serialized!r}"
+    assert "AIza<redacted>" in cleaned["exception"]["values"][0]["value"]
+    assert "AIza<redacted>" in cleaned["breadcrumbs"]["values"][0]["message"]
+    assert cleaned["extra"]["key_in_string"] == "AIza<redacted>"
+
+
 def test_configure_logging_routes_uvicorn_error_through_root() -> None:
     """Codex P2b: Uvicorn configures ``uvicorn.error`` with its own
     handler + ``propagate=False`` BEFORE ``app.main`` is imported, which
