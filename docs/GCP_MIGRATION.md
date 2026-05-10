@@ -12,7 +12,7 @@ Plan for taking the current docker-compose-only codebase to the approved GCP sha
 |---|---|---|
 | Compute (apps) | GKE Standard, regional, private; node pool `n2-standard-4 × 3` | api / worker / web |
 | Compute (LLM) | GPU node pool, `g2-standard-48` (4× L4) | self-hosted Gemma on vLLM, tensor-parallel = 4 |
-| Cache / queue | Memorystore for Redis | Celery broker + result + rate-limit |
+| Cache / queue | Memorystore for Redis (legacy / non-cluster), Standard Tier, 5 GB | Celery broker + result + rate-limit (per D1) |
 | Database | Cloud SQL for Postgres 16 | private IP via VPC |
 | Object storage | GCS | uploads, extracts, pg_dump backups |
 | Secrets | Secret Manager | JWT, DB password, vLLM auth token if any |
@@ -41,42 +41,37 @@ Cost ceiling per the calculator (2026-05-08, Mumbai/asia-south1, INR): **₹3.85
 
 ---
 
-## Open decisions (resolve before starting Phase A)
+## Resolved decisions
 
-These block scoping for the items they tag.
+Settled 2026-05-10. Phase A scoping below reflects these choices.
 
-### D1 — Memorystore product
-**Pick:** "Memorystore for Redis" (legacy / non-cluster) **or** "Memorystore for Redis Cluster"?
+### D1 — Memorystore product → **Legacy Memorystore for Redis, Standard Tier, 5 GB**
 
-The cost calculator shows the Cluster product. Legacy supports DB 0-15 natively; Cluster supports DB 0 only and constrains Celery's broker (BLPOP across queues needs same hash slot — a real Celery + cluster gotcha).
+Why not Cluster: the cost calc's Cluster line was 1 shard, which is "cluster mode protocol on a single primary+replica" — all the Celery + Redis-Cluster complexity (hash-tag forcing, `BLPOP` slot constraints, Kombu edge cases) without the multi-shard payoff. Legacy Standard Tier behaves identically to local docker-compose redis: DB 0-15, plain Celery, no protocol gymnastics.
 
-**Recommendation:** legacy Memorystore for Redis. Same Standard-Small footprint (~₹20.5K/mo line item), eliminates the cluster-mode work in M3.
+Sizing: 5 GB is comfortable headroom for rate-limit + Celery broker + result backend at our DAU range; we genuinely use <1 GB in practice. Approximate Mumbai price ~₹16K/mo for 5 GB Standard Tier (vs the calc's ~₹20.5K/mo for 6.5 GB Cluster). Switching to Cluster later (if we ever outgrow one shard) is a future migration with hash-tag prep work.
 
-→ Affects scope of **M3**.
+### D2 — Storage backend → **Native GCS SDK + `STORAGE_BACKEND=local|gcs` feature flag**
 
-### D2 — Storage backend strategy
-**Pick:** Native GCS SDK (Path B) **or** GCS Fuse CSI driver (Path A)?
+Native `google-cloud-storage` Python SDK wrapped behind a `Storage` interface. `LocalStorage` impl preserves docker-compose behavior; `GcsStorage` impl handles the prod path. Feature flag means dev/CI keep working without GCS, and the cutover is a single env-var flip.
 
-Fuse keeps existing `Path` code mostly intact but every file open is an HTTP roundtrip — a 200-file scan would feel terrible. Native SDK is more code but better runtime.
+Rejected GCS Fuse CSI: every file open is an HTTP roundtrip; a 200-file scan would feel awful.
 
-**Recommendation:** native SDK with a `STORAGE_BACKEND=local|gcs` feature flag so local dev keeps working without GCS.
+### D3 — vLLM model / quantization → **Full-precision Gemma 4 31B on 4× L4 with tensor-parallel = 4**
 
-→ Affects scope of **M2**.
+Approved infra choice. AWQ/int8 quantization (would fit 2× L4 and ~halve the GPU line item) is filed under "Out of scope" — revisit only if cost-pressured later.
 
-### D3 — vLLM image / quantization
-Gemma 4 31B fits 2× L4 with int8/AWQ; the approved 4× L4 has plenty of headroom for full-precision. Decide once based on cost vs latency target.
+### D4 — Production domain handling → **Same-origin rewrites in Next.js (one image, env-driven proxy)**
 
-→ Doesn't block code; affects only the GKE manifest for the vLLM Deployment.
+The web image always asks for `/api/...` on its own origin. `next.config.js` rewrites proxy that to `${INTERNAL_API_URL}` server-side at request time — runtime env var, not bake-time. Result: **one web image works in any environment** (UAT, prod, future staging) — only the Helm value differs. No `--build-arg NEXT_PUBLIC_API_BASE_URL` per-env builds.
 
-### D4 — Production domain
-Need the prod domain to bake `NEXT_PUBLIC_API_BASE_URL` at web image build time, set `CORS_ALLOW_ORIGINS`, and configure the Google-managed cert.
+Implementation lives in **M7**. The actual prod URL is still TBD until hosting is set up; doesn't block code work.
 
-→ Blocks **M7** and **M8** end-to-end test.
+Rejected Option A (per-env web image builds): three Dockerfiles' worth of complexity to maintain three near-identical images.
 
-### D5 — Workload Identity vs static service-account keys
-Recommend Workload Identity (no key files, IAM-bound to the k8s SA). Affects how api/worker authenticate to Cloud SQL, GCS, Secret Manager.
+### D5 — Workload Identity vs service-account keys → **TBD; infra owner's call at Phase B time**
 
-→ Affects **B2**, **B3**, **B5**.
+Either choice is zero app-code impact (Google SDKs auto-detect the credential mechanism), so deferred. Recommendation when the time comes: Workload Identity (short-lived tokens, no JSON keys to leak/rotate, default for new GKE clusters). But this gets decided alongside B2/B3/B5 wiring, not now.
 
 ---
 
@@ -112,15 +107,16 @@ Roughly 5-7 days of focused work, parallelizable in places.
 - **Touches:** `apps/api/app/services/upload_service.py`, `apps/api/app/routers/{uploads.py, files.py}`, `apps/worker/worker/files/safety.py`, `apps/worker/worker/tasks/{prepare_upload.py, run_scan.py, cleanup.py}`, new `apps/{api,worker}/{app,worker}/storage/`.
 - **Depends on:** D2.
 
-### M3 — Redis: 3 DBs → 1 DB on a single Memorystore
-- **Goal:** All Redis usage (rate limit, Celery broker, Celery result) coexists on DB 0 of a single Memorystore instance.
-- **AC (assumes D1 = legacy Memorystore):**
-  - `redis_url`, `celery_broker_url`, `celery_result_backend` all default to `redis://...:6379/0`; key prefixes via Celery `broker_transport_options.global_keyprefix` and `result_backend_transport_options.global_keyprefix`.
-  - Rate-limit prefix already supported via `rate_limit_key_namespace` (T5.1).
-  - Smoke test: rate limit + Celery task enqueue + result retrieval all hit the same Redis without key collision.
-- **AC (if D1 = Cluster):** add hash-tag to queue names (`{celery}.default`) so all broker keys land in one slot; verify with `redis-cli --cluster check`.
+### M3 — Redis: rate-limit + Celery broker + result coexist on one Memorystore
+- **Goal:** All Redis usage (rate limit, Celery broker, Celery result) safely shares a single legacy Memorystore for Redis instance via key prefixes — no DB segregation needed since legacy supports DB 0-15 but key-prefixing is cleaner anyway.
+- **AC:**
+  - `redis_url`, `celery_broker_url`, `celery_result_backend` all default to `redis://…:6379/0`.
+  - Celery `broker_transport_options={"global_keyprefix": "celery-broker:"}` and `result_backend_transport_options={"global_keyprefix": "celery-result:"}` so broker / result keys never collide with rate-limit keys.
+  - Rate-limit namespace already supported via `rate_limit_key_namespace` (T5.1) — set per-env if multi-tenant ever matters.
+  - Local docker-compose still works against single redis (it already runs 3 DBs but moving to /0 + prefixes is harmless).
+  - Smoke test: rate limit + Celery task enqueue + result retrieval against one redis instance, verify no key collisions via `redis-cli KEYS "*"`.
 - **Touches:** `apps/api/app/core/config.py`, `apps/worker/worker/{core/config.py, celery_app.py}`, `.env.example`.
-- **Depends on:** D1.
+- **Depends on:** none (D1 resolved).
 
 ### M4 — Cloud SQL connection
 - **Goal:** Api connects to Cloud SQL via private IP from inside the GKE VPC.
@@ -150,15 +146,17 @@ Roughly 5-7 days of focused work, parallelizable in places.
 - **Touches:** `apps/worker/Dockerfile` (split CMD), deploy manifests, `apps/worker/pyproject.toml` if redbeat.
 - **Depends on:** none.
 
-### M7 — Web: prod build (`pnpm build && pnpm start`)
-- **Goal:** Web image runs Next.js standalone build, not `pnpm dev`.
+### M7 — Web: prod build + same-origin API rewrites (one image, runtime-configurable)
+- **Goal:** Web image runs Next.js standalone build (not `pnpm dev`) and proxies API calls to a runtime-configurable backend so a single image deploys identically to UAT / prod / future staging.
 - **AC:**
-  - `apps/web/Dockerfile` switches CMD to `pnpm build` at build time + `pnpm start` (or Next.js standalone output) at run time.
-  - Multi-stage build: builder stage runs `pnpm build` with `NEXT_PUBLIC_API_BASE_URL` passed as `--build-arg`, final stage is the slim runtime.
+  - `apps/web/Dockerfile` becomes multi-stage: builder runs `pnpm build`, final stage runs `pnpm start` (or the Next.js standalone output server).
+  - `next.config.js` adds `rewrites()` mapping `/api/:path*` → `${INTERNAL_API_URL}/:path*`. `INTERNAL_API_URL` is read at runtime (server-side), so changing the env doesn't require a rebuild.
+  - Web client code uses relative `/api/...` URLs (already does in most places — verify `apps/web/lib/api/client.ts`); drop reliance on `NEXT_PUBLIC_API_BASE_URL`.
   - Healthcheck still works (Next.js prod server responds on `/`).
-  - Local `docker compose up` still works (dev override keeps `pnpm dev`).
-- **Touches:** `apps/web/Dockerfile`, `docker-compose.override.yml`, deploy manifests with `--build-arg`.
-- **Depends on:** D4.
+  - Local `docker compose up` still works (dev override keeps `pnpm dev`; `INTERNAL_API_URL` defaults to `http://api:8000` in the compose env).
+  - Single image promoted UAT → prod with no rebuild — only the Helm value of `INTERNAL_API_URL` differs.
+- **Touches:** `apps/web/Dockerfile`, `apps/web/next.config.js`, `apps/web/lib/api/client.ts` (drop `NEXT_PUBLIC_API_BASE_URL` references), `docker-compose.{yml,override.yml}`, deploy manifests.
+- **Depends on:** none (D4 resolved — runtime rewrites approach unblocks immediately).
 
 ### M8 — Prod cookie + CORS config
 - **Goal:** Cookies + CORS configured for the actual prod domain over HTTPS.
@@ -167,9 +165,10 @@ Roughly 5-7 days of focused work, parallelizable in places.
   - `COOKIE_SAMESITE=lax`.
   - `COOKIE_DOMAIN=<prod-domain>`.
   - `CORS_ALLOW_ORIGINS=https://<prod-domain>` (comma-separated supported per PR #58).
+  - With M7's same-origin rewrites, the browser's API calls are same-origin so CORS may even be unnecessary for the web → api path; still keep `CORS_ALLOW_ORIGINS` set for defense-in-depth + any direct api consumers (Postman, scripts).
   - HTTPS LB sets `X-Forwarded-Proto: https`; api trusts it (verify via integration test — currently we don't enforce this via TrustedHost middleware — see "Out of scope" below).
 - **Touches:** Helm values / k8s ConfigMap. **No code changes.**
-- **Depends on:** D4.
+- **Depends on:** prod URL value (still TBD — doesn't block code work, only the actual deploy).
 
 ### M9 — Secret Manager integration
 - **Goal:** `JWT_SECRET`, DB password, any LLM auth token come from Secret Manager.
@@ -242,10 +241,10 @@ These don't change the codebase but must happen for a green deploy.
 
 ## Sequencing notes
 
-- **Resolve D1, D2, D3, D4, D5 first.** They scope the rest.
+- **D1-D4 resolved (2026-05-10);** D5 is infra-owner's call at Phase B time and doesn't block code. All Phase A work is unblocked.
 - **M1 (vLLM swap) is the smallest standalone PR** and is gated behind `LLM_MOCK_MODE` for tests — good first move to de-risk the LLM path.
 - **M2 (GCS) is the biggest** — split into multiple PRs if needed (storage abstraction first, then per-call site migration behind the flag).
-- **M3 / M4 / M8 / M9 are env-/config-only** once D1 is settled — fast.
+- **M3 / M4 / M8 / M9 are env-/config-only** — fast.
 - **M5 / M6 / M7 are independent** — can be done in any order, parallel with M1/M2.
-- **Phase B can start in parallel with Phase A** as long as the infra owner has the design.
+- **Phase A code work is fully decoupled from Phase B infra** — develop and merge M1-M9 against current docker-compose. K8s + Phase B happens last, alongside the final deploy.
 - **C1 (staging deploy + e2e) is the integration gate.** Don't cut over until staging passes the e2e suite end-to-end with the real vLLM (not the mock).
