@@ -30,8 +30,8 @@ def _setup_logging(**_kwargs: Any) -> None:
 configure_logging(level=settings.log_level)
 register_signal_handlers()
 
-DEFAULT_BROKER_URL: Final = "redis://redis:6379/1"
-DEFAULT_RESULT_BACKEND: Final = "redis://redis:6379/2"
+DEFAULT_BROKER_URL: Final = "redis://redis:6379/0"
+DEFAULT_RESULT_BACKEND: Final = "redis://redis:6379/0"
 
 celery_app = Celery(
     "worker",
@@ -50,6 +50,17 @@ celery_app.conf.update(
     task_serializer="json",
     result_serializer="json",
     accept_content=["json"],
+    # M3: the Celery broker, the Celery result backend, and the api's rate
+    # limiter all share one Redis db (db 0) post-migration — the prod target
+    # is a single legacy Memorystore for Redis (Standard Tier, 5 GB, see
+    # docs/GCP_MIGRATION.md §D1). ``global_keyprefix`` scopes every broker /
+    # result key under ``celery-broker:`` / ``celery-result:`` so they can
+    # never collide with rate-limit keys (which live under ``rl:``). We do
+    # this via key prefix rather than db number because Memorystore Standard
+    # Tier doesn't expose multiple databases the way local redis does, and
+    # prefixes also keep the local docker-compose setup uniform with prod.
+    broker_transport_options={"global_keyprefix": "celery-broker:"},
+    result_backend_transport_options={"global_keyprefix": "celery-result:"},
     timezone="UTC",
     # T5.4: keep our JSON formatter + scrub filter on the root logger.
     # Celery's default ``worker_hijack_root_logger=True`` would replace

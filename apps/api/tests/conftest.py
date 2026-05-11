@@ -26,8 +26,9 @@ from app.core.db import get_session
 from app.main import app
 from app.models.user import User
 
-# A Redis db that's never used by the dev API (0) or Celery (1/2). The
-# rate-limit fixtures mount this on ``app.state.redis``.
+# A Redis db that's never used by the dev API or Celery (which all share db 0
+# post-M3 — see docs/GCP_MIGRATION.md). The rate-limit fixtures mount this on
+# ``app.state.redis`` so concurrent host-run tests don't fight a live dev stack.
 TEST_REDIS_URL = "redis://localhost:6379/15"
 
 API_ROOT = Path(__file__).resolve().parents[1]
