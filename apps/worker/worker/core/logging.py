@@ -127,7 +127,7 @@ class JsonFormatter(logging.Formatter):
         # filter "ran". Applying the regex to the final rendered string
         # is the only way to catch interpolation-time leaks. Same fix in
         # the api copy at ``apps/api/app/core/logging.py``.
-        rendered_message = _API_KEY_PATTERN.sub(_REDACTED, record.getMessage())
+        rendered_message = _scrub_string(record.getMessage())
 
         payload: dict[str, Any] = {
             "timestamp": datetime.fromtimestamp(record.created, tz=UTC).isoformat(
@@ -146,14 +146,14 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             # ``formatException`` walks ``exc_info`` directly; the scrub
             # filter only mutates ``record.msg`` / ``record.args`` /
-            # extras. The worker holds ``GOOGLE_AI_API_KEY`` so a Gemma
+            # extras. The worker may hold ``LLM_API_KEY`` so a vLLM
             # SDK exception whose message includes the key (e.g. a
             # request-URL-with-querystring trace) would otherwise leak
             # the key into the serialized traceback. Re-apply the scrub
             # to ``formatException``'s output as a hard backstop.
-            payload["exc"] = _API_KEY_PATTERN.sub(_REDACTED, self.formatException(record.exc_info))
+            payload["exc"] = _scrub_string(self.formatException(record.exc_info))
         if record.stack_info:
-            payload["stack"] = _API_KEY_PATTERN.sub(_REDACTED, self.formatStack(record.stack_info))
+            payload["stack"] = _scrub_string(self.formatStack(record.stack_info))
 
         # Final-line scrub. ``json.dumps(..., default=str)`` stringifies any
         # non-JSON-serializable extras (Exception instances, Pydantic
@@ -162,18 +162,36 @@ class JsonFormatter(logging.Formatter):
         # non-string ``extra={"err": some_object}`` whose ``__str__``
         # contains the key would slip through. One regex pass over the
         # rendered line catches anything ``default=str`` produces.
-        return _API_KEY_PATTERN.sub(_REDACTED, json.dumps(payload, default=str, ensure_ascii=False))
+        return _scrub_string(json.dumps(payload, default=str, ensure_ascii=False))
 
 
 # ---- Scrub filter ----------------------------------------------------------
 
-_API_KEY_PATTERN: Final = re.compile(r"AIza[A-Za-z0-9_-]{35}")
+# Base patterns applied at every scrub site. The legacy Google Gemini key
+# shape (``AIza…``) is retained for defense-in-depth even after the M1 swap
+# to vLLM; ``LLM_API_KEY``'s value is registered on top by ``configure_logging``
+# when set. Mutable so the configure step can reset to base on every call
+# and append the operator's vLLM bearer token afresh — no stale patterns
+# survive a re-configure (tests rely on this).
+_BASE_SCRUB_PATTERNS: Final[tuple[re.Pattern[str], ...]] = (re.compile(r"AIza[A-Za-z0-9_-]{35}"),)
+_SCRUB_PATTERNS: list[re.Pattern[str]] = list(_BASE_SCRUB_PATTERNS)
+# Length floor for an operator-configured secret to be registered as a scrub
+# pattern. Below 8 chars, ``re.escape(token)`` risks matching unrelated
+# substrings in legitimate log output.
+_MIN_SCRUB_TOKEN_LENGTH: Final = 8
 _REDACTED: Final = "AIza<redacted>"
+
+
+def _scrub_string(s: str) -> str:
+    """Apply every registered scrub pattern to ``s``."""
+    for pattern in _SCRUB_PATTERNS:
+        s = pattern.sub(_REDACTED, s)
+    return s
 
 
 def _scrub(value: Any) -> Any:
     if isinstance(value, str):
-        return _API_KEY_PATTERN.sub(_REDACTED, value)
+        return _scrub_string(value)
     if isinstance(value, tuple):
         return tuple(_scrub(item) for item in value)
     if isinstance(value, list):
@@ -184,16 +202,17 @@ def _scrub(value: Any) -> Any:
 
 
 class ApiKeyScrubFilter(logging.Filter):
-    """Redact Google API keys (``AIza…``) anywhere in the record.
+    """Redact known secrets (``AIza…`` Gemini keys + the configured
+    ``LLM_API_KEY`` bearer token) anywhere in the record.
 
-    Per ``docs/SECURITY.md`` §6 — the worker actually holds the key in env
-    so this is the more important of the two services to scrub, even though
-    we never deliberately log it.
+    Per ``docs/SECURITY.md`` §6 — the worker actually holds the LLM secrets
+    in env so this is the more important of the two services to scrub, even
+    though we never deliberately log them.
     """
 
     def filter(self, record: logging.LogRecord) -> bool:
         if isinstance(record.msg, str):
-            record.msg = _API_KEY_PATTERN.sub(_REDACTED, record.msg)
+            record.msg = _scrub_string(record.msg)
         if record.args:
             record.args = _scrub(record.args)
         for key, value in list(record.__dict__.items()):
@@ -220,6 +239,22 @@ def configure_logging(*, level: str | int = "INFO") -> None:
     """
 
     coerced = _coerce_level(level)
+    # Reset scrub patterns to base on every configure call so a re-configure
+    # doesn't accumulate stale operator secrets (e.g. across test fixtures
+    # that monkeypatch ``settings.llm_api_key`` between calls).
+    _SCRUB_PATTERNS.clear()
+    _SCRUB_PATTERNS.extend(_BASE_SCRUB_PATTERNS)
+    # Register the operator-configured vLLM bearer token (if any) as a literal
+    # scrub pattern so a non-Google-shaped secret gets redacted alongside the
+    # well-known AIza key shape. Inline import to avoid a module-import-time
+    # dependency on Settings (and to make the value testable via monkeypatch).
+    from worker.core.config import settings
+
+    if settings.llm_api_key is not None:
+        token = settings.llm_api_key.get_secret_value()
+        if token and len(token) >= _MIN_SCRUB_TOKEN_LENGTH:
+            _SCRUB_PATTERNS.append(re.compile(re.escape(token)))
+
     root = logging.getLogger()
     root.setLevel(coerced)
     for handler in list(root.handlers):

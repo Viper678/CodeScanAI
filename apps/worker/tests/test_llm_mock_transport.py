@@ -15,7 +15,7 @@ from worker.llm.prompts import load_prompt
 
 def _scan_with(scan_type: str) -> dict[str, object]:
     transport = MockGemmaTransport()
-    client = GemmaClient(api_key="placeholder", transport=transport)
+    client = GemmaClient(base_url="http://test.invalid/v1", transport=transport)
     result = client.scan_file(
         scan_type=scan_type,  # type: ignore[arg-type]
         relative_path="hello.py",

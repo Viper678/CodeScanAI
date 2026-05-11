@@ -98,7 +98,7 @@ We accept that some injection is still possible (e.g. legitimate-looking but fab
 
 ### API key leakage
 
-- Gemma API key lives in worker env only (`GOOGLE_AI_API_KEY`). API service does not have it.
+- vLLM endpoint config + optional auth token (`LLM_BASE_URL`, `LLM_API_KEY`) live in worker env only. API service does not have them.
 - Never logged. Custom log filter scrubs anything matching `AIza[A-Za-z0-9_-]{35}` (common Google API key shape) just in case.
 - Never sent to the browser. Web has no need for it.
 

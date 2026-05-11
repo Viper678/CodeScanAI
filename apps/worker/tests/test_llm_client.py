@@ -1,10 +1,10 @@
 """Unit tests for ``GemmaClient``.
 
-Most tests inject a fake ``transport=`` and never touch ``google.genai``. The
+Most tests inject a fake ``transport=`` and never touch ``openai``. The
 single exception is the regression test for the default transport's eager
 client init (``test_default_transport_initializes_underlying_client_eagerly``),
 which constructs the real ``_DefaultGemmaTransport`` to pin down the
-thread-safety invariant — that path imports ``google.genai`` deliberately.
+thread-safety invariant — that path imports ``openai`` deliberately.
 """
 
 from __future__ import annotations
@@ -84,7 +84,7 @@ def _make_clock(*ticks: float) -> Callable[[], float]:
 
 def _make_client(transport: FakeTransport, **overrides: Any) -> GemmaClient:
     kwargs: dict[str, Any] = {
-        "api_key": "fake",
+        "base_url": "http://test.invalid/v1",
         "transport": transport,
         "sleep": MagicMock(),
         "clock": _make_clock(0.0, 0.123),
@@ -277,14 +277,22 @@ def test_user_prompt_header_unknown_language_when_none() -> None:
 
 
 def test_default_transport_not_constructed_when_one_is_injected() -> None:
-    """Asserting indirectly: importing client must not have imported google.genai."""
+    """Constructing a ``GemmaClient`` with an injected transport must not
+    instantiate the default ``_DefaultGemmaTransport`` (and therefore must
+    not construct an underlying ``openai.OpenAI`` client / open any HTTP
+    connection pools).
 
-    import sys
+    We don't assert on ``"openai" not in sys.modules`` here because the
+    openai SDK can be pulled in transitively by other tests in the same
+    session; the property under test is that *this* path doesn't instantiate
+    the SDK client. Coverage of the eager-init invariant lives in the
+    dedicated test below.
+    """
 
     transport = FakeTransport(responses=[RawResponse(text=EMPTY_BODY, tokens_in=1, tokens_out=1)])
-    _make_client(transport)
-    # The fake transport never triggers the lazy import either.
-    assert "google.genai" not in sys.modules
+    client = _make_client(transport)
+    # The injected transport is the one wired up — sanity check.
+    assert client._transport is transport
 
 
 def test_retry_policy_passed_through_to_call_with_retry() -> None:
@@ -300,7 +308,7 @@ def test_retry_policy_passed_through_to_call_with_retry() -> None:
     )
     sleep = MagicMock()
     client = GemmaClient(
-        api_key="fake",
+        base_url="http://test.invalid/v1",
         transport=transport,
         retry_policy=RetryPolicy(max_attempts=3, backoff_seconds=(0.1, 0.2, 0.4)),
         sleep=sleep,
@@ -313,43 +321,59 @@ def test_retry_policy_passed_through_to_call_with_retry() -> None:
     sleep.assert_called_once_with(0.1)
 
 
-def test_constructing_default_transport_requires_api_key() -> None:
-    with pytest.raises(ValueError, match="api_key is required"):
-        GemmaClient(api_key="")
+def test_constructing_default_transport_requires_base_url() -> None:
+    with pytest.raises(ValueError, match="base_url is required"):
+        GemmaClient(base_url="")
 
 
 def test_default_transport_initializes_underlying_client_eagerly() -> None:
     """Regression test for the worker thread-safety bug.
 
     Before this test landed, ``_DefaultGemmaTransport.__init__`` left
-    ``_client=None`` and the underlying ``genai.Client`` was constructed
-    lazily inside ``__call__`` via ``if self._client is None: …`` — a
-    check-then-set that is not thread-safe.
+    ``_client=None`` and the underlying HTTP client was constructed lazily
+    inside ``__call__`` via ``if self._client is None: …`` — a check-then-
+    set that is not thread-safe.
 
     The orchestrator (``run_scan._dispatch_files``) shares one
     ``GemmaClient`` across a ``ThreadPoolExecutor`` with ``scan_concurrency``
-    workers. Two threads racing on the first call would each construct a
-    ``genai.Client``; the loser's instance was garbage-collected, closing
-    its underlying ``httpx.Client``, and the winner's in-flight request died
+    workers. Two threads racing on the first call would each construct an
+    SDK client; the loser's instance was garbage-collected, closing its
+    underlying ``httpx.Client``, and the winner's in-flight request died
     with ``Cannot send a request, as the client has been closed.`` —
-    observed in the wild on multi-file scans.
+    observed in the wild on multi-file scans against the previous
+    ``google-genai`` SDK. The same race re-emerges with any HTTP-backed
+    SDK (``openai`` here) since they all share the same ``httpx.Client``
+    close-on-GC behavior.
 
-    The fix moves the ``genai.Client`` construction into ``__init__``, which
-    always runs on the orchestrator's main thread before the pool opens. This
-    test pins that invariant down: any future change that flips the init
-    back to lazy-in-``__call__`` will fail here.
+    The fix moves the underlying client construction into ``__init__``,
+    which always runs on the orchestrator's main thread before the pool
+    opens. This test pins that invariant down: any future change that
+    flips the init back to lazy-in-``__call__`` will fail here.
     """
 
     # Local import keeps the SDK out of the import graph for tests that don't
     # exercise the default transport (most of this file).
     from worker.llm.client import _DefaultGemmaTransport
 
-    transport = _DefaultGemmaTransport(api_key="ai-test-key-not-validated-at-init")
+    transport = _DefaultGemmaTransport(base_url="http://test.invalid/v1")
     assert transport._client is not None, (
-        "_DefaultGemmaTransport must construct the underlying genai.Client "
+        "_DefaultGemmaTransport must construct the underlying openai client "
         "eagerly in __init__; the lazy variant in __call__ was a thread-safety "
         "bug under the orchestrator's ThreadPoolExecutor."
     )
+
+
+def test_default_transport_disables_sdk_retry_layer() -> None:
+    """openai's default ``max_retries=2`` would compound with ``call_with_retry``
+    (5 outer x 3 inner = up to 15 HTTP attempts per ``scan_file``) and the SDK's
+    own sleeps would block the explicit backoff schedule. The transport must
+    disable the SDK retry layer so ``call_with_retry`` is authoritative.
+    """
+
+    from worker.llm.client import _DefaultGemmaTransport
+
+    transport = _DefaultGemmaTransport(base_url="http://test.invalid/v1")
+    assert transport._client.max_retries == 0
 
 
 def test_drops_findings_with_line_end_past_eof() -> None:

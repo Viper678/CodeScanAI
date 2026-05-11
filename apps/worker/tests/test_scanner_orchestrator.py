@@ -243,28 +243,24 @@ def test_aggregate_usage_only_security_selected() -> None:
 # ---- Default scanner registry -----------------------------------------------
 
 
-def test_default_registry_keywords_only_does_not_construct_gemma_client(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Keyword-only scans must not require GOOGLE_AI_API_KEY (codex P2 on PR #20)."""
+def test_default_registry_keywords_only_does_not_construct_gemma_client() -> None:
+    """Keyword-only scans must not construct the LLM client (codex P2 on PR #20).
+
+    Originally this test pinned that ``GOOGLE_AI_API_KEY`` could be unset; the
+    invariant survived the M1 swap to vLLM unchanged — the registry function
+    gates LLM construction on ``needs_llm``, and ``llm_base_url`` always has
+    a default so it's never ``None``.
+    """
 
     from worker.tasks.run_scan import _default_scanner_registry
-
-    monkeypatch.setattr(settings, "google_ai_api_key", None)
 
     registry = _default_scanner_registry(["keywords"], None)
 
     assert set(registry.keys()) == {"keywords"}
 
 
-def test_default_registry_only_security_constructs_security_only(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    from pydantic import SecretStr
-
+def test_default_registry_only_security_constructs_security_only() -> None:
     from worker.tasks.run_scan import _default_scanner_registry
-
-    monkeypatch.setattr(settings, "google_ai_api_key", SecretStr("fake"))
 
     registry = _default_scanner_registry(["security"], None)
 

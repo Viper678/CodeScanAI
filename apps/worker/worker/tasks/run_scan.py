@@ -190,8 +190,8 @@ def _run(
                 eligible.append(plan)
         session.commit()
 
-    # Construct the scanner registry. If this fails (e.g. GOOGLE_AI_API_KEY
-    # is missing for an LLM scan, network blip while building the SDK client),
+    # Construct the scanner registry. If this fails (e.g. LLM_BASE_URL is
+    # malformed for an LLM scan, network blip while building the SDK client),
     # the scan would otherwise sit stuck in `running` because the task raised
     # AFTER we flipped to `running` but BEFORE the dispatch loop owns the
     # finalize. Catch and mark `failed` with a clear error.
@@ -252,10 +252,10 @@ def _default_scanner_registry(
 ) -> ScannerRegistry:
     """Construct only the scanners the scan actually needs.
 
-    Building ``GemmaClient`` requires ``GOOGLE_AI_API_KEY``; constructing it
-    eagerly would crash keyword-only scans on installs that don't have the
-    key set, leaving the scan stuck in ``running``. Build LLM scanners only
-    when the scan selected ``security`` or ``bugs``.
+    Building ``GemmaClient`` opens an HTTP client against ``LLM_BASE_URL``;
+    constructing it eagerly for a keyword-only scan would do unnecessary work
+    on installs without a reachable vLLM. Build LLM scanners only when the
+    scan selected ``security`` or ``bugs``.
 
     ``keywords_cfg`` is accepted for signature parity with test factories;
     the keyword scanner reads it via ``ScanContext`` per call.
@@ -267,18 +267,22 @@ def _default_scanner_registry(
     if needs_llm:
         if settings.llm_mock_mode:
             # T5.5 e2e: deterministic canned findings, no outbound HTTP. The
-            # mock transport ignores the api_key, so we pass a placeholder.
+            # mock transport ignores base_url / api_key, so we pass placeholders.
             from worker.llm.mock_transport import MockGemmaTransport
 
             client = GemmaClient(
-                api_key="mock-not-used",
+                base_url=settings.llm_base_url,
                 model=settings.gemma_model,
                 transport=MockGemmaTransport(),
             )
         else:
-            api_key_secret = settings.google_ai_api_key
-            api_key = api_key_secret.get_secret_value() if api_key_secret else ""
-            client = GemmaClient(api_key=api_key, model=settings.gemma_model)
+            api_key_secret = settings.llm_api_key
+            api_key = api_key_secret.get_secret_value() if api_key_secret else None
+            client = GemmaClient(
+                base_url=settings.llm_base_url,
+                api_key=api_key,
+                model=settings.gemma_model,
+            )
         if SCAN_TYPE_SECURITY in scan_types:
             registry[SCAN_TYPE_SECURITY] = SecurityScanner(client)
         if SCAN_TYPE_BUGS in scan_types:

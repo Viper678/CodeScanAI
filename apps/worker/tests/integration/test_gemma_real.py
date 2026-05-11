@@ -1,8 +1,8 @@
-"""Smoke test against the real Gemma API.
+"""Smoke test against a real vLLM (OpenAI-compatible) endpoint.
 
 Skipped by default. Run with::
 
-    RUN_GEMMA_REAL_TESTS=1 GOOGLE_AI_API_KEY=... pytest \
+    RUN_GEMMA_REAL_TESTS=1 LLM_BASE_URL=http://<host>:8000/v1 pytest \
         apps/worker/tests/integration/test_gemma_real.py
 """
 
@@ -22,9 +22,13 @@ def test_security_scan_against_real_gemma() -> None:
     from worker.core.config import settings
     from worker.llm.client import GemmaClient
 
-    api_key = settings.google_ai_api_key
-    assert api_key is not None, "GOOGLE_AI_API_KEY must be set"
-    client = GemmaClient(api_key=api_key.get_secret_value(), model=settings.gemma_model)
+    assert settings.llm_base_url, "LLM_BASE_URL must be set"
+    api_key = settings.llm_api_key.get_secret_value() if settings.llm_api_key is not None else None
+    client = GemmaClient(
+        base_url=settings.llm_base_url,
+        api_key=api_key,
+        model=settings.gemma_model,
+    )
     result = client.scan_file(
         scan_type="security",
         relative_path="example.py",

@@ -12,12 +12,12 @@ UV ?= uv
 E2E_COMPOSE := docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml
 
 # Compose interpolates required substitutions BEFORE merging override
-# files, so the base ``docker-compose.yml``'s ``GOOGLE_AI_API_KEY`` and
-# ``JWT_SECRET`` need values up front — even though the e2e override
-# pins the worker's key to ``mock-not-used``. Without these defaults,
-# ``make e2e-down`` (and ``ps`` and ``logs``) fail for a developer who
-# hasn't exported the vars.
-E2E_ENV := JWT_SECRET=$${JWT_SECRET:-e2e-jwt-secret-32-bytes-long-padding} GOOGLE_AI_API_KEY=$${GOOGLE_AI_API_KEY:-mock-not-used}
+# files, so the base ``docker-compose.yml``'s ``JWT_SECRET`` needs a
+# value up front. Without this default, ``make e2e-down`` (and ``ps``
+# and ``logs``) fail for a developer who hasn't exported it. The LLM
+# endpoint vars have ``:-`` defaults in the compose file so no injection
+# is needed for them.
+E2E_ENV := JWT_SECRET=$${JWT_SECRET:-e2e-jwt-secret-32-bytes-long-padding}
 
 # Web base URL used by the Playwright suite. Matches the alt host port
 # pinned in ``docker-compose.e2e.yml`` so the e2e stack coexists with a

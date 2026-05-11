@@ -76,7 +76,7 @@ apps/worker/worker/
 │   ├── db.py
 │   └── logging.py
 ├── llm/
-│   ├── client.py            # only place that imports google.genai
+│   ├── client.py            # only place that imports openai
 │   ├── retry.py
 │   ├── chunker.py
 │   ├── prompts/
