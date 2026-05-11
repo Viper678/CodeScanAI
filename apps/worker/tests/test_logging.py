@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 import logging
 
+import pytest
+
 from worker.core.logging import (
     ApiKeyScrubFilter,
     CorrelationFilter,
@@ -371,3 +373,102 @@ def test_formatter_scrubs_api_key_in_exception_traceback() -> None:
     assert "exc" in formatted
     assert leaky not in formatted["exc"], f"API key leaked into exc field: {formatted['exc']!r}"
     assert "AIza<redacted>" in formatted["exc"]
+
+
+# ---- M1: redact arbitrary LLM_API_KEY bearer tokens -------------------------
+
+
+def test_formatter_scrubs_llm_api_key_value_from_message(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``LLM_API_KEY`` is an arbitrary bearer token whose shape we can't
+    predict, so the AIza-only regex won't match it. ``configure_logging``
+    must register the operator-configured value so it gets redacted from
+    log lines that interpolate it (e.g. an SDK error referencing the auth
+    header). Codex P2 on M1.
+    """
+
+    from pydantic import SecretStr
+
+    from worker.core.config import settings
+    from worker.core.logging import configure_logging
+
+    token = "sk-vllm-test-secret-not-redacted"  # noqa: S105 — test fixture, not a real secret  # gitleaks:allow
+    monkeypatch.setattr(settings, "llm_api_key", SecretStr(token))
+    configure_logging(level="INFO")
+
+    record = _record(msg=f"upstream call failed for key {token}")
+
+    formatted = json.loads(JsonFormatter().format(record))
+    assert token not in formatted["message"]
+    assert "<redacted>" in formatted["message"]
+
+
+def test_formatter_scrubs_llm_api_key_value_from_exc_traceback(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Same defense-in-depth as ``test_formatter_scrubs_api_key_in_exception_traceback``,
+    but for the non-Google ``LLM_API_KEY`` value rather than the AIza pattern.
+    """
+
+    import sys
+
+    from pydantic import SecretStr
+
+    from worker.core.config import settings
+    from worker.core.logging import configure_logging
+
+    token = "sk-vllm-exc-test-token-9876"  # noqa: S105 — test fixture, not a real secret  # gitleaks:allow
+    monkeypatch.setattr(settings, "llm_api_key", SecretStr(token))
+    configure_logging(level="INFO")
+
+    try:
+        raise RuntimeError(f"gemma call failed for token {token}")
+    except RuntimeError:
+        record = logging.LogRecord(
+            name="worker.test",
+            level=logging.ERROR,
+            pathname=__file__,
+            lineno=0,
+            msg="upstream gemma error",
+            args=None,
+            exc_info=sys.exc_info(),
+        )
+
+    formatted = json.loads(JsonFormatter().format(record))
+    assert (
+        token not in formatted["exc"]
+    ), f"LLM_API_KEY value leaked into exc field: {formatted['exc']!r}"
+    assert "<redacted>" in formatted["exc"]
+
+
+def test_configure_logging_resets_scrub_patterns_between_calls(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Re-configuring logging must NOT accumulate patterns from the previous
+    call — otherwise a stale ``LLM_API_KEY`` from an earlier configure (or
+    a previous test) would continue to be scrubbed even after the operator
+    rotated the secret. Patterns are reset to the base set on every call.
+    """
+
+    from pydantic import SecretStr
+
+    from worker.core.config import settings
+    from worker.core.logging import configure_logging
+
+    old_token = "sk-vllm-old-secret-rotated-out"  # noqa: S105 — test fixture, not a real secret  # gitleaks:allow
+    new_token = "sk-vllm-new-secret-current-now"  # noqa: S105 — test fixture, not a real secret  # gitleaks:allow
+
+    monkeypatch.setattr(settings, "llm_api_key", SecretStr(old_token))
+    configure_logging(level="INFO")
+
+    monkeypatch.setattr(settings, "llm_api_key", SecretStr(new_token))
+    configure_logging(level="INFO")
+
+    record = _record(msg=f"line contains old={old_token} and new={new_token}")
+    formatted = json.loads(JsonFormatter().format(record))
+
+    # The CURRENT token is scrubbed; the previously-configured (rotated-out)
+    # token is NOT — proving the patterns reset and don't accumulate.
+    assert new_token not in formatted["message"]
+    assert old_token in formatted["message"]
