@@ -300,10 +300,17 @@ class _DefaultGemmaTransport:
         # ``--api-key``). Pass a placeholder string — vLLM ignores the
         # Authorization header when ``--api-key`` was not set on its CLI.
         effective_key = api_key if api_key else _PLACEHOLDER_API_KEY
+        # max_retries=0 disables the SDK's built-in retry layer. ``call_with_retry``
+        # in :mod:`worker.llm.retry` is the single retry authority — letting the
+        # SDK retry twice on 429/5xx/timeout before we see the exception would
+        # compound the budget (5 outer x 3 inner = up to 15 HTTP attempts per
+        # ``scan_file``) and the SDK's own sleeps would block our explicit
+        # backoff schedule.
         self._client = OpenAI(
             base_url=base_url,
             api_key=effective_key,
             timeout=_HTTP_TIMEOUT_SECONDS,
+            max_retries=0,
         )
 
     def __call__(

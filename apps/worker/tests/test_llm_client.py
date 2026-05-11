@@ -363,6 +363,19 @@ def test_default_transport_initializes_underlying_client_eagerly() -> None:
     )
 
 
+def test_default_transport_disables_sdk_retry_layer() -> None:
+    """openai's default ``max_retries=2`` would compound with ``call_with_retry``
+    (5 outer x 3 inner = up to 15 HTTP attempts per ``scan_file``) and the SDK's
+    own sleeps would block the explicit backoff schedule. The transport must
+    disable the SDK retry layer so ``call_with_retry`` is authoritative.
+    """
+
+    from worker.llm.client import _DefaultGemmaTransport
+
+    transport = _DefaultGemmaTransport(base_url="http://test.invalid/v1")
+    assert transport._client.max_retries == 0
+
+
 def test_drops_findings_with_line_end_past_eof() -> None:
     body = json.dumps(
         {
