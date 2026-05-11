@@ -11,7 +11,6 @@ jobs:
     timeout-minutes: 10
     env:
       JWT_SECRET: e2e-jwt-secret-32-bytes-long-padding # gitleaks:allow
-      GOOGLE_AI_API_KEY: mock-not-used # gitleaks:allow
       LLM_MOCK_MODE: "true"
       COMPOSE_DOCKER_CLI_BUILD: "1"
       DOCKER_BUILDKIT: "1"

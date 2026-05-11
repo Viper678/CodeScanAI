@@ -146,7 +146,7 @@ class JsonFormatter(logging.Formatter):
         if record.exc_info:
             # ``formatException`` walks ``exc_info`` directly; the scrub
             # filter only mutates ``record.msg`` / ``record.args`` /
-            # extras. The worker holds ``GOOGLE_AI_API_KEY`` so a Gemma
+            # extras. The worker may hold ``LLM_API_KEY`` so a vLLM
             # SDK exception whose message includes the key (e.g. a
             # request-URL-with-querystring trace) would otherwise leak
             # the key into the serialized traceback. Re-apply the scrub

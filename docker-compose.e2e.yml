@@ -55,8 +55,6 @@ services:
   worker:
     environment:
       LLM_MOCK_MODE: "true"
-      # The worker config refuses to start without GOOGLE_AI_API_KEY when
-      # LLM_MOCK_MODE is off. Mock mode skips the SDK init entirely, but the
-      # compose-file ``required`` syntax still demands a value — pass any
-      # string so docker-compose stops complaining.
-      GOOGLE_AI_API_KEY: "mock-not-used"
+      # LLM_BASE_URL is unused under mock mode — the mock transport is
+      # wired in before any HTTP call is attempted. Inherits the base
+      # compose file's default; no override needed.

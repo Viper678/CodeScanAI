@@ -3,7 +3,7 @@
 The API process must not import anything from ``apps/worker``; it only sends
 tasks by name on the shared broker. This keeps the API deployable independently
 and prevents accidental coupling to worker-side imports
-(``google-genai``, scanners, etc.).
+(vLLM/OpenAI-compatible client, scanners, etc.).
 """
 
 from __future__ import annotations

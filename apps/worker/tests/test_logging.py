@@ -344,11 +344,11 @@ def test_contextvar_propagates_into_thread_pool_via_copy_context() -> None:
 
 def test_formatter_scrubs_api_key_in_exception_traceback() -> None:
     """Codex P1 follow-up: ``logger.exception`` serializes the exception
-    via ``formatException``. The worker holds ``GOOGLE_AI_API_KEY``, so a
-    Gemma SDK exception whose message includes the key (e.g. an
-    ``HTTPError`` carrying the request URL) would otherwise leak the key
-    into the ``exc`` field of every error log. The formatter applies the
-    scrub regex to the formatted exception text as a hard backstop.
+    via ``formatException``. The worker may hold ``LLM_API_KEY``, so an
+    SDK exception whose message includes the key (e.g. an ``HTTPError``
+    carrying the request URL) would otherwise leak the key into the
+    ``exc`` field of every error log. The formatter applies the scrub
+    regex to the formatted exception text as a hard backstop.
     """
 
     import sys

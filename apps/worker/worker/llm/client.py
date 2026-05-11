@@ -1,4 +1,4 @@
-"""Gemma client — the single module that talks to ``google.genai``.
+"""Gemma client — the single module that talks to the vLLM OpenAI-compatible API.
 
 The orchestrator (T3.4) calls ``GemmaClient.scan_file`` once per (file,
 scan_type). This module:
@@ -15,7 +15,7 @@ scan_type). This module:
 5. Returns :class:`ScanResult` (findings + tokens_in/out + latency_ms) so
    the orchestrator can persist it on ``scan_files``.
 
-The default transport lazily imports ``google.genai`` so that unit tests —
+The default transport lazily imports ``openai`` so that unit tests —
 which always inject ``transport=`` — never pay the SDK import cost and
 never accidentally hit the network.
 """
@@ -47,6 +47,15 @@ from worker.llm.schemas import FindingsResponse, LlmFinding
 TEMPERATURE = 0.0
 MAX_OUTPUT_TOKENS = 4096
 REPAIR_SUFFIX = "\n\nYour previous response was not valid JSON. Respond ONLY with the JSON object."
+# vLLM (and many OpenAI-compatible servers) accept any non-empty api_key when
+# the server is started without ``--api-key``. The SDK constructor itself
+# refuses an empty string, so we pass this placeholder when the operator
+# didn't configure ``LLM_API_KEY``.
+_PLACEHOLDER_API_KEY = "unused-by-vllm"
+# Per-call HTTP timeout for the openai client. The SDK's default is 600s
+# which would let a stalled connection burn the worker's per-call retry
+# budget; cap at 2 minutes so the retry policy can fire instead.
+_HTTP_TIMEOUT_SECONDS = 120.0
 
 _logger = logging.getLogger(__name__)
 
@@ -75,7 +84,7 @@ class GemmaTransport(Protocol):
 
     Implementations translate SDK exceptions to :class:`GemmaRateLimited`,
     :class:`GemmaServerError`, or :class:`GemmaClientError` so the retry
-    policy can act on them without knowing about ``google.genai``.
+    policy can act on them without knowing about the underlying SDK.
     """
 
     def __call__(
@@ -92,14 +101,15 @@ class GemmaTransport(Protocol):
 class GemmaClient:
     """Wraps a Gemma transport with prompt loading, retry, and validation.
 
-    ``api_key`` is only consumed by the default transport (constructed
-    lazily). Tests pass ``transport=`` and may use a placeholder api_key.
+    ``base_url`` is only consumed by the default transport (constructed
+    lazily). Tests pass ``transport=`` and may use a placeholder base_url.
     """
 
     def __init__(
         self,
         *,
-        api_key: str,
+        base_url: str,
+        api_key: str | None = None,
         model: str = "gemma-4-31b-it",
         prompt_version: str = PROMPT_VERSION,
         transport: GemmaTransport | None = None,
@@ -115,12 +125,12 @@ class GemmaClient:
         if transport is not None:
             self._transport: GemmaTransport = transport
         else:
-            if not api_key:
+            if not base_url:
                 raise ValueError(
-                    "api_key is required when no transport is injected; "
-                    "set GOOGLE_AI_API_KEY in the environment."
+                    "base_url is required when no transport is injected; "
+                    "set LLM_BASE_URL in the environment."
                 )
-            self._transport = _DefaultGemmaTransport(api_key=api_key)
+            self._transport = _DefaultGemmaTransport(base_url=base_url, api_key=api_key)
 
     def scan_file(
         self,
@@ -254,38 +264,47 @@ def _filter_in_bounds(findings: list[LlmFinding], *, total_lines: int) -> list[L
     return kept
 
 
-# ---- Default transport (only path that imports google.genai) ---------------
+# ---- Default transport (only path that imports openai) ---------------------
 
 
 class _DefaultGemmaTransport:
     """Production transport. Constructs the SDK client eagerly in ``__init__``.
 
-    Why eager (and not the previous lazy ``if self._client is None: …`` in
-    ``__call__``): the orchestrator (T3.4) shares one ``GemmaClient`` across
-    a ``ThreadPoolExecutor`` with ``scan_concurrency`` workers. Lazy init is
+    Why eager (and not a lazy ``if self._client is None: …`` in ``__call__``):
+    the orchestrator (T3.4) shares one ``GemmaClient`` across a
+    ``ThreadPoolExecutor`` with ``scan_concurrency`` workers. Lazy init is
     a check-then-set race in that setting — two threads racing on the first
-    call could each construct a ``genai.Client``; the loser's instance is
-    garbage-collected, closing its underlying ``httpx.Client``, and the
-    winner's in-flight request errors out with
+    call could each construct an ``openai.OpenAI`` client; the loser's
+    instance is garbage-collected, closing its underlying ``httpx.Client``,
+    and the winner's in-flight request errors out with
     ``Cannot send a request, as the client has been closed.``
     Eager init in ``__init__`` runs on the orchestrator's main thread before
     the pool is opened, sidestepping the race entirely.
 
     SDK exception translation:
-        ``google.genai.errors.ClientError``  -> 429 -> GemmaRateLimited
-                                              -> other 4xx -> GemmaClientError
-        ``google.genai.errors.ServerError``  -> GemmaServerError
-        Network/timeout (``httpx``/``requests`` errors) -> GemmaServerError
+        ``openai.RateLimitError``      -> GemmaRateLimited (Retry-After honored)
+        ``openai.APIStatusError`` 5xx  -> GemmaServerError
+        ``openai.APIStatusError`` 4xx  -> GemmaClientError
+        ``openai.APITimeoutError``     -> GemmaServerError
+        ``openai.APIConnectionError``  -> GemmaServerError
     """
 
-    def __init__(self, *, api_key: str) -> None:
-        # Import inside __init__ keeps ``google.genai`` out of unit-test import
+    def __init__(self, *, base_url: str, api_key: str | None = None) -> None:
+        # Import inside __init__ keeps ``openai`` out of unit-test import
         # graphs: tests that supply ``transport=`` to ``GemmaClient`` never
         # touch this constructor.
-        from google import genai
+        from openai import OpenAI
 
-        self._api_key = api_key
-        self._client = genai.Client(api_key=api_key)
+        # The openai SDK refuses an empty api_key argument even when the
+        # upstream server is unauthenticated (vLLM started without
+        # ``--api-key``). Pass a placeholder string — vLLM ignores the
+        # Authorization header when ``--api-key`` was not set on its CLI.
+        effective_key = api_key if api_key else _PLACEHOLDER_API_KEY
+        self._client = OpenAI(
+            base_url=base_url,
+            api_key=effective_key,
+            timeout=_HTTP_TIMEOUT_SECONDS,
+        )
 
     def __call__(
         self,
@@ -296,42 +315,43 @@ class _DefaultGemmaTransport:
         temperature: float,
         max_output_tokens: int,
     ) -> RawResponse:
-        from google.genai import errors as genai_errors
-        from google.genai import types as genai_types
-
-        config = genai_types.GenerateContentConfig(
-            system_instruction=system_prompt,
-            temperature=temperature,
-            max_output_tokens=max_output_tokens,
-            response_mime_type="application/json",
-        )
+        import openai
 
         try:
-            response = self._client.models.generate_content(
+            response = self._client.chat.completions.create(
                 model=model,
-                contents=user_prompt,
-                config=config,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                temperature=temperature,
+                max_tokens=max_output_tokens,
+                # vLLM extension: constrain the decode to schema-valid JSON.
+                # The repair loop in ``GemmaClient.scan_file`` still acts as
+                # a safety net for non-vLLM OpenAI-compat servers (dev) that
+                # silently ignore the unknown ``guided_json`` field.
+                extra_body={"guided_json": FindingsResponse.model_json_schema()},
             )
-        except genai_errors.ClientError as exc:
-            if getattr(exc, "code", None) == 429:
-                raise GemmaRateLimited(retry_after=_extract_retry_after(exc)) from exc
-            raise GemmaClientError(str(exc)) from exc
-        except genai_errors.ServerError as exc:
+        except openai.RateLimitError as exc:
+            raise GemmaRateLimited(retry_after=_extract_retry_after(exc)) from exc
+        except openai.APITimeoutError as exc:
             raise GemmaServerError(str(exc)) from exc
-        except Exception as exc:  # justify: network/timeout types vary across httpx/requests
-            if _looks_like_transport_error(exc):
+        except openai.APIConnectionError as exc:
+            raise GemmaServerError(str(exc)) from exc
+        except openai.APIStatusError as exc:
+            if exc.status_code >= 500:
                 raise GemmaServerError(str(exc)) from exc
-            raise
+            raise GemmaClientError(str(exc)) from exc
 
-        text = response.text or ""
-        usage = getattr(response, "usage_metadata", None)
-        tokens_in = int(getattr(usage, "prompt_token_count", 0) or 0)
-        tokens_out = int(getattr(usage, "candidates_token_count", 0) or 0)
+        text = response.choices[0].message.content or "" if response.choices else ""
+        usage = response.usage
+        tokens_in = int(getattr(usage, "prompt_tokens", 0) or 0)
+        tokens_out = int(getattr(usage, "completion_tokens", 0) or 0)
         return RawResponse(text=text, tokens_in=tokens_in, tokens_out=tokens_out)
 
 
 def _extract_retry_after(exc: Exception) -> float | None:
-    """Best-effort Retry-After lookup on a ``google.genai`` ClientError response."""
+    """Best-effort Retry-After lookup on an openai ``APIStatusError`` response."""
 
     response = getattr(exc, "response", None)
     headers = getattr(response, "headers", None)
@@ -344,10 +364,3 @@ def _extract_retry_after(exc: Exception) -> float | None:
         return float(raw)
     except (TypeError, ValueError):
         return None
-
-
-def _looks_like_transport_error(exc: Exception) -> bool:
-    """Heuristic: treat httpx/requests/socket errors as 5xx-equivalent."""
-
-    name = type(exc).__module__
-    return name.startswith(("httpx", "requests", "urllib3", "socket"))

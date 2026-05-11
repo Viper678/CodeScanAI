@@ -53,10 +53,15 @@ class Settings(BaseSettings):
     max_compression_ratio: int = 100
 
     # ---- LLM ----
-    # Required at runtime to instantiate the default Gemma transport. ``None``-able
-    # so unit tests can construct ``GemmaClient(api_key="fake", transport=fake)``
-    # without touching the environment.
-    google_ai_api_key: SecretStr | None = None
+    # vLLM (or any OpenAI-compatible) endpoint base URL. The default points at
+    # the in-cluster service name used by the GKE manifests; override locally
+    # via env. Always has a non-empty default so unit tests can construct
+    # ``GemmaClient(transport=fake)`` without touching the environment.
+    llm_base_url: str = "http://vllm.llm.svc.cluster.local:8000/v1"
+    # Optional bearer token. Only set when the vLLM process was launched with
+    # ``--api-key`` (i.e. requires auth); otherwise leave unset and the client
+    # passes a placeholder that the server ignores.
+    llm_api_key: SecretStr | None = None
     gemma_model: str = "gemma-4-31b-it"
     prompt_version: str = "v1"
     # Test-only switch: when true, ``run_scan`` swaps ``_DefaultGemmaTransport``
