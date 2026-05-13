@@ -20,6 +20,7 @@ import os
 import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Protocol, cast
 from uuid import UUID
 
@@ -292,9 +293,17 @@ class UploadService:
         raw upload artifacts and the worker-produced extract tree (which
         also lives under that prefix per the M2 key convention). Idempotent
         — missing keys are a no-op on both backends.
+
+        Pre-M2 rows persist absolute filesystem paths in ``storage_path``
+        (the raw upload, e.g. ``/data/uploads/<id>/<filename>.zip``) and
+        ``extract_path`` (the extract tree, e.g. ``/data/extracts/<id>``).
+        Both legacy shapes get wiped here so deleting a pre-M2 row leaves
+        no files behind even if the operator has flipped
+        ``STORAGE_BACKEND`` to ``gcs``. Codex P2 on M2.
         """
 
         self._storage.delete_prefix(upload_prefix(upload.id))
+        _wipe_legacy_storage_path(upload.storage_path)
         _wipe_legacy_extract_path(upload.extract_path)
 
     async def _enqueue_or_mark_failed(self, upload: Upload) -> None:
@@ -412,6 +421,30 @@ async def _stream_to_storage(
         await upload_file.close()
     storage.put_bytes(key, b"".join(chunks))
     return _StoredFile(original_name=original_name, size_bytes=written)
+
+
+def _wipe_legacy_storage_path(storage_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path raw-upload artifact if present.
+
+    Pre-M2 the raw archive lived at ``/data/uploads/<id>/<filename>``
+    (file shape) or, for some intermediate layouts, ``/data/uploads/<id>``
+    (directory shape). Post-M2 ``storage_path`` carries the storage key
+    prefix ``uploads/<id>`` instead. Detect legacy via absolute-path
+    shape and unlink (file) or rmtree (dir). Codex P2 on M2.
+
+    Caution: NEVER walk to a parent — Path("/data/uploads/<id>").parent
+    is ``/data/uploads`` which contains every upload. Stay scoped to
+    the value the row holds.
+    """
+
+    if not storage_path or not storage_path.startswith("/"):
+        return
+    path = Path(storage_path)
+    with contextlib.suppress(FileNotFoundError):
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
 
 def _wipe_legacy_extract_path(extract_path: str | None) -> None:

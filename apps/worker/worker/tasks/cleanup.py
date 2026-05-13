@@ -27,6 +27,7 @@ import contextlib
 import logging
 import shutil
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TypedDict
 from uuid import UUID
 
@@ -141,11 +142,13 @@ def _delete_one(session: Session, *, upload_id: UUID, storage: Storage) -> str:
         # (which also lives under that prefix per the M2 key
         # convention). Idempotent on both backends.
         storage.delete_prefix(upload_prefix(upload.id))
-        # Pre-M2 rows persisted ``extract_path`` as an absolute filesystem
-        # path under ``/data/extracts/<id>`` — outside the new
-        # ``uploads/<id>/`` prefix, so the prefix-delete above misses it.
-        # Wipe via filesystem so retention sweeps don't leak legacy data.
-        # Codex P1 on M2.
+        # Pre-M2 rows persisted ``storage_path`` (raw upload) and
+        # ``extract_path`` (extract tree) as absolute filesystem paths
+        # under ``/data/{uploads,extracts}/<id>``. The new prefix-delete
+        # above doesn't reach either, so retention sweeps would leak
+        # legacy data — especially after a local-to-GCS cutover.
+        # Codex P1+P2 on M2.
+        _wipe_legacy_storage_path(upload.storage_path)
         _wipe_legacy_extract_path(upload.extract_path)
     except Exception:
         # justify: storage failures are transient + opaque (transport
@@ -168,6 +171,25 @@ def _delete_one(session: Session, *, upload_id: UUID, storage: Storage) -> str:
     # on-exception still applies for any post-loop bookkeeping we add later.
     session.commit()
     return _Outcome.SWEPT
+
+
+def _wipe_legacy_storage_path(storage_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path raw-upload artifact if present.
+
+    Mirrors ``apps/api/app/services/upload_service._wipe_legacy_storage_path``.
+    Pre-M2 the raw archive lived at ``/data/uploads/<id>/<filename>`` (file)
+    or ``/data/uploads/<id>`` (directory) — outside ``uploads/<id>/`` once
+    that became a storage key prefix. Wipe by shape; never walk to a parent.
+    """
+
+    if not storage_path or not storage_path.startswith("/"):
+        return
+    path = Path(storage_path)
+    with contextlib.suppress(FileNotFoundError):
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
 
 
 def _wipe_legacy_extract_path(extract_path: str | None) -> None:

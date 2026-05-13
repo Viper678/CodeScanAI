@@ -393,6 +393,21 @@ def _preflight_skip(plan: _FilePlan, storage: Storage) -> str | None:
         content_len = storage.size(plan.key)
     except StorageKeyError:
         return "missing"
+    except Exception:
+        # justify: GCS transport / IAM errors don't subclass
+        # StorageKeyError or OSError (they live under
+        # ``google.api_core.exceptions``). Without containment, a
+        # transient cloud hiccup during preflight would abort the
+        # Celery task while the scan is already ``running``, stranding
+        # it. Treat the file as unreadable and skip — the per-row
+        # error gets logged with the actual cause so an operator can
+        # see what happened. Codex P2 on M2.
+        logger.warning(
+            "preflight storage.size failed for key=%r; skipping file",
+            plan.key,
+            exc_info=True,
+        )
+        return "missing"
     # Estimate tokens as chars/4 (approximate for code per SCAN_RULES.md
     # §"Token budget & chunking"). Files exceeding the per-call budget are
     # skipped here; chunking those is the documented follow-up.
@@ -465,6 +480,19 @@ def _process_file_no_db(
         outcome.final_error = f"read_error: {exc}"[:500]
         return outcome
     except OSError as exc:
+        outcome.final_status = SCAN_FILE_STATUS_FAILED
+        outcome.final_error = f"read_error: {exc}"[:500]
+        return outcome
+    except Exception as exc:
+        # justify: GCS SDK errors (google.api_core.exceptions.*) don't
+        # subclass OSError. Treat as a per-file read failure so dispatch
+        # can finalize the scan cleanly instead of letting the exception
+        # escape ``fut.result()`` and stall the rows. Codex P2 on M2.
+        logger.warning(
+            "read_text failed for key=%r (non-OSError); marking file failed",
+            plan.key,
+            exc_info=True,
+        )
         outcome.final_status = SCAN_FILE_STATUS_FAILED
         outcome.final_error = f"read_error: {exc}"[:500]
         return outcome
