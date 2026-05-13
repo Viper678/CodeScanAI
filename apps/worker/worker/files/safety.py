@@ -109,7 +109,13 @@ def normalize_entry_path(name: str) -> str:
     # convert '/' to '\\'; we explicitly use posixpath via replace so the
     # check is cross-platform.
     normalized = os.path.normpath(cleaned).replace(os.sep, "/")
-    if normalized.startswith("../") or normalized == ".." or normalized.startswith("/"):
+    # Reject ``..`` (parent escape) AND ``.`` (degenerate self-reference):
+    # an entry whose normalized form resolves to ``.`` would yield
+    # ``extracted_key(upload_id, ".")`` == ``uploads/<id>/extracted/.``
+    # which LocalStorage's path.parent join collapses to the prefix
+    # itself — writing a file named "extracted" and leaving the upload
+    # marked ready with file_count=0. Codex P2 on M2.
+    if normalized in ("..", ".") or normalized.startswith("../") or normalized.startswith("/"):
         raise PathTraversalError(f"path traversal in entry: {name!r}")
     parts = normalized.split("/")
     if any(part == ".." for part in parts):

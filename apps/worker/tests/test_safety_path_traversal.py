@@ -33,6 +33,14 @@ CAPS = {
         "evil\\nested.txt",
         "..",
         "",
+        # ``.`` and patterns that normalize to ``.`` produce a degenerate
+        # storage key (``uploads/<id>/extracted/.``) which LocalStorage
+        # collapses to the prefix itself — silently corrupting the
+        # extracted tree. Codex P2 on M2.
+        ".",
+        "./",
+        "dir/..",
+        "a/b/../..",
     ],
 )
 def test_normalize_rejects_unsafe_paths(name: str) -> None:
