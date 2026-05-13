@@ -142,12 +142,20 @@ spec:
           # Liveness probe uses Celery's own ``inspect ping`` — same
           # check shape as docker-compose. ``initialDelaySeconds``
           # leaves headroom for first-time DB pool warmup.
+          #
+          # ``--timeout=5`` is REQUIRED: ``celery inspect ping`` has a
+          # 1s default reply timeout, so without this flag a Memorystore
+          # latency hiccup >1s for three probe periods (90s of
+          # intermittent slowness) would kill an otherwise-healthy
+          # worker mid-scan. 5s is comfortably below k8s's 10s
+          # ``timeoutSeconds`` and well above realistic broker RTTs.
+          # Codex P2 on M6.
           livenessProbe:
             exec:
               command:
                 - sh
                 - -c
-                - 'uv run celery -A worker.celery_app inspect ping -d celery@$HOSTNAME'
+                - 'uv run celery -A worker.celery_app inspect ping -d celery@$HOSTNAME --timeout=5'
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 10

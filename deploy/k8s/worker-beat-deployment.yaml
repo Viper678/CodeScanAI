@@ -144,12 +144,16 @@ spec:
                 configMapKeyRef:
                   name: codescan-config
                   key: log-level
+          # Same shape as ``worker-deployment.yaml`` — see that file
+          # for the rationale on ``--timeout=5`` (Codex P2 on M6:
+          # celery inspect ping's 1s default would false-positive
+          # on a brief broker latency hiccup).
           livenessProbe:
             exec:
               command:
                 - sh
                 - -c
-                - 'uv run celery -A worker.celery_app inspect ping -d celery@$HOSTNAME'
+                - 'uv run celery -A worker.celery_app inspect ping -d celery@$HOSTNAME --timeout=5'
             initialDelaySeconds: 30
             periodSeconds: 30
             timeoutSeconds: 10
