@@ -33,7 +33,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.exceptions import NotFound, PayloadTooLarge, UnsupportedFileType
 from app.repositories.file_repo import FileRepo
 from app.repositories.upload_repo import UploadRepo
-from app.storage import Storage, StorageKeyError, extracted_key, get_storage
+from app.storage import Storage, StorageKeyError, get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -124,7 +124,21 @@ class FileContentService:
             )
             raise NotFound("File not found")
 
-        key = extracted_key(upload.id, safe_relative)
+        # Build the key from the upload's actual extract layout. Zip uploads
+        # land at ``uploads/<id>/extracted/`` while loose uploads land at
+        # ``uploads/<id>/loose/``; both shapes are captured in
+        # ``upload.extract_path`` by ``prepare_upload``. Hardcoding
+        # ``extracted_key(upload.id, ...)`` would silently 404 every
+        # loose-upload viewer request. Codex P2 on M2.
+        #
+        # Legacy pre-M2 ``extract_path`` values were absolute filesystem
+        # paths (``/data/extracts/<id>``) — the Storage backend rejects
+        # leading-slash keys, so treat those as unviewable (same 404 as
+        # missing artifact). A row-level migration would be needed to
+        # serve them; out of scope here.
+        if upload.extract_path.startswith("/"):
+            raise NotFound("File not found")
+        key = f"{upload.extract_path.rstrip('/')}/{safe_relative}"
         try:
             size = self._storage.size(key)
         except StorageKeyError:

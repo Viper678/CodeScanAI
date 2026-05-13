@@ -19,12 +19,26 @@ import contextlib
 import io
 import logging
 import os
+import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
 from typing import BinaryIO
 
 from app.storage.base import StorageKeyError
+
+
+def _tmp_path_for(target: Path) -> Path:
+    """Build a unique sibling path used for atomic-rename staging.
+
+    Leading dot + uuid suffix keeps the temp name out of conflict with
+    any legitimate object that might share the target's stem. Must live
+    in the target's parent directory so ``os.replace`` is atomic (same
+    filesystem).
+    """
+
+    return target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+
 
 logger = logging.getLogger(__name__)
 
@@ -73,16 +87,19 @@ class LocalStorage:
         target = self._resolve(key)
         target.parent.mkdir(parents=True, exist_ok=True)
         # Atomic write via tmp + rename so a crashed write doesn't leave a
-        # half-formed object — same guarantee callers got from
-        # ``Path.write_bytes`` plus ``rename``.
-        tmp = target.with_suffix(target.suffix + ".tmp")
+        # half-formed object. UUID-suffixed temp name (not
+        # ``target.suffix + ".tmp"``) — otherwise a key like ``foo``
+        # would stage through ``foo.tmp``, which collides with a
+        # legitimately-extracted ``foo.tmp`` elsewhere in the same zip
+        # and silently overwrites it before rename. Codex P2 on M2.
+        tmp = _tmp_path_for(target)
         tmp.write_bytes(data)
         os.replace(tmp, target)
 
     def put_stream(self, key: str, stream: BinaryIO) -> None:
         target = self._resolve(key)
         target.parent.mkdir(parents=True, exist_ok=True)
-        tmp = target.with_suffix(target.suffix + ".tmp")
+        tmp = _tmp_path_for(target)
         with tmp.open("wb") as out:
             while True:
                 chunk = stream.read(_STREAM_CHUNK)

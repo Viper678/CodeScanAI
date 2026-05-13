@@ -24,6 +24,7 @@ sweep continues with the next row.
 from __future__ import annotations
 
 import logging
+import shutil
 from datetime import UTC, datetime, timedelta
 from typing import TypedDict
 from uuid import UUID
@@ -139,6 +140,12 @@ def _delete_one(session: Session, *, upload_id: UUID, storage: Storage) -> str:
         # (which also lives under that prefix per the M2 key
         # convention). Idempotent on both backends.
         storage.delete_prefix(upload_prefix(upload.id))
+        # Pre-M2 rows persisted ``extract_path`` as an absolute filesystem
+        # path under ``/data/extracts/<id>`` — outside the new
+        # ``uploads/<id>/`` prefix, so the prefix-delete above misses it.
+        # Wipe via filesystem so retention sweeps don't leak legacy data.
+        # Codex P1 on M2.
+        _wipe_legacy_extract_path(upload.extract_path)
     except Exception:
         # justify: storage failures are transient + opaque (transport
         # issues, IAM permission gaps); we don't want a single bad
@@ -160,3 +167,18 @@ def _delete_one(session: Session, *, upload_id: UUID, storage: Storage) -> str:
     # on-exception still applies for any post-loop bookkeeping we add later.
     session.commit()
     return _Outcome.SWEPT
+
+
+def _wipe_legacy_extract_path(extract_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path extract tree if present.
+
+    Mirrors the api-side helper in ``apps/api/app/services/upload_service.py``.
+    Pre-M2 ``prepare_upload`` extracted into ``/data/extracts/<id>/`` (a
+    separate tree from the upload's raw zip), and persisted that absolute
+    path to ``upload.extract_path``. Post-M2 ``delete_prefix("uploads/<id>/")``
+    doesn't reach that legacy tree.
+    """
+
+    if not extract_path or not extract_path.startswith("/"):
+        return
+    shutil.rmtree(extract_path, ignore_errors=True)

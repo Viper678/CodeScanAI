@@ -143,3 +143,35 @@ def test_validate_key_rejects_unsafe(tmp_path: Path, bad_key: str) -> None:
     storage = LocalStorage(tmp_path)
     with pytest.raises(ValueError):
         storage.put_bytes(bad_key, b"x")
+
+
+def test_put_bytes_doesnt_collide_with_existing_tmp_suffixed_sibling(
+    tmp_path: Path,
+) -> None:
+    """Regression: pre-fix, ``put_bytes("foo")`` staged through ``foo.tmp``
+    which would silently destroy a legitimately-stored ``foo.tmp`` written
+    moments earlier in the same dir (e.g. a zip containing both ``foo.tmp``
+    and ``foo``). Codex P2 on M2.
+    """
+
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes("uploads/abc/extracted/foo.tmp", b"keep-tmp")
+    storage.put_bytes("uploads/abc/extracted/foo", b"keep-foo")
+
+    assert storage.get_bytes("uploads/abc/extracted/foo.tmp") == b"keep-tmp"
+    assert storage.get_bytes("uploads/abc/extracted/foo") == b"keep-foo"
+
+
+def test_put_stream_doesnt_collide_with_existing_tmp_suffixed_sibling(
+    tmp_path: Path,
+) -> None:
+    """Same as the put_bytes variant but exercising the streaming write
+    path that ``safe_extract`` actually uses for zip entries.
+    """
+
+    storage = LocalStorage(tmp_path)
+    storage.put_stream("uploads/abc/extracted/a.py.tmp", io.BytesIO(b"tmp-content"))
+    storage.put_stream("uploads/abc/extracted/a.py", io.BytesIO(b"real-content"))
+
+    assert storage.get_bytes("uploads/abc/extracted/a.py.tmp") == b"tmp-content"
+    assert storage.get_bytes("uploads/abc/extracted/a.py") == b"real-content"

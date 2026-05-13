@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from typing import Protocol, cast
@@ -293,6 +294,7 @@ class UploadService:
         """
 
         self._storage.delete_prefix(upload_prefix(upload.id))
+        _wipe_legacy_extract_path(upload.extract_path)
 
     async def _enqueue_or_mark_failed(self, upload: Upload) -> None:
         # If the broker is down, _enqueue raises before the worker ever sees the
@@ -409,6 +411,24 @@ async def _stream_to_storage(
         await upload_file.close()
     storage.put_bytes(key, b"".join(chunks))
     return _StoredFile(original_name=original_name, size_bytes=written)
+
+
+def _wipe_legacy_extract_path(extract_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path extract tree if present.
+
+    Pre-M2 prepare_upload extracted into ``/data/extracts/<id>/`` (a
+    separate tree from the upload's raw zip), and persisted that absolute
+    path to ``upload.extract_path``. Post-M2 the column carries a storage
+    key prefix (e.g. ``uploads/<id>/extracted``) and the new tree lives
+    under ``uploads/<id>/`` — so the M2 ``delete_prefix`` doesn't reach
+    the legacy tree. Detect legacy by absolute-path shape and wipe via
+    filesystem ops so deleting a pre-M2 row doesn't leak files. Codex
+    P1 on M2.
+    """
+
+    if not extract_path or not extract_path.startswith("/"):
+        return
+    shutil.rmtree(extract_path, ignore_errors=True)
 
 
 def _has_zip_magic_in_storage(storage: Storage, key: str) -> bool:

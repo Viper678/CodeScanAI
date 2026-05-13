@@ -26,7 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.core.uuid7 import uuid7
 from app.models.file import File
-from app.models.upload import UPLOAD_KIND_ZIP, UPLOAD_STATUS_READY, Upload
+from app.models.upload import UPLOAD_KIND_LOOSE, UPLOAD_KIND_ZIP, UPLOAD_STATUS_READY, Upload
 from app.models.user import User
 from app.storage import reset_storage_cache
 
@@ -376,3 +376,73 @@ async def test_get_file_content_rejects_path_traversal(
     assert response.status_code == 404
     # Belt-and-suspenders: never reflect the secret bytes.
     assert b"top-secret" not in response.content
+
+
+async def test_get_file_content_serves_loose_upload(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    storage_root: Path,
+) -> None:
+    """Loose uploads land at ``uploads/<id>/loose/`` (not ``extracted/``).
+    The viewer must build the key from ``upload.extract_path``, not by
+    always calling ``extracted_key()``. Codex P2 on M2 — pre-fix this
+    silently 404'd for every loose-upload file.
+    """
+
+    user = await _current_user(authed_client)
+    body = b"x = 1\nprint(x)\n"
+
+    upload = Upload(
+        id=uuid7(),
+        user_id=user.id,
+        original_name="hello.py",
+        kind=UPLOAD_KIND_LOOSE,
+        size_bytes=len(body),
+        storage_path=f"/tmp/{uuid4()}",  # noqa: S108 - test placeholder
+        extract_path="placeholder",
+        status=UPLOAD_STATUS_READY,
+        file_count=1,
+        scannable_count=1,
+    )
+    db_session.add(upload)
+    await db_session.flush()
+
+    extract_prefix = f"uploads/{upload.id}/loose"
+    upload.extract_path = extract_prefix
+
+    target = storage_root / extract_prefix / "hello.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+
+    file_row = _make_file(upload_id=upload.id, path="hello.py", size_bytes=len(body))
+    db_session.add(file_row)
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
+
+    assert response.status_code == 200, response.text
+    assert response.content == body
+
+
+async def test_get_file_content_404_for_legacy_absolute_extract_path(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    storage_root: Path,
+) -> None:
+    """Pre-M2 ``extract_path`` was an absolute filesystem path
+    (e.g. ``/data/extracts/<id>``). Such legacy values aren't usable as
+    storage keys — Storage rejects leading slashes — so the viewer
+    returns 404 rather than 500. Codex P2 follow-up; documents the
+    intentional degradation for legacy rows."""
+
+    user = await _current_user(authed_client)
+    upload = _make_upload(user_id=user.id, extract_path="/data/extracts/legacy")
+    db_session.add(upload)
+    await db_session.flush()
+    file_row = _make_file(upload_id=upload.id, path="some/file.py")
+    db_session.add(file_row)
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
+
+    assert response.status_code == 404
