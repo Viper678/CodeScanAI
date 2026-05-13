@@ -37,6 +37,8 @@
 
 import { type NextRequest } from 'next/server';
 
+import { isUnsafeSegment } from '@/lib/api/proxy-segment-guard';
+
 const DEFAULT_INTERNAL_API_URL = 'http://api:8000/api/v1';
 
 /** Headers the catch-all does NOT forward upstream. */
@@ -76,7 +78,13 @@ function buildTargetUrl(req: NextRequest, pathSegments: string[]): URL {
   const base = (
     process.env.INTERNAL_API_URL ?? DEFAULT_INTERNAL_API_URL
   ).replace(/\/$/, '');
-  const target = new URL(`${base}/${pathSegments.join('/')}`);
+  // ``encodeURIComponent`` per segment ensures any percent-escapes,
+  // slashes, or other metacharacters in a segment are preserved as
+  // opaque bytes when ``new URL()`` normalizes the path. Combined with
+  // the ``isUnsafeSegment`` guard above, this closes the traversal hole
+  // codex flagged on round 3.
+  const encoded = pathSegments.map(encodeURIComponent).join('/');
+  const target = new URL(`${base}/${encoded}`);
   target.search = new URL(req.url).search;
   return target;
 }
@@ -116,6 +124,15 @@ async function proxy(
   req: NextRequest,
   context: { params: { path: string[] } },
 ): Promise<Response> {
+  // Validate BEFORE any URL construction so a traversal attempt never
+  // reaches ``new URL()`` (which would normalize ``../`` out of the
+  // path and let the request escape the ``/api/v1`` prefix).
+  for (const segment of context.params.path) {
+    if (isUnsafeSegment(segment)) {
+      return new Response('Bad Request', { status: 400 });
+    }
+  }
+
   const target = buildTargetUrl(req, context.params.path);
   const headers = forwardHeaders(req);
 
