@@ -50,9 +50,23 @@ services:
       MAX_LOOSE_FILE_SIZE_MB: ${MAX_LOOSE_FILE_SIZE_MB:-50}
       API_WORKERS: ${API_WORKERS:-2}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    # ``--proxy-headers --forwarded-allow-ips=*``: post-M7 the web container
+    # proxies browser requests to the api via Next.js, so ``request.client.host``
+    # would otherwise see the web pod's IP for every request — the auth rate
+    # limiter + ``_client_ip()`` audit helper rely on the real browser IP.
+    # Uvicorn's ``--proxy-headers`` parses ``X-Forwarded-For`` (set by the
+    # web proxy route handler at apps/web/app/api/v1/[...path]/route.ts) and
+    # repopulates ``scope['client']`` so ``request.client.host`` works
+    # correctly downstream. ``--forwarded-allow-ips=*`` trusts the header
+    # from any peer — safe here because the api is only reachable via web
+    # (in k8s + LB) or the developer's localhost (in docker-compose);
+    # adversarial peers can't reach the api directly to spoof the header.
+    # Codex P2 on M7.
     command: >
       sh -c "uv run alembic upgrade head &&
-             uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2}"
+             uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+             --workers ${API_WORKERS:-2}
+             --proxy-headers --forwarded-allow-ips='*'"
     ports:
       - "8000:8000"
     volumes:

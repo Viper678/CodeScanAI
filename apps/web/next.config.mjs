@@ -5,25 +5,16 @@ const nextConfig = {
   // image doesn't need a full ``node_modules`` copy. See ``apps/web/Dockerfile``
   // for the multi-stage build that copies this output into the final layer.
   output: 'standalone',
-  async rewrites() {
-    // Resolve at request time (not bake time) so a runtime env-var flip
-    // is honoured without rebuilding the image — one image deploys to
-    // UAT / prod / future staging, only ``INTERNAL_API_URL`` differs.
-    // The default keeps docker-compose working out of the box: ``api`` is
-    // the service name on the internal compose network. See
-    // docs/GCP_MIGRATION.md §M7 + §D4.
-    //
-    // Source matches the existing API base path (``/api/v1``) so client
-    // code can keep calling ``fetch('/api/v1/...')`` unchanged; we don't
-    // strip the prefix when forwarding to the api service.
-    const target = process.env.INTERNAL_API_URL ?? 'http://api:8000/api/v1';
-    return [
-      {
-        source: '/api/v1/:path*',
-        destination: `${target}/:path*`,
-      },
-    ];
-  },
+  // NOTE on the ``rewrites()`` shape: Next.js evaluates ``rewrites()`` at
+  // BUILD time and bakes the resulting destination strings into
+  // ``.next/routes-manifest.json``. That defeats the "one image, runtime-
+  // configurable" promise from docs/GCP_MIGRATION.md §D4 — a value of
+  // ``process.env.INTERNAL_API_URL`` read here is just whatever was set
+  // during ``docker build``. The catch-all route handler at
+  // ``apps/web/app/api/v1/[...path]/route.ts`` runs in the Node.js
+  // runtime per request and reads ``INTERNAL_API_URL`` fresh each time;
+  // that's where the runtime-configurable proxy actually lives. Codex
+  // P1 on M7.
 };
 
 export default nextConfig;
