@@ -14,6 +14,7 @@ The storage abstraction (post-M2) means the api no longer touches
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
@@ -424,11 +425,22 @@ def _wipe_legacy_extract_path(extract_path: str | None) -> None:
     the legacy tree. Detect legacy by absolute-path shape and wipe via
     filesystem ops so deleting a pre-M2 row doesn't leak files. Codex
     P1 on M2.
+
+    Note on error handling: we used to pass ``ignore_errors=True`` here,
+    but that masks permission / I/O failures and lets the caller commit
+    the DB delete while files remain on disk. Surface real errors so
+    the caller's transaction unwinds and the row sticks around for a
+    retry; only no-op on FileNotFoundError (the tree was already gone).
+    Codex P2 on M2.
     """
 
     if not extract_path or not extract_path.startswith("/"):
         return
-    shutil.rmtree(extract_path, ignore_errors=True)
+    # Idempotent: a concurrent retention sweep may have already removed
+    # the legacy tree. Any other rmtree failure (permissions, I/O) is
+    # propagated so the caller's transaction unwinds.
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(extract_path)
 
 
 def _has_zip_magic_in_storage(storage: Storage, key: str) -> bool:

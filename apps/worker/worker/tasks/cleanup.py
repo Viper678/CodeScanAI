@@ -23,6 +23,7 @@ sweep continues with the next row.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import shutil
 from datetime import UTC, datetime, timedelta
@@ -177,8 +178,17 @@ def _wipe_legacy_extract_path(extract_path: str | None) -> None:
     separate tree from the upload's raw zip), and persisted that absolute
     path to ``upload.extract_path``. Post-M2 ``delete_prefix("uploads/<id>/")``
     doesn't reach that legacy tree.
+
+    Real removal failures (permissions, I/O) propagate so the caller in
+    ``_delete_one`` catches them and reports ERROR — letting the row
+    stick around for a retry rather than committing the DB delete while
+    files remain on disk. Only FileNotFoundError is silently swallowed
+    (legacy tree already cleaned up by a concurrent sweep). Codex P2 on M2.
     """
 
     if not extract_path or not extract_path.startswith("/"):
         return
-    shutil.rmtree(extract_path, ignore_errors=True)
+    # FileNotFoundError → idempotent no-op (already removed); other
+    # errors propagate so ``_delete_one``'s caller leaves the row intact.
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(extract_path)

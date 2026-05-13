@@ -107,3 +107,28 @@ def test_wipe_legacy_extract_path_is_idempotent_when_dir_missing(tmp_path: Path)
     once already), a second call must not raise."""
 
     _wipe_legacy_extract_path(str(tmp_path / "does-not-exist"))
+
+
+def test_wipe_legacy_extract_path_propagates_real_removal_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Permissions / I/O failures during ``shutil.rmtree`` MUST propagate.
+    The previous ``ignore_errors=True`` shape silently masked these,
+    letting ``delete_upload`` commit the DB delete while files remained
+    on disk. Codex P2 on M2.
+    """
+
+    def boom(_path: str) -> None:
+        raise PermissionError("simulated EACCES on rmtree")
+
+    monkeypatch.setattr("app.services.upload_service.shutil.rmtree", boom)
+
+    with pytest.raises(PermissionError):
+        _wipe_legacy_extract_path("/data/extracts/legacy")
+
+    # Sanity: the FileNotFoundError carve-out still applies (idempotent).
+    def already_gone(_path: str) -> None:
+        raise FileNotFoundError("simulated already-removed tree")
+
+    monkeypatch.setattr("app.services.upload_service.shutil.rmtree", already_gone)
+    _wipe_legacy_extract_path("/data/extracts/already-gone")  # no raise

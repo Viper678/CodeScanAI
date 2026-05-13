@@ -23,7 +23,7 @@ import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from app.storage.base import StorageKeyError
 
@@ -38,6 +38,33 @@ def _tmp_path_for(target: Path) -> Path:
     """
 
     return target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+
+
+# justify: ``Path.open("wb")`` honors the process umask (commonly 022) so
+# files end up world-readable (0o644). Pre-M2 the upload service used
+# ``os.open(..., 0o600)`` explicitly for raw zips. Preserve that: anything
+# we write through LocalStorage (raw zips, loose files, extracted source)
+# is private to the api/worker user on a shared filesystem (single-VM
+# deployments, docker-compose volumes mounted host-side). Codex P2 on M2.
+_FILE_MODE: int = 0o600
+
+
+def _open_private_excl(path: Path) -> BinaryIO:
+    """Open ``path`` for binary write with ``0o600`` perms, refusing to
+    clobber an existing file.
+
+    ``os.open`` respects the mode argument directly (modulo umask, which
+    only masks bits *not* set in the requested mode — so 0o600 stays 0o600
+    under any standard umask). ``O_EXCL`` paired with ``O_CREAT`` makes the
+    create atomic against another process racing on the same temp name —
+    the uuid suffix already makes that essentially impossible, but
+    O_EXCL costs nothing.
+    """
+
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE)
+    # closefd=True transfers ownership to the file object; the caller's
+    # ``with`` block closes the underlying descriptor.
+    return cast(BinaryIO, os.fdopen(fd, "wb", closefd=True))
 
 
 logger = logging.getLogger(__name__)
@@ -93,14 +120,15 @@ class LocalStorage:
         # legitimately-extracted ``foo.tmp`` elsewhere in the same zip
         # and silently overwrites it before rename. Codex P2 on M2.
         tmp = _tmp_path_for(target)
-        tmp.write_bytes(data)
+        with _open_private_excl(tmp) as out:
+            out.write(data)
         os.replace(tmp, target)
 
     def put_stream(self, key: str, stream: BinaryIO) -> None:
         target = self._resolve(key)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = _tmp_path_for(target)
-        with tmp.open("wb") as out:
+        with _open_private_excl(tmp) as out:
             while True:
                 chunk = stream.read(_STREAM_CHUNK)
                 if not chunk:

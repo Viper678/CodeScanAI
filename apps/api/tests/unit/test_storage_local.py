@@ -180,3 +180,32 @@ def test_put_stream_doesnt_collide_with_existing_tmp_suffixed_sibling(
 
     assert storage.get_bytes("uploads/abc/extracted/a.py.tmp") == b"tmp-content"
     assert storage.get_bytes("uploads/abc/extracted/a.py") == b"real-content"
+
+
+def test_put_bytes_writes_file_with_0600_perms(tmp_path: Path) -> None:
+    """Uploaded source must not be world-readable on a shared filesystem.
+    Pre-M2 the upload service used ``os.open(..., 0o600)``; M2 preserves
+    that via ``_open_private_excl``. ``Path.open("wb")`` defaults to
+    0o666 & ~umask (commonly 0o644) which would expose user code.
+    Codex P2 on M2.
+    """
+
+    import stat
+
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes("uploads/abc/raw.zip", b"PK\x03\x04hello")
+
+    mode = (tmp_path / "uploads" / "abc" / "raw.zip").stat().st_mode
+    assert stat.S_IMODE(mode) == 0o600
+
+
+def test_put_stream_writes_file_with_0600_perms(tmp_path: Path) -> None:
+    """Same 0600 guarantee for the streaming write path (zip extraction)."""
+
+    import stat
+
+    storage = LocalStorage(tmp_path)
+    storage.put_stream("uploads/abc/extracted/x.py", io.BytesIO(b"print('hi')\n"))
+
+    mode = (tmp_path / "uploads" / "abc" / "extracted" / "x.py").stat().st_mode
+    assert stat.S_IMODE(mode) == 0o600

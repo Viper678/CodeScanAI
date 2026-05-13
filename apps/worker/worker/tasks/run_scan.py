@@ -196,6 +196,17 @@ def _run(
             scan.finished_at = datetime.now(UTC)
             session.commit()
             return _result_dict(scan)
+        # Pre-M2 rows persisted extract_path as an absolute filesystem path
+        # (``/data/extracts/<id>``). Post-M2 storage backends reject leading-
+        # slash keys, so any per-file read would die in ``_build_plans`` /
+        # preflight with a ValueError — leaving the scan stuck in ``running``.
+        # Fail the scan cleanly so the operator can re-upload. Codex P1 on M2.
+        if upload.extract_path.startswith("/"):
+            scan.status = SCAN_STATUS_FAILED
+            scan.error = "upload predates storage migration; re-upload required"
+            scan.finished_at = datetime.now(UTC)
+            session.commit()
+            return _result_dict(scan)
         # Post-M2: extract_path holds a storage prefix (e.g.
         # ``uploads/<id>/extracted``) — the worker joins per-file keys
         # against this string, not a filesystem path. Strip any

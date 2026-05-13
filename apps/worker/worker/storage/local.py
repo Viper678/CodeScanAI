@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
 from pathlib import Path
-from typing import BinaryIO
+from typing import BinaryIO, cast
 
 from worker.storage.base import StorageKeyError
 
@@ -30,6 +30,19 @@ def _tmp_path_for(target: Path) -> Path:
     """
 
     return target.parent / f".{target.name}.{uuid.uuid4().hex}.tmp"
+
+
+# Mirror of api-side ``_open_private_excl``. ``Path.open("wb")`` honors
+# the process umask so files end up at 0o644 (world-readable on most
+# systems) — bad for uploaded source on a shared filesystem. Codex P2 on M2.
+_FILE_MODE: int = 0o600
+
+
+def _open_private_excl(path: Path) -> BinaryIO:
+    """Open ``path`` for binary write with ``0o600`` perms (excl create)."""
+
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, _FILE_MODE)
+    return cast(BinaryIO, os.fdopen(fd, "wb", closefd=True))
 
 
 logger = logging.getLogger(__name__)
@@ -79,18 +92,16 @@ class LocalStorage:
     def put_bytes(self, key: str, data: bytes) -> None:
         target = self._resolve(key)
         target.parent.mkdir(parents=True, exist_ok=True)
-        # Atomic write via uuid-suffixed tmp + rename. ``target.suffix + ".tmp"``
-        # would stage ``foo`` through ``foo.tmp`` and silently overwrite a
-        # legitimately-extracted ``foo.tmp`` in the same dir. Codex P2 on M2.
         tmp = _tmp_path_for(target)
-        tmp.write_bytes(data)
+        with _open_private_excl(tmp) as out:
+            out.write(data)
         os.replace(tmp, target)
 
     def put_stream(self, key: str, stream: BinaryIO) -> None:
         target = self._resolve(key)
         target.parent.mkdir(parents=True, exist_ok=True)
         tmp = _tmp_path_for(target)
-        with tmp.open("wb") as out:
+        with _open_private_excl(tmp) as out:
             while True:
                 chunk = stream.read(_STREAM_CHUNK)
                 if not chunk:

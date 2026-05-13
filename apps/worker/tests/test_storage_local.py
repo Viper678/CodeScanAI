@@ -175,3 +175,29 @@ def test_put_stream_doesnt_collide_with_existing_tmp_suffixed_sibling(
 
     assert storage.get_bytes("uploads/abc/extracted/a.py.tmp") == b"tmp-content"
     assert storage.get_bytes("uploads/abc/extracted/a.py") == b"real-content"
+
+
+def test_put_bytes_writes_file_with_0600_perms(tmp_path: Path) -> None:
+    """0o600 mirror of the api-side test — shared-filesystem privacy
+    invariant. Codex P2 on M2.
+    """
+
+    import stat
+
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes("uploads/abc/raw.zip", b"PK\x03\x04hello")
+
+    mode = (tmp_path / "uploads" / "abc" / "raw.zip").stat().st_mode
+    assert stat.S_IMODE(mode) == 0o600
+
+
+def test_put_stream_writes_file_with_0600_perms(tmp_path: Path) -> None:
+    """Same 0600 guarantee for the streaming write path (zip extraction)."""
+
+    import stat
+
+    storage = LocalStorage(tmp_path)
+    storage.put_stream("uploads/abc/extracted/x.py", io.BytesIO(b"print('hi')\n"))
+
+    mode = (tmp_path / "uploads" / "abc" / "extracted" / "x.py").stat().st_mode
+    assert stat.S_IMODE(mode) == 0o600
