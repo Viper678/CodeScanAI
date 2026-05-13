@@ -298,3 +298,69 @@ def classify(file_path: Path, extract_root: Path) -> FileMeta:
         is_excluded_by_default=reason is not None,
         excluded_reason=reason,
     )
+
+
+def classify_bytes(rel_path: str, data: bytes) -> FileMeta:
+    """Build a ``FileMeta`` for ``data`` at ``rel_path``.
+
+    Bytes-based companion to :func:`classify`. Used by the post-M2
+    Storage-backed worker pipeline where files are read from a backend
+    (LocalStorage or GcsStorage) into memory before classification
+    rather than walked off the filesystem. The arithmetic and the rules
+    are the same — only the byte source differs.
+
+    Args:
+        rel_path: Forward-slash relative path of the file inside its
+            upload. The classifier never opens this path; it's used
+            only to derive ``parent_path``/``name``/extension rules.
+        data: Full bytes of the file. Bounded by
+            ``max_entry_uncompressed_bytes`` (configurable;
+            ``MAX_ENTRY_UNCOMPRESSED_MB``) at extraction time, so the
+            in-memory cost is capped.
+
+    Returns:
+        A populated ``FileMeta`` ready to be persisted.
+    """
+
+    parent_path = os.path.dirname(rel_path)
+    name = os.path.basename(rel_path)
+    base, ext = _split_basename(name)
+
+    size_bytes = len(data)
+    digest = hashlib.sha256(data).hexdigest()
+    binary = _is_binary_bytes(data)
+    language = None if binary else detect_language(name)
+
+    max_scan = settings.max_scan_file_size_mb * 1024 * 1024
+    reason: str | None
+    if size_bytes > max_scan:
+        reason = EXCLUDED_REASON_OVERSIZE
+    elif binary:
+        reason = EXCLUDED_REASON_BINARY
+    else:
+        reason = _exclusion_from_path(rel_path, base, ext)
+
+    return FileMeta(
+        path=rel_path,
+        parent_path=parent_path,
+        name=name,
+        size_bytes=size_bytes,
+        sha256=digest,
+        language=language,
+        is_binary=binary,
+        is_excluded_by_default=reason is not None,
+        excluded_reason=reason,
+    )
+
+
+def _is_binary_bytes(data: bytes, *, sample_size: int = 8192) -> bool:
+    """In-memory mirror of :func:`is_binary`. Same heuristic, same window."""
+
+    sample = data[:sample_size]
+    if not sample:
+        return False
+    if b"\x00" in sample:
+        return True
+    text_bytes = {0x09, 0x0A, 0x0D, *range(0x20, 0x7F), *range(0x80, 0x100)}
+    non_text = sum(1 for b in sample if b not in text_bytes)
+    return (non_text / len(sample)) > 0.30

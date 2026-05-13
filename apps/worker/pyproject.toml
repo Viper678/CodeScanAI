@@ -5,6 +5,7 @@ description = "Celery worker for CodeScan."
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "celery[redis]==5.4.0",
+    "google-cloud-storage==3.10.1",
     "openai==1.109.1",
     "psycopg[binary]==3.2.3",
     "pydantic-settings==2.7.0",
@@ -41,6 +42,10 @@ strict = true
 
 [[tool.mypy.overrides]]
 module = ["celery", "celery.*"]
+ignore_missing_imports = true
+
+[[tool.mypy.overrides]]
+module = ["google.*", "google.cloud.*", "google.api_core.*"]
 ignore_missing_imports = true
 
 [tool.pytest.ini_options]

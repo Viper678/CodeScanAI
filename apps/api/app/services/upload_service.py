@@ -1,20 +1,28 @@
 """Business logic for the uploads endpoint.
 
-Validates the inbound multipart payload, streams to disk under
-``settings.data_dir / "uploads" / <upload_id>``, persists the row in
-status ``received``, and enqueues ``prepare_upload`` on the Celery broker.
-Extraction itself is handled by the worker (T2.2).
+Validates the inbound multipart payload, hands the bytes to the
+configured ``Storage`` backend (local filesystem in dev /
+docker-compose, GCS in prod), persists the row in status ``received``,
+and enqueues ``prepare_upload`` on the Celery broker. Extraction itself
+is handled by the worker (T2.2).
+
+The storage abstraction (post-M2) means the api no longer touches
+``settings.data_dir`` directly. Reads / writes / deletes flow through
+``app.storage.Storage`` — see ``docs/GCP_MIGRATION.md`` §D2 and
+``app/storage/base.py`` for the key conventions.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import BinaryIO, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -41,13 +49,24 @@ from app.repositories.file_repo import FileRepo
 from app.repositories.upload_repo import UploadRepo
 from app.schemas.upload import TreeFile, TreeResponse, UploadStatus
 from app.services.celery_client import enqueue_prepare_upload
+from app.storage import (
+    Storage,
+    get_storage,
+    loose_key,
+    raw_zip_key,
+    upload_prefix,
+)
 
 logger = logging.getLogger(__name__)
 
 CHUNK_SIZE = 1024 * 1024  # 1 MiB stream window
 ZIP_MAGIC = b"PK\x03\x04"
 ZIP_EMPTY_MAGIC = b"PK\x05\x06"
-LOOSE_SUBDIR = "loose"
+# Threshold past which ``SpooledTemporaryFile`` spills the in-memory buffer
+# to a real on-disk temp file. 4 MiB keeps small uploads (most config /
+# loose-file payloads) entirely in RAM while bounding peak RSS for any
+# upload up to ``max_upload_size_mb`` (default 100 MiB).
+_UPLOAD_SPOOL_THRESHOLD = 4 * 1024 * 1024
 
 
 class UploadFileLike(Protocol):
@@ -67,10 +86,18 @@ class UploadFileLike(Protocol):
 
 @dataclass(frozen=True)
 class _StoredFile:
-    """Result of streaming one part to disk."""
+    """Result of streaming one part to storage.
+
+    ``header_bytes`` is the first up-to-4 bytes captured during the
+    streaming write — used by the zip-magic check at ``create_zip_upload``
+    so we don't re-read the whole stored object just to inspect the
+    leading magic word (which on GCS would mean a full second download).
+    Codex P2 on M2.
+    """
 
     original_name: str
     size_bytes: int
+    header_bytes: bytes
 
 
 class UploadEnqueuer(Protocol):
@@ -87,13 +114,15 @@ class UploadService:
         session: AsyncSession,
         *,
         enqueuer: UploadEnqueuer | None = None,
-        data_dir: Path | None = None,
+        storage: Storage | None = None,
     ) -> None:
         self.session = session
         self.uploads = UploadRepo(session)
         self.files = FileRepo(session)
         self._enqueue = enqueuer or enqueue_prepare_upload
-        self._data_dir = data_dir or settings.data_dir
+        # Resolve at construction so a swap of STORAGE_BACKEND via
+        # process restart is honored, and so tests can inject a fake.
+        self._storage = storage if storage is not None else get_storage()
 
     async def get_tree(self, *, upload_id: UUID, user_id: UUID) -> TreeResponse:
         """Return the materialized file tree for an upload.
@@ -142,21 +171,21 @@ class UploadService:
             raise UnsupportedFileType("Expected a .zip archive")
 
         upload_id = uuid7()
-        upload_dir = self._upload_dir(upload_id)
-        target_path = upload_dir / original_name
+        storage_path = raw_zip_key(upload_id)
         try:
-            stored = await _stream_to_disk(
+            stored = await _stream_to_storage(
                 upload_file,
-                target_path,
+                storage=self._storage,
+                key=storage_path,
                 max_bytes=max_bytes,
                 original_name=original_name,
             )
         except PayloadTooLarge:
-            _safe_cleanup(upload_dir)
+            self._storage.delete_prefix(upload_prefix(upload_id))
             raise
 
-        if not _has_zip_magic(target_path):
-            _safe_cleanup(upload_dir)
+        if stored.header_bytes not in {ZIP_MAGIC, ZIP_EMPTY_MAGIC}:
+            self._storage.delete_prefix(upload_prefix(upload_id))
             raise UnsupportedFileType("File is not a valid .zip archive")
 
         upload = await self.uploads.create(
@@ -165,7 +194,7 @@ class UploadService:
             original_name=original_name,
             kind=UPLOAD_KIND_ZIP,
             size_bytes=stored.size_bytes,
-            storage_path=str(target_path),
+            storage_path=storage_path,
             status=UPLOAD_STATUS_RECEIVED,
         )
         await self.session.commit()
@@ -188,8 +217,6 @@ class UploadService:
 
         max_bytes_per_file = settings.max_loose_file_size_mb * 1024 * 1024
         upload_id = uuid7()
-        upload_dir = self._upload_dir(upload_id)
-        loose_dir = upload_dir / LOOSE_SUBDIR
 
         # Validate every name first so we don't write any bytes for a doomed
         # request. The disk stream below still re-checks size.
@@ -197,26 +224,27 @@ class UploadService:
         for part in upload_files:
             base = _safe_basename(part.filename)
             if not is_allowed_loose_extension(base):
-                _safe_cleanup(upload_dir)
+                self._storage.delete_prefix(upload_prefix(upload_id))
                 raise UnsupportedFileType(f"File type not allowed: {base}")
             names.append(base)
 
         if len({name.lower() for name in names}) != len(names):
-            _safe_cleanup(upload_dir)
+            self._storage.delete_prefix(upload_prefix(upload_id))
             raise InvalidUploadRequest("Duplicate filenames are not allowed")
 
         total_bytes = 0
         try:
             for part, name in zip(upload_files, names, strict=True):
-                stored = await _stream_to_disk(
+                stored = await _stream_to_storage(
                     part,
-                    loose_dir / name,
+                    storage=self._storage,
+                    key=loose_key(upload_id, name),
                     max_bytes=max_bytes_per_file,
                     original_name=name,
                 )
                 total_bytes += stored.size_bytes
         except PayloadTooLarge:
-            _safe_cleanup(upload_dir)
+            self._storage.delete_prefix(upload_prefix(upload_id))
             raise
 
         # The "original_name" of a multi-file loose upload is the synthetic root
@@ -224,13 +252,17 @@ class UploadService:
         # the UI can display something meaningful.
         original_name = names[0] if len(names) == 1 else f"loose-{upload_id}"
 
+        # The upload's storage_path is the upload-level prefix — the worker
+        # walks it to locate every loose file. Stored as a key (forward
+        # slashes, no leading slash) so it round-trips through Storage on
+        # both local and GCS backends.
         upload = await self.uploads.create(
             upload_id=upload_id,
             user_id=user_id,
             original_name=original_name,
             kind=UPLOAD_KIND_LOOSE,
             size_bytes=total_bytes,
-            storage_path=str(upload_dir),
+            storage_path=upload_prefix(upload_id).rstrip("/"),
             status=UPLOAD_STATUS_RECEIVED,
         )
         await self.session.commit()
@@ -238,24 +270,22 @@ class UploadService:
         await self._enqueue_or_mark_failed(upload)
         return upload
 
-    def _upload_dir(self, upload_id: UUID) -> Path:
-        return self._data_dir / "uploads" / str(upload_id)
-
     async def delete_upload(self, *, upload_id: UUID, user_id: UUID) -> None:
         """Permanently delete an upload + every byte of user code we hold.
 
-        Wipes the on-disk raw artifact tree (``data_dir/uploads/<id>/``) and
-        the extracted tree (``upload.extract_path``) before deleting the
-        ``uploads`` row. The DB cascade then fans out through ``files`` →
-        ``scans`` → ``scan_files`` → ``scan_findings`` so a single call leaves
-        no trace of the upload — that's the contract advertised in
-        ``docs/API.md`` §Uploads and what data-retention-conscious customers
-        rely on.
+        Wipes the storage artifacts (raw + extracted under
+        ``uploads/<id>/`` in whatever backend is configured) before
+        deleting the ``uploads`` row. The DB cascade then fans out
+        through ``files`` → ``scans`` → ``scan_files`` → ``scan_findings``
+        so a single call leaves no trace of the upload — that's the
+        contract advertised in ``docs/API.md`` §Uploads and what
+        data-retention-conscious customers rely on.
 
-        Order matters: disk wipe first, DB delete second. If disk wipe fails
-        we surface a 500 with the row intact, so the caller can safely retry.
-        The reverse order would orphan rows whose backing files are already
-        gone (or vice-versa) — both are worse than a single visible failure.
+        Order matters: storage wipe first, DB delete second. If the wipe
+        fails we surface a 500 with the row intact, so the caller can
+        safely retry. The reverse order would orphan rows whose backing
+        files are already gone (or vice-versa) — both are worse than a
+        single visible failure.
 
         Raises:
             NotFound: when the upload doesn't exist or belongs to another
@@ -271,11 +301,24 @@ class UploadService:
         await self.session.commit()
 
     def _wipe_upload_artifacts(self, upload: Upload) -> None:
-        """Remove the raw + extracted directories for ``upload`` from disk."""
+        """Remove all storage artifacts for ``upload``.
 
-        _wipe_path(self._upload_dir(upload.id))
-        if upload.extract_path:
-            _wipe_path(Path(upload.extract_path))
+        A single ``delete_prefix`` over ``uploads/{id}/`` covers both the
+        raw upload artifacts and the worker-produced extract tree (which
+        also lives under that prefix per the M2 key convention). Idempotent
+        — missing keys are a no-op on both backends.
+
+        Pre-M2 rows persist absolute filesystem paths in ``storage_path``
+        (the raw upload, e.g. ``/data/uploads/<id>/<filename>.zip``) and
+        ``extract_path`` (the extract tree, e.g. ``/data/extracts/<id>``).
+        Both legacy shapes get wiped here so deleting a pre-M2 row leaves
+        no files behind even if the operator has flipped
+        ``STORAGE_BACKEND`` to ``gcs``. Codex P2 on M2.
+        """
+
+        self._storage.delete_prefix(upload_prefix(upload.id))
+        _wipe_legacy_storage_path(upload.storage_path)
+        _wipe_legacy_extract_path(upload.extract_path)
 
     async def _enqueue_or_mark_failed(self, upload: Upload) -> None:
         # If the broker is down, _enqueue raises before the worker ever sees the
@@ -356,73 +399,106 @@ async def _read_chunks(upload_file: UploadFileLike) -> AsyncIterator[bytes]:
         yield chunk
 
 
-async def _stream_to_disk(
+async def _stream_to_storage(
     upload_file: UploadFileLike,
-    target: Path,
     *,
+    storage: Storage,
+    key: str,
     max_bytes: int,
     original_name: str,
 ) -> _StoredFile:
-    """Stream ``upload_file`` to ``target`` aborting after ``max_bytes``.
+    """Stream ``upload_file`` to ``storage[key]`` aborting after ``max_bytes``.
 
-    The directory is created on demand. On size violation the partial file is
-    removed before raising.
+    Bytes are spooled to a ``SpooledTemporaryFile`` (in-memory for small
+    uploads, on-disk past ``_UPLOAD_SPOOL_THRESHOLD``) and shipped to
+    storage via a single ``put_stream`` call. Pre-M2 the upload service
+    streamed chunk-by-chunk straight to disk via ``os.open``; post-M2 we
+    keep the bounded peak-RSS guarantee by spooling rather than building
+    a Python list of chunks + ``b"".join`` (which would peak at ~2x
+    payload size and risk OOM under concurrent 100 MiB uploads). The GCS
+    impl reads the spool to ship the blob; LocalStorage just copies the
+    bytes through. Codex P2 on M2.
+
+    On size violation no bytes land in storage — we abort before the
+    put_stream call.
     """
 
-    target.parent.mkdir(parents=True, exist_ok=True)
     written = 0
-    # Open in exclusive mode so we never silently overwrite a previous stream;
-    # a UUIDv7 collision would be the only way to hit this branch.
-    fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    try:
-        with os.fdopen(fd, "wb") as fh:
+    header_bytes = b""
+    with tempfile.SpooledTemporaryFile(max_size=_UPLOAD_SPOOL_THRESHOLD, mode="w+b") as spool:
+        try:
             async for chunk in _read_chunks(upload_file):
                 written += len(chunk)
                 if written > max_bytes:
-                    fh.close()
-                    target.unlink(missing_ok=True)
                     raise PayloadTooLarge(
                         f"{original_name} exceeds the maximum size of {max_bytes} bytes"
                     )
-                fh.write(chunk)
-    finally:
-        await upload_file.close()
-    return _StoredFile(original_name=original_name, size_bytes=written)
+                spool.write(chunk)
+                # Capture up to 4 bytes of leading data for the zip-magic
+                # check at ``create_zip_upload``. Doing it here means we
+                # never re-download the stored object (which on GCS would
+                # be a full 100 MiB round trip per upload). Codex P2 on M2.
+                if len(header_bytes) < 4:
+                    header_bytes = (header_bytes + chunk)[:4]
+        finally:
+            await upload_file.close()
+        spool.seek(0)
+        storage.put_stream(key, cast(BinaryIO, spool))
+    return _StoredFile(
+        original_name=original_name,
+        size_bytes=written,
+        header_bytes=header_bytes,
+    )
 
 
-def _has_zip_magic(path: Path) -> bool:
-    """Return True iff the first bytes look like a zip file."""
+def _wipe_legacy_storage_path(storage_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path raw-upload artifact if present.
 
-    with path.open("rb") as fh:
-        header = fh.read(4)
-    return header in {ZIP_MAGIC, ZIP_EMPTY_MAGIC}
+    Pre-M2 the raw archive lived at ``/data/uploads/<id>/<filename>``
+    (file shape) or, for some intermediate layouts, ``/data/uploads/<id>``
+    (directory shape). Post-M2 ``storage_path`` carries the storage key
+    prefix ``uploads/<id>`` instead. Detect legacy via absolute-path
+    shape and unlink (file) or rmtree (dir). Codex P2 on M2.
 
-
-def _safe_cleanup(path: Path) -> None:
-    """Remove a directory tree, ignoring errors. Used on validation failure."""
-
-    if not path.exists():
-        return
-    try:
-        shutil.rmtree(path)
-    except OSError:
-        # Cleanup is best-effort — the alternative is leaking partials on disk.
-        logger.exception("failed to clean up upload directory %s", path)
-
-
-def _wipe_path(path: Path) -> None:
-    """Remove ``path`` recursively, surfacing OSError to the caller.
-
-    Distinct from ``_safe_cleanup``: that one runs on the *failure* path of an
-    upload where leaking partials is the worst case; this runs on the *delete*
-    path where a silent-ignore would let bytes survive a "compliant deletion."
-    A missing path is a no-op (idempotent), but a permission/IO error escapes.
+    Caution: NEVER walk to a parent — Path("/data/uploads/<id>").parent
+    is ``/data/uploads`` which contains every upload. Stay scoped to
+    the value the row holds.
     """
 
-    if not path.exists():
+    if not storage_path or not storage_path.startswith("/"):
         return
-    try:
-        shutil.rmtree(path)
-    except FileNotFoundError:
-        # Race with concurrent cleanup beat task — treat as success.
+    path = Path(storage_path)
+    with contextlib.suppress(FileNotFoundError):
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def _wipe_legacy_extract_path(extract_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path extract tree if present.
+
+    Pre-M2 prepare_upload extracted into ``/data/extracts/<id>/`` (a
+    separate tree from the upload's raw zip), and persisted that absolute
+    path to ``upload.extract_path``. Post-M2 the column carries a storage
+    key prefix (e.g. ``uploads/<id>/extracted``) and the new tree lives
+    under ``uploads/<id>/`` — so the M2 ``delete_prefix`` doesn't reach
+    the legacy tree. Detect legacy by absolute-path shape and wipe via
+    filesystem ops so deleting a pre-M2 row doesn't leak files. Codex
+    P1 on M2.
+
+    Note on error handling: we used to pass ``ignore_errors=True`` here,
+    but that masks permission / I/O failures and lets the caller commit
+    the DB delete while files remain on disk. Surface real errors so
+    the caller's transaction unwinds and the row sticks around for a
+    retry; only no-op on FileNotFoundError (the tree was already gone).
+    Codex P2 on M2.
+    """
+
+    if not extract_path or not extract_path.startswith("/"):
         return
+    # Idempotent: a concurrent retention sweep may have already removed
+    # the legacy tree. Any other rmtree failure (permissions, I/O) is
+    # propagated so the caller's transaction unwinds.
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(extract_path)

@@ -1,28 +1,48 @@
 """Integration tests for the file viewer endpoint (T4.3).
 
 ``GET /api/v1/uploads/{upload_id}/files/{file_id}/content`` reads the
-extracted file off disk. The tests stage rows directly via the test
-session and write fixture files into ``tmp_path``, mirroring the worker's
-post-extraction state.
+extracted file from the configured Storage backend. The tests stage
+rows directly via the test session and write fixture files into the
+LocalStorage-rooted ``tmp_path``, mirroring the worker's post-extraction
+state.
 
-Why no fixture for the upload's on-disk dir? The endpoint resolves the
-file via ``upload.extract_path``, so each test points the row at its own
-``tmp_path`` subdir — no shared mutable state between tests.
+Post-M2 the test fixtures redirect ``settings.data_dir`` to ``tmp_path``
+and plant files under ``uploads/<id>/extracted/<rel_path>`` to match
+the canonical storage key convention. The ``upload.extract_path`` DB
+column still holds the prefix string for backwards compatibility (the
+worker writes ``uploads/<id>/extracted`` there post-M2).
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from pathlib import Path
 from uuid import UUID, uuid4
 
 import httpx
+import pytest
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.uuid7 import uuid7
 from app.models.file import File
-from app.models.upload import UPLOAD_KIND_ZIP, UPLOAD_STATUS_READY, Upload
+from app.models.upload import UPLOAD_KIND_LOOSE, UPLOAD_KIND_ZIP, UPLOAD_STATUS_READY, Upload
 from app.models.user import User
+from app.storage import reset_storage_cache
+
+
+@pytest.fixture
+def storage_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Point LocalStorage at ``tmp_path`` and reset its cached factory.
+
+    The factory is invalidated before AND after each test so the next
+    fixture sees a fresh root, never the previous test's tmp dir.
+    """
+
+    monkeypatch.setattr(settings, "data_dir", tmp_path)
+    reset_storage_cache()
+    yield tmp_path
+    reset_storage_cache()
 
 
 async def _current_user(client: httpx.AsyncClient) -> User:
@@ -78,21 +98,32 @@ async def _seed_file_on_disk(
     db_session: AsyncSession,
     *,
     user_id: UUID,
-    tmp_path: Path,
+    storage_root: Path,
     rel_path: str = "src/hello.py",
     body: bytes = b"print('hi')\n",
     write_to_disk: bool = True,
 ) -> tuple[Upload, File]:
-    extract_root = tmp_path / "extracts" / uuid4().hex
-    extract_root.mkdir(parents=True, exist_ok=True)
+    """Plant a row + (optionally) a backing file in LocalStorage.
+
+    Files land under ``<storage_root>/uploads/<id>/extracted/<rel_path>``
+    to match the canonical post-M2 storage key shape. ``extract_path`` on
+    the upload row holds the storage prefix string the worker wrote when
+    extraction completed.
+    """
+
+    upload = _make_upload(user_id=user_id, extract_path="placeholder")
+    db_session.add(upload)
+    await db_session.flush()
+
+    extract_prefix = f"uploads/{upload.id}/extracted"
+    upload.extract_path = extract_prefix
+
     if write_to_disk:
+        extract_root = storage_root / extract_prefix
         target = extract_root / rel_path
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_bytes(body)
 
-    upload = _make_upload(user_id=user_id, extract_path=str(extract_root))
-    db_session.add(upload)
-    await db_session.flush()
     file_row = _make_file(
         upload_id=upload.id,
         path=rel_path,
@@ -113,12 +144,12 @@ async def _seed_file_on_disk(
 async def test_get_file_content_returns_text_body(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
     user = await _current_user(authed_client)
     body = b"def main():\n    return 42\n"
     upload, file_row = await _seed_file_on_disk(
-        db_session, user_id=user.id, tmp_path=tmp_path, body=body
+        db_session, user_id=user.id, storage_root=storage_root, body=body
     )
 
     response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
@@ -134,7 +165,7 @@ async def test_get_file_content_returns_text_body(
 async def test_get_file_content_unicode_round_trip(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
     """UTF-8 multibyte characters must survive — the endpoint streams raw bytes
     with a ``charset=utf-8`` content type, so the bytes the editor sees are
@@ -144,7 +175,7 @@ async def test_get_file_content_unicode_round_trip(
     user = await _current_user(authed_client)
     body = "# café — π ≈ 3.14\nname = 'José'\n".encode()
     upload, file_row = await _seed_file_on_disk(
-        db_session, user_id=user.id, tmp_path=tmp_path, body=body
+        db_session, user_id=user.id, storage_root=storage_root, body=body
     )
 
     response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
@@ -169,7 +200,7 @@ async def test_get_file_content_requires_auth(
 async def test_get_file_content_404_for_other_user(
     client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
     register_a = await client.post(
         "/api/v1/auth/register",
@@ -177,7 +208,9 @@ async def test_get_file_content_404_for_other_user(
     )
     assert register_a.status_code == 201
     user_a = await _current_user(client)
-    upload, file_row = await _seed_file_on_disk(db_session, user_id=user_a.id, tmp_path=tmp_path)
+    upload, file_row = await _seed_file_on_disk(
+        db_session, user_id=user_a.id, storage_root=storage_root
+    )
 
     client.cookies.clear()
     register_b = await client.post(
@@ -201,7 +234,7 @@ async def test_get_file_content_404_for_unknown_upload(
 async def test_get_file_content_404_for_cross_upload_file_id(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
     """A file_id that exists but belongs to a different upload returns 404 —
     we don't reveal the file's existence by leaking it via cross-upload reads.
@@ -209,10 +242,10 @@ async def test_get_file_content_404_for_cross_upload_file_id(
 
     user = await _current_user(authed_client)
     upload_a, _file_a = await _seed_file_on_disk(
-        db_session, user_id=user.id, tmp_path=tmp_path, rel_path="a.py"
+        db_session, user_id=user.id, storage_root=storage_root, rel_path="a.py"
     )
     upload_b, file_b = await _seed_file_on_disk(
-        db_session, user_id=user.id, tmp_path=tmp_path, rel_path="b.py"
+        db_session, user_id=user.id, storage_root=storage_root, rel_path="b.py"
     )
 
     response = await authed_client.get(f"/api/v1/uploads/{upload_a.id}/files/{file_b.id}/content")
@@ -227,8 +260,9 @@ async def test_get_file_content_404_for_cross_upload_file_id(
 async def test_get_file_content_404_when_extract_path_is_null(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
+    del storage_root  # fixture used solely to redirect LocalStorage
     user = await _current_user(authed_client)
     upload = _make_upload(user_id=user.id, extract_path=None)
     db_session.add(upload)
@@ -244,11 +278,11 @@ async def test_get_file_content_404_when_extract_path_is_null(
 async def test_get_file_content_404_when_disk_file_missing(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
     user = await _current_user(authed_client)
     upload, file_row = await _seed_file_on_disk(
-        db_session, user_id=user.id, tmp_path=tmp_path, write_to_disk=False
+        db_session, user_id=user.id, storage_root=storage_root, write_to_disk=False
     )
 
     response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
@@ -263,7 +297,7 @@ async def test_get_file_content_404_when_disk_file_missing(
 async def test_get_file_content_413_when_too_large(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
     monkeypatch: object,
 ) -> None:
     """Files larger than ``max_viewable_file_size_mb`` get 413.
@@ -279,7 +313,7 @@ async def test_get_file_content_413_when_too_large(
     user = await _current_user(authed_client)
     # Even 1 byte is over 0 MiB.
     upload, file_row = await _seed_file_on_disk(
-        db_session, user_id=user.id, tmp_path=tmp_path, body=b"x"
+        db_session, user_id=user.id, storage_root=storage_root, body=b"x"
     )
 
     response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
@@ -290,14 +324,14 @@ async def test_get_file_content_413_when_too_large(
 async def test_get_file_content_415_for_binary_file(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
     """A NUL byte in the first 8 KiB classifies the file as binary → 415."""
 
     user = await _current_user(authed_client)
     body = b"PK\x03\x04\x00\x00\x00\x00not really a zip"
     upload, file_row = await _seed_file_on_disk(
-        db_session, user_id=user.id, tmp_path=tmp_path, body=body
+        db_session, user_id=user.id, storage_root=storage_root, body=body
     )
 
     response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
@@ -315,24 +349,25 @@ async def test_get_file_content_415_for_binary_file(
 async def test_get_file_content_rejects_path_traversal(
     authed_client: httpx.AsyncClient,
     db_session: AsyncSession,
-    tmp_path: Path,
+    storage_root: Path,
 ) -> None:
-    """Even if a malicious row's ``path`` contains ``..``, the resolved file
-    must not escape ``extract_path``. We don't *actually* traverse — assert
-    the response is 404 (the safe-resolve check rejected it).
+    """Even if a malicious row's ``path`` contains ``..``, the resolved key
+    must not escape the upload's ``extracted/`` prefix. We don't *actually*
+    traverse — assert the response is 404 (the safe-resolve check rejected
+    it before any storage read).
     """
 
     user = await _current_user(authed_client)
-    extract_root = tmp_path / "extracts" / uuid4().hex
-    extract_root.mkdir(parents=True, exist_ok=True)
-    # Plant a real "secret" outside the extract root that the traversal
-    # would point at if our guard were off.
-    secret = tmp_path / "secret.txt"
+    # Plant a real "secret" outside the upload's extract prefix that the
+    # traversal would point at if our guard were off.
+    secret = storage_root / "uploads" / "secret.txt"
+    secret.parent.mkdir(parents=True, exist_ok=True)
     secret.write_bytes(b"top-secret password\n")
 
-    upload = _make_upload(user_id=user.id, extract_path=str(extract_root))
+    upload = _make_upload(user_id=user.id, extract_path="placeholder")
     db_session.add(upload)
     await db_session.flush()
+    upload.extract_path = f"uploads/{upload.id}/extracted"
     bad_row = _make_file(upload_id=upload.id, path="../secret.txt")
     db_session.add(bad_row)
     await db_session.commit()
@@ -341,3 +376,73 @@ async def test_get_file_content_rejects_path_traversal(
     assert response.status_code == 404
     # Belt-and-suspenders: never reflect the secret bytes.
     assert b"top-secret" not in response.content
+
+
+async def test_get_file_content_serves_loose_upload(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    storage_root: Path,
+) -> None:
+    """Loose uploads land at ``uploads/<id>/loose/`` (not ``extracted/``).
+    The viewer must build the key from ``upload.extract_path``, not by
+    always calling ``extracted_key()``. Codex P2 on M2 — pre-fix this
+    silently 404'd for every loose-upload file.
+    """
+
+    user = await _current_user(authed_client)
+    body = b"x = 1\nprint(x)\n"
+
+    upload = Upload(
+        id=uuid7(),
+        user_id=user.id,
+        original_name="hello.py",
+        kind=UPLOAD_KIND_LOOSE,
+        size_bytes=len(body),
+        storage_path=f"/tmp/{uuid4()}",  # noqa: S108 - test placeholder
+        extract_path="placeholder",
+        status=UPLOAD_STATUS_READY,
+        file_count=1,
+        scannable_count=1,
+    )
+    db_session.add(upload)
+    await db_session.flush()
+
+    extract_prefix = f"uploads/{upload.id}/loose"
+    upload.extract_path = extract_prefix
+
+    target = storage_root / extract_prefix / "hello.py"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_bytes(body)
+
+    file_row = _make_file(upload_id=upload.id, path="hello.py", size_bytes=len(body))
+    db_session.add(file_row)
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
+
+    assert response.status_code == 200, response.text
+    assert response.content == body
+
+
+async def test_get_file_content_404_for_legacy_absolute_extract_path(
+    authed_client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    storage_root: Path,
+) -> None:
+    """Pre-M2 ``extract_path`` was an absolute filesystem path
+    (e.g. ``/data/extracts/<id>``). Such legacy values aren't usable as
+    storage keys — Storage rejects leading slashes — so the viewer
+    returns 404 rather than 500. Codex P2 follow-up; documents the
+    intentional degradation for legacy rows."""
+
+    user = await _current_user(authed_client)
+    upload = _make_upload(user_id=user.id, extract_path="/data/extracts/legacy")
+    db_session.add(upload)
+    await db_session.flush()
+    file_row = _make_file(upload_id=upload.id, path="some/file.py")
+    db_session.add(file_row)
+    await db_session.commit()
+
+    response = await authed_client.get(f"/api/v1/uploads/{upload.id}/files/{file_row.id}/content")
+
+    assert response.status_code == 404

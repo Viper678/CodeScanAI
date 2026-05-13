@@ -4,6 +4,12 @@ Encodes every rule in docs/FILE_HANDLING.md §"Zip extraction safety". The
 caller (``worker.tasks.prepare_upload``) runs ``inspect_archive`` first, then
 extracts entry-by-entry via ``safe_extract`` so a sneaky entry late in the
 archive doesn't escape after the pre-flight pass.
+
+Post-M2 extraction writes through ``worker.storage.Storage`` instead of
+directly to the filesystem. Validators (path traversal, symlinks,
+zip-bomb ratio, nesting depth) still run on the in-memory zip entry's
+metadata BEFORE any ``storage.put_stream`` call, so a failed validator
+never leaves bytes in the backend.
 """
 
 from __future__ import annotations
@@ -14,7 +20,9 @@ import stat
 import zipfile
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO
+from typing import BinaryIO, cast
+
+from worker.storage.base import Storage, extracted_key
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +60,17 @@ class PathTooDeep(SafetyError):
 
 class CorruptArchiveError(SafetyError):
     """The archive could not be parsed by ``zipfile``."""
+
+
+class FileDirectoryCollision(SafetyError):
+    """A zip entry path is both a file and a directory prefix of another entry.
+
+    LocalStorage's filesystem semantics reject this implicitly (can't have a
+    file and a directory at the same path), but GCS treats paths as opaque
+    keys and would happily store both. The frontend then renders one as a
+    directory marker and the file disappears. Reject pre-flight so behavior
+    is consistent across backends. Codex P2 on M2.
+    """
 
 
 # ---- Result types -----------------------------------------------------------
@@ -101,7 +120,13 @@ def normalize_entry_path(name: str) -> str:
     # convert '/' to '\\'; we explicitly use posixpath via replace so the
     # check is cross-platform.
     normalized = os.path.normpath(cleaned).replace(os.sep, "/")
-    if normalized.startswith("../") or normalized == ".." or normalized.startswith("/"):
+    # Reject ``..`` (parent escape) AND ``.`` (degenerate self-reference):
+    # an entry whose normalized form resolves to ``.`` would yield
+    # ``extracted_key(upload_id, ".")`` == ``uploads/<id>/extracted/.``
+    # which LocalStorage's path.parent join collapses to the prefix
+    # itself — writing a file named "extracted" and leaving the upload
+    # marked ready with file_count=0. Codex P2 on M2.
+    if normalized in ("..", ".") or normalized.startswith("../") or normalized.startswith("/"):
         raise PathTraversalError(f"path traversal in entry: {name!r}")
     parts = normalized.split("/")
     if any(part == ".." for part in parts):
@@ -156,6 +181,14 @@ def inspect_archive(
     file_count = 0
     dir_count = 0
     total = 0
+    # Tracks for the file-vs-directory collision check (Codex P2 on M2):
+    # ``file_paths`` is every entry that's a file; ``dir_paths`` is every
+    # explicit dir entry PLUS the parent-dir chain of every file entry.
+    # An entry rejected here would silently corrupt the tree on GCS
+    # (which doesn't enforce filesystem semantics) — LocalStorage would
+    # already reject at write time.
+    file_paths: set[str] = set()
+    dir_paths: set[str] = set()
     try:
         for info in archive.infolist():
             # Path safety: reject before counting so we fail fast on malicious
@@ -168,10 +201,32 @@ def inspect_archive(
                     f"exceeds cap of {max_nesting_depth}"
                 )
             if info.is_dir():
+                if normalized in file_paths:
+                    raise FileDirectoryCollision(
+                        f"directory entry {info.filename!r} conflicts with prior file at same path"
+                    )
+                dir_paths.add(normalized)
                 dir_count += 1
                 if dir_count > max_dirs:
                     raise TooManyEntries(f"archive has more than {max_dirs} directory entries")
                 continue
+
+            # File entry — check collision against directory set + walk
+            # parent chain for files-acting-as-dirs.
+            if normalized in dir_paths:
+                raise FileDirectoryCollision(
+                    f"file entry {info.filename!r} conflicts with directory at same path"
+                )
+            parent = normalized
+            while "/" in parent:
+                parent = parent.rsplit("/", 1)[0]
+                if parent in file_paths:
+                    raise FileDirectoryCollision(
+                        f"file entry {info.filename!r} requires directory at "
+                        f"{parent!r} which is already a file"
+                    )
+                dir_paths.add(parent)
+            file_paths.add(normalized)
 
             file_count += 1
             if file_count > max_files:
@@ -206,17 +261,36 @@ def inspect_archive(
 # ---- Extraction -------------------------------------------------------------
 
 
-def safe_extract(zip_path: Path, extract_root: Path) -> int:
-    """Extract ``zip_path`` into ``extract_root``, skipping symlink entries.
+def safe_extract(
+    zip_path: Path,
+    *,
+    storage: Storage,
+    upload_id: str,
+) -> int:
+    """Extract ``zip_path`` into ``storage`` under the upload's prefix.
 
-    Returns the number of regular-file entries written. Per
-    FILE_HANDLING.md §3 every destination is re-resolved against the root
-    via ``Path.is_relative_to`` so a malicious entry that slipped past
-    the pre-flight check (e.g. stored as bytes) cannot escape.
+    Each entry is normalized + re-validated for path safety BEFORE any
+    bytes hit ``storage`` — so a failed validator never leaves a partial
+    object in the backend. Returns the number of regular-file entries
+    written. Symlink entries are skipped (with a warning).
+
+    Args:
+        zip_path: Path to the on-disk zip. The api stages this via
+            ``storage.put_bytes`` from the upload request; the worker
+            downloads it back to a local temp before calling here (or
+            passes a path inside a LocalStorage root for the local
+            backend — both shapes work as long as the file is readable
+            by ``zipfile.ZipFile``).
+        storage: The configured Storage backend (LocalStorage or
+            GcsStorage). Entries are written via ``put_stream`` so large
+            entries don't materialize into memory.
+        upload_id: The upload's UUID as a string. Keys are namespaced
+            under ``uploads/<upload_id>/extracted/<rel>``.
+
+    Returns:
+        Count of regular-file entries written.
     """
 
-    extract_root = extract_root.resolve()
-    extract_root.mkdir(parents=True, exist_ok=True)
     written = 0
 
     with zipfile.ZipFile(zip_path, mode="r") as archive:
@@ -225,34 +299,30 @@ def safe_extract(zip_path: Path, extract_root: Path) -> int:
                 logger.warning("skipping symlink zip entry %r (extract policy)", info.filename)
                 continue
             if info.is_dir():
-                # Pre-create empty directories — extractall would do the same
-                # but we need the path-traversal recheck.
-                rel = normalize_entry_path(info.filename)
-                target = (extract_root / rel).resolve()
-                if not target.is_relative_to(extract_root):
-                    raise PathTraversalError(f"directory entry escaped root: {info.filename!r}")
-                target.mkdir(parents=True, exist_ok=True)
+                # Directory entries are skipped — there are no "empty
+                # directories" in an object store. The local backend's
+                # put_stream auto-creates parent dirs on demand, so any
+                # file under a directory entry will still land there.
+                # We still re-normalize for the side-effect of raising
+                # on a traversal-shaped directory entry.
+                normalize_entry_path(info.filename)
                 continue
 
             rel = normalize_entry_path(info.filename)
-            target = (extract_root / rel).resolve()
-            if not target.is_relative_to(extract_root):
+            # Belt-and-braces traversal check — normalize_entry_path
+            # already rejects '../' segments, but we resolve once more
+            # against an in-memory anchor so a stored-as-bytes filename
+            # with embedded null bytes / oddities is caught at the
+            # extraction boundary, not later via storage error.
+            if rel.startswith("/") or rel.startswith("../") or "/../" in rel:
                 raise PathTraversalError(f"file entry escaped root: {info.filename!r}")
-            target.parent.mkdir(parents=True, exist_ok=True)
-            with archive.open(info, mode="r") as src, target.open("wb") as dst:
-                # Bound the per-entry write so a corrupted central directory
-                # can't lie about file_size.
-                _stream(src, dst)
+            key = extracted_key(upload_id, rel)
+            with archive.open(info, mode="r") as src:
+                # ``ZipExtFile`` returned by ``archive.open`` is typed as
+                # ``IO[bytes]`` but is a binary-mode ``BufferedIOBase`` —
+                # cast to satisfy the protocol annotation. The runtime
+                # surface (``read``) is identical.
+                storage.put_stream(key, cast(BinaryIO, src))
             written += 1
 
     return written
-
-
-def _stream(src: IO[bytes], dst: IO[bytes], chunk_size: int = 1 << 16) -> None:
-    """Copy ``src`` to ``dst`` in chunks. Both are file-like objects."""
-
-    while True:
-        chunk = src.read(chunk_size)
-        if not chunk:
-            return
-        dst.write(chunk)

@@ -1,23 +1,29 @@
 """Daily cleanup beat task — purges old uploads (T5.2).
 
 Mirrors the per-upload tear-down shape from
-``app.services.upload_service.UploadService.delete_upload``: wipe disk
-artifacts (raw upload tree + extract tree), then DB-delete the row so the
-``ON DELETE CASCADE`` FKs (PR #47) fan out through ``files`` → ``scans`` →
-``scan_files`` / ``scan_findings`` in one transaction.
+``app.services.upload_service.UploadService.delete_upload``: wipe storage
+artifacts (raw + extracted under ``uploads/<id>/``), then DB-delete the
+row so the ``ON DELETE CASCADE`` FKs (PR #47) fan out through ``files``
+→ ``scans`` → ``scan_files`` / ``scan_findings`` in one transaction.
+
+Post-M2: the wipe goes through ``worker.storage.Storage.delete_prefix``
+instead of ``shutil.rmtree`` so the same code path works against the
+LocalStorage (dev / docker-compose) and GcsStorage (prod) backends.
 
 The task is **disabled by default**: ``settings.retention_days is None`` →
 no-op DEBUG log, return zero counts. Operators set ``RETENTION_DAYS=<N>`` to
 enable. Beat ticks daily at 03:00 UTC regardless; a disabled tick is cheap.
 
-Per-row resilience: if the disk wipe fails for one upload (permission error,
-filesystem outage, etc), we log a warning and **leave that row in place** —
-better to keep DB and disk consistent for that one upload than orphan a row
-whose backing files are still on disk. The sweep continues with the next row.
+Per-row resilience: if the storage wipe fails for one upload (transient
+backend error, permissions, etc), we log a warning and **leave that row
+in place** — better to keep DB and storage consistent for that one
+upload than orphan a row whose backing files are still present. The
+sweep continues with the next row.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import shutil
 from datetime import UTC, datetime, timedelta
@@ -32,6 +38,7 @@ from worker.celery_app import celery_app
 from worker.core.config import settings
 from worker.core.db import session_scope
 from worker.core.models import Upload
+from worker.storage import Storage, get_storage, upload_prefix
 
 logger = logging.getLogger(__name__)
 
@@ -39,9 +46,9 @@ logger = logging.getLogger(__name__)
 class CleanupReport(TypedDict):
     """Summary returned to the Celery result backend.
 
-    ``swept`` counts uploads whose row + disk artifacts were both removed.
+    ``swept`` counts uploads whose row + storage artifacts were both removed.
     ``errors`` counts uploads we attempted but couldn't fully tear down
-    (typically a disk wipe failure); those rows stay in place.
+    (typically a storage wipe failure); those rows stay in place.
     """
 
     swept: int
@@ -71,6 +78,7 @@ def cleanup_old_uploads() -> CleanupReport:
         retention_days,
     )
 
+    storage = get_storage()
     swept = 0
     errors = 0
     with session_scope() as session:
@@ -87,7 +95,7 @@ def cleanup_old_uploads() -> CleanupReport:
             return CleanupReport(swept=0, errors=0)
 
         for upload_id in old_ids:
-            outcome = _delete_one(session, upload_id=upload_id, data_dir=settings.data_dir)
+            outcome = _delete_one(session, upload_id=upload_id, storage=storage)
             if outcome is _Outcome.SWEPT:
                 swept += 1
             else:
@@ -112,12 +120,13 @@ class _Outcome:
     ERROR = "error"
 
 
-def _delete_one(session: Session, *, upload_id: UUID, data_dir: Path) -> str:
-    """Tear down one upload (disk + DB). Returns SWEPT or ERROR.
+def _delete_one(session: Session, *, upload_id: UUID, storage: Storage) -> str:
+    """Tear down one upload (storage + DB). Returns SWEPT or ERROR.
 
-    Order: disk first, then DB. The reverse would orphan rows whose backing
-    files are gone (or vice-versa). On disk failure we leave the row alone
-    and surface ERROR so the operator sees a non-zero error count.
+    Order: storage first, then DB. The reverse would orphan rows whose
+    backing files are gone (or vice-versa). On storage failure we leave
+    the row alone and surface ERROR so the operator sees a non-zero
+    error count.
     """
 
     # Re-fetch in case the row was deleted concurrently (e.g. user-driven
@@ -127,16 +136,27 @@ def _delete_one(session: Session, *, upload_id: UUID, data_dir: Path) -> str:
     if upload is None:
         return _Outcome.SWEPT
 
-    raw_dir = data_dir / "uploads" / str(upload.id)
-    extract_dir = Path(upload.extract_path) if upload.extract_path else None
-
     try:
-        _wipe_path(raw_dir)
-        if extract_dir is not None:
-            _wipe_path(extract_dir)
-    except OSError:
+        # A single ``delete_prefix`` over ``uploads/{id}/`` covers both
+        # the raw upload artifacts and the worker-produced extract tree
+        # (which also lives under that prefix per the M2 key
+        # convention). Idempotent on both backends.
+        storage.delete_prefix(upload_prefix(upload.id))
+        # Pre-M2 rows persisted ``storage_path`` (raw upload) and
+        # ``extract_path`` (extract tree) as absolute filesystem paths
+        # under ``/data/{uploads,extracts}/<id>``. The new prefix-delete
+        # above doesn't reach either, so retention sweeps would leak
+        # legacy data — especially after a local-to-GCS cutover.
+        # Codex P1+P2 on M2.
+        _wipe_legacy_storage_path(upload.storage_path)
+        _wipe_legacy_extract_path(upload.extract_path)
+    except Exception:
+        # justify: storage failures are transient + opaque (transport
+        # issues, IAM permission gaps); we don't want a single bad
+        # upload to stop the sweep, so we catch any exception, record
+        # an error, and continue to the next row.
         logger.warning(
-            "cleanup_old_uploads: disk wipe failed for upload %s; leaving row intact",
+            "cleanup_old_uploads: storage wipe failed for upload %s; leaving row intact",
             upload.id,
             exc_info=True,
         )
@@ -153,20 +173,44 @@ def _delete_one(session: Session, *, upload_id: UUID, data_dir: Path) -> str:
     return _Outcome.SWEPT
 
 
-def _wipe_path(path: Path) -> None:
-    """Recursively remove ``path``; idempotent on missing entries.
+def _wipe_legacy_storage_path(storage_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path raw-upload artifact if present.
 
-    Mirrors ``app.services.upload_service._wipe_path`` deliberately — same
-    semantics so disk artifacts produced by the api delete flow and the
-    worker cleanup flow look identical to anyone reading either path. A
-    missing directory is a no-op (concurrent cleanup or never-extracted
-    upload), but a permission/IO error escapes to the caller.
+    Mirrors ``apps/api/app/services/upload_service._wipe_legacy_storage_path``.
+    Pre-M2 the raw archive lived at ``/data/uploads/<id>/<filename>`` (file)
+    or ``/data/uploads/<id>`` (directory) — outside ``uploads/<id>/`` once
+    that became a storage key prefix. Wipe by shape; never walk to a parent.
     """
 
-    if not path.exists():
+    if not storage_path or not storage_path.startswith("/"):
         return
-    try:
-        shutil.rmtree(path)
-    except FileNotFoundError:
-        # Race with another cleanup pass — treat as success.
+    path = Path(storage_path)
+    with contextlib.suppress(FileNotFoundError):
+        if path.is_dir():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
+
+
+def _wipe_legacy_extract_path(extract_path: str | None) -> None:
+    """Remove a pre-M2 absolute-path extract tree if present.
+
+    Mirrors the api-side helper in ``apps/api/app/services/upload_service.py``.
+    Pre-M2 ``prepare_upload`` extracted into ``/data/extracts/<id>/`` (a
+    separate tree from the upload's raw zip), and persisted that absolute
+    path to ``upload.extract_path``. Post-M2 ``delete_prefix("uploads/<id>/")``
+    doesn't reach that legacy tree.
+
+    Real removal failures (permissions, I/O) propagate so the caller in
+    ``_delete_one`` catches them and reports ERROR — letting the row
+    stick around for a retry rather than committing the DB delete while
+    files remain on disk. Only FileNotFoundError is silently swallowed
+    (legacy tree already cleaned up by a concurrent sweep). Codex P2 on M2.
+    """
+
+    if not extract_path or not extract_path.startswith("/"):
         return
+    # FileNotFoundError → idempotent no-op (already removed); other
+    # errors propagate so ``_delete_one``'s caller leaves the row intact.
+    with contextlib.suppress(FileNotFoundError):
+        shutil.rmtree(extract_path)

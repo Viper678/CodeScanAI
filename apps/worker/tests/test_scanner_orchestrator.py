@@ -21,6 +21,7 @@ from worker.scanners.base import (
     ScanContext,
     Scanner,
 )
+from worker.storage.local import LocalStorage
 from worker.tasks.run_scan import (
     _aggregate_usage_from_rows,
     _FilePlan,
@@ -32,29 +33,40 @@ from worker.tasks.run_scan import (
 # ---- Pre-flight skip --------------------------------------------------------
 
 
-def _plan(tmp_path: Path, *, content: str = "x", is_binary: bool = False) -> _FilePlan:
-    f = tmp_path / "a.py"
-    f.write_text(content)
-    return _FilePlan(
+def _plan(
+    tmp_path: Path, *, content: str = "x", is_binary: bool = False
+) -> tuple[_FilePlan, LocalStorage]:
+    """Construct a (_FilePlan, LocalStorage) pair backed by ``tmp_path``.
+
+    The plan's key (``a.py``) is written via the returned LocalStorage so
+    the test can hand the same storage to ``_preflight_skip`` /
+    ``_process_file_no_db``. Returns the storage alongside so callers can
+    chain assertions about the on-disk state.
+    """
+
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes("a.py", content.encode())
+    plan = _FilePlan(
         scan_file_id=uuid4(),
         file_id=uuid4(),
         relative_path="a.py",
-        abs_path=f,
+        key="a.py",
         language="python",
-        size_bytes=f.stat().st_size,
+        size_bytes=len(content.encode()),
         is_binary=is_binary,
     )
+    return plan, storage
 
 
 def test_preflight_skips_binary(tmp_path: Path) -> None:
-    plan = _plan(tmp_path, is_binary=True)
-    assert _preflight_skip(plan) == "binary"
+    plan, storage = _plan(tmp_path, is_binary=True)
+    assert _preflight_skip(plan, storage) == "binary"
 
 
 def test_preflight_skips_oversize(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(settings, "max_scan_file_size_mb", 0)  # 0 MB cap → 0 bytes
-    plan = _plan(tmp_path, content="hello")
-    assert _preflight_skip(plan) == "oversize"
+    plan, storage = _plan(tmp_path, content="hello")
+    assert _preflight_skip(plan, storage) == "oversize"
 
 
 def test_preflight_skips_too_large_for_context(
@@ -62,26 +74,27 @@ def test_preflight_skips_too_large_for_context(
 ) -> None:
     monkeypatch.setattr(settings, "max_scan_file_size_mb", 100)
     monkeypatch.setattr(settings, "gemma_max_input_tokens", 1)
-    plan = _plan(tmp_path, content="long content here exceeds 4 chars")
-    assert _preflight_skip(plan) == "too_large_for_context"
+    plan, storage = _plan(tmp_path, content="long content here exceeds 4 chars")
+    assert _preflight_skip(plan, storage) == "too_large_for_context"
 
 
 def test_preflight_passes_normal(tmp_path: Path) -> None:
-    plan = _plan(tmp_path, content="def f(): pass\n")
-    assert _preflight_skip(plan) is None
+    plan, storage = _plan(tmp_path, content="def f(): pass\n")
+    assert _preflight_skip(plan, storage) is None
 
 
 def test_preflight_missing_file(tmp_path: Path) -> None:
+    storage = LocalStorage(tmp_path)
     plan = _FilePlan(
         scan_file_id=uuid4(),
         file_id=uuid4(),
         relative_path="missing.py",
-        abs_path=tmp_path / "missing.py",
+        key="missing.py",
         language="python",
         size_bytes=10,
         is_binary=False,
     )
-    assert _preflight_skip(plan) == "missing"
+    assert _preflight_skip(plan, storage) == "missing"
 
 
 # ---- Keyword config parsing -------------------------------------------------
@@ -146,15 +159,15 @@ class _BoomScanner:
 def test_process_file_no_db_one_success_one_failure(tmp_path: Path) -> None:
     """Mixed result: one scanner succeeds, one raises → status=done with errors recorded."""
 
-    src = tmp_path / "x.py"
-    src.write_text("print(1)\n")
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes("x.py", b"print(1)\n")
     plan = _FilePlan(
         scan_file_id=uuid4(),
         file_id=uuid4(),
         relative_path="x.py",
-        abs_path=src,
+        key="x.py",
         language="python",
-        size_bytes=src.stat().st_size,
+        size_bytes=storage.size("x.py"),
         is_binary=False,
     )
     registry: dict[str, Scanner] = {"ok": _OkScanner(), "boom": _BoomScanner()}
@@ -163,6 +176,7 @@ def test_process_file_no_db_one_success_one_failure(tmp_path: Path) -> None:
         scan_types=["ok", "boom"],
         keywords_cfg=None,
         registry=registry,
+        storage=storage,
     )
     assert outcome.final_status == "done"
     assert outcome.tokens_in == 10
@@ -172,15 +186,15 @@ def test_process_file_no_db_one_success_one_failure(tmp_path: Path) -> None:
 
 
 def test_process_file_no_db_all_fail(tmp_path: Path) -> None:
-    src = tmp_path / "x.py"
-    src.write_text("print(1)\n")
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes("x.py", b"print(1)\n")
     plan = _FilePlan(
         scan_file_id=uuid4(),
         file_id=uuid4(),
         relative_path="x.py",
-        abs_path=src,
+        key="x.py",
         language="python",
-        size_bytes=src.stat().st_size,
+        size_bytes=storage.size("x.py"),
         is_binary=False,
     )
     registry: dict[str, Scanner] = {"boom": _BoomScanner()}
@@ -189,21 +203,22 @@ def test_process_file_no_db_all_fail(tmp_path: Path) -> None:
         scan_types=["boom"],
         keywords_cfg=None,
         registry=registry,
+        storage=storage,
     )
     assert outcome.final_status == "failed"
     assert outcome.final_error and "boom" in outcome.final_error
 
 
 def test_process_file_no_db_keyword_scanner_uses_ctx(tmp_path: Path) -> None:
-    src = tmp_path / "k.py"
-    src.write_text("# TODO me\n# nothing\n")
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes("k.py", b"# TODO me\n# nothing\n")
     plan = _FilePlan(
         scan_file_id=uuid4(),
         file_id=uuid4(),
         relative_path="k.py",
-        abs_path=src,
+        key="k.py",
         language="python",
-        size_bytes=src.stat().st_size,
+        size_bytes=storage.size("k.py"),
         is_binary=False,
     )
     from worker.scanners.keywords import KeywordScanner
@@ -214,6 +229,7 @@ def test_process_file_no_db_keyword_scanner_uses_ctx(tmp_path: Path) -> None:
         scan_types=["keywords"],
         keywords_cfg=KeywordsConfig(items=["TODO"], case_sensitive=False, regex=False),
         registry=registry,
+        storage=storage,
     )
     assert outcome.final_status == "done"
     assert len(outcome.findings_by_type["keywords"]) == 1

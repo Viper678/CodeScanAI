@@ -8,8 +8,9 @@ file. Limits are sourced from docs/FILE_HANDLING.md §"Upload limits".
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -35,8 +36,16 @@ class Settings(BaseSettings):
         "postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan"
     )
 
-    # Storage root shared with the api service via a docker volume.
+    # Storage root shared with the api service via a docker volume. Only
+    # consulted when ``storage_backend == 'local'``.
     data_dir: Path = Path("/data")
+    # Backend selector — see docs/GCP_MIGRATION.md §D2. ``local`` keeps the
+    # existing filesystem behavior (default; dev/CI/docker-compose).
+    # ``gcs`` routes operations through GCS, requiring ``storage_bucket``.
+    storage_backend: Literal["local", "gcs"] = "local"
+    # GCS bucket name when ``storage_backend == 'gcs'``. Required in that
+    # mode (validated below); ignored when local.
+    storage_bucket: str | None = None
 
     # Celery — broker + result backend share db 0 with the API's rate limiter
     # post-M3 (single Memorystore in prod, per docs/GCP_MIGRATION.md §D1).
@@ -113,6 +122,15 @@ class Settings(BaseSettings):
             msg = f"retention_days must be a positive integer or unset; got {value}"
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def _validate_storage_backend(self) -> Settings:
+        # Fail fast at startup so a misconfigured prod deploy doesn't get
+        # 500s on the first upload. Mirrored in the api config.
+        if self.storage_backend == "gcs" and not self.storage_bucket:
+            msg = "storage_bucket must be set when storage_backend='gcs'"
+            raise ValueError(msg)
+        return self
 
 
 settings = Settings()
