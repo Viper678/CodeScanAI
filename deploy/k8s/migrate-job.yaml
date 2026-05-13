@@ -1,0 +1,138 @@
+# =====================================================================
+# Alembic migrations as a Kubernetes Job (docs/GCP_MIGRATION.md §M5).
+#
+# Why a Job and not chained into the api container's CMD:
+#   - Multi-replica api Deployments would race the migration (each
+#     replica's entrypoint would call ``alembic upgrade head`` in
+#     parallel) — Alembic's advisory-lock fallback works but the
+#     pile-up at startup is needless coupling.
+#   - Migrations must run BEFORE the new api code is rolled, not on
+#     each pod boot. A Job decouples the schema bump from the rollout
+#     so a partial rollout never has half the pods on the old schema
+#     talking to a freshly migrated DB (or vice-versa).
+#
+# Deployment ordering (CI/CD pipeline — Phase B7):
+#   1. Build + push api/worker/web images to Artifact Registry.
+#   2. Create this Job and capture the generated name:
+#        JOB=$(kubectl create -f migrate-job.yaml -o name)
+#      ``kubectl create`` (not ``apply``) is required because
+#      ``metadata.generateName`` produces a fresh, random-suffixed
+#      name on every invocation — ``apply`` can't track an object
+#      that has no stable name.
+#   3. Wait for the Job to reach ``status.conditions[type=Complete]``:
+#        kubectl wait --for=condition=complete --timeout=12m "$JOB"
+#      The 12-min wait is 2 min longer than the Job's
+#      ``activeDeadlineSeconds`` (600s = 10 min) — see below. A shorter
+#      wait would let kubectl give up while the Job's still running,
+#      and a retry would then race a second migration against the DB.
+#   4. Only then roll the api / worker / worker-beat Deployments.
+#   5. If the Job fails (Alembic exited non-zero OR
+#      ``DeadlineExceeded``), abort the rollout — Deployments still
+#      on the previous image keep serving traffic on the previous
+#      schema.
+#
+# Local docker-compose still chains ``alembic upgrade head`` into the
+# api command at compose time (see ``docker-compose.yml`` /
+# ``docker-compose.override.yml``) — that's the dev shape, unchanged.
+#
+# Phase B7 will wrap this manifest into a Helm chart + ``helm hook``:
+#   helm.sh/hook: pre-install,pre-upgrade
+#   helm.sh/hook-weight: "-5"
+#   helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+# Note ``pre-install,pre-upgrade`` (not ``post-...``) — Helm's
+# pre-* hooks run BEFORE the chart's normal resources are applied,
+# so the migrate Job completes before any api/worker Deployment is
+# rolled. ``post-*`` hooks fire AFTER Deployments roll, which would
+# break the gating contract. This plain YAML is the starter artifact
+# that B7 templates around.
+# =====================================================================
+apiVersion: batch/v1
+kind: Job
+metadata:
+  # ``generateName`` so every release produces a fresh Job
+  # (``codescan-migrate-<random>``) — re-applying with the same fixed
+  # name fails because Job pod templates are immutable. The deploy
+  # pipeline records the generated name to ``kubectl wait`` on.
+  generateName: codescan-migrate-
+  labels:
+    app.kubernetes.io/name: codescan-migrate
+    app.kubernetes.io/component: migrate
+    app.kubernetes.io/part-of: codescan
+spec:
+  # Don't retry forever on broken migrations — a single retry covers
+  # a transient Cloud SQL flap; beyond that the migration is the
+  # problem and the operator needs to look.
+  backoffLimit: 1
+  # ``activeDeadlineSeconds`` bounds the Job's wall-clock run time and
+  # MUST be strictly less than the pipeline's ``kubectl wait`` timeout.
+  # Pairing (deadline=600, wait=720) means: a hung migration gets
+  # killed by k8s at 10 min (status flips to Failed/DeadlineExceeded);
+  # kubectl wait keeps polling for ``Complete``, gives up at 12 min,
+  # exits non-zero, pipeline aborts. The 2 min buffer is for k8s to
+  # actually mark the Job Failed and for the wait loop to observe it.
+  # If the relationship were inverted (deadline > wait), CI could time
+  # out while the Job kept running for another 5+ min — a retry would
+  # then create a SECOND ``codescan-migrate-<random>`` and run
+  # ``alembic upgrade head`` against the same DB twice in parallel.
+  # Codex P2 on M5 (refined in round 4).
+  activeDeadlineSeconds: 600
+  # Clean up the completed Job + its pod after an hour so a year of
+  # releases doesn't accumulate Job records in the namespace.
+  ttlSecondsAfterFinished: 3600
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codescan-migrate
+        app.kubernetes.io/component: migrate
+        app.kubernetes.io/part-of: codescan
+    spec:
+      # Migrations are one-shot; no restarts inside the pod. The
+      # outer Job handles the (single) retry via ``backoffLimit``.
+      restartPolicy: Never
+      # Workload Identity (Phase B3): k8s ServiceAccount bound to a
+      # Google service account with ``roles/cloudsql.client`` +
+      # ``roles/secretmanager.secretAccessor``. Placeholder for now;
+      # the SA itself is created in B3.
+      serviceAccountName: codescan-migrate
+      containers:
+        - name: migrate
+          # Artifact Registry path is templated by the deploy
+          # pipeline (Phase B7). The image tag MUST match the api
+          # Deployment tag being rolled in the same release —
+          # migrations and runtime code travel together.
+          image: REGION-docker.pkg.dev/PROJECT_ID/codescan/codescan-api:TAG
+          imagePullPolicy: IfNotPresent
+          command: ["uv", "run", "alembic", "upgrade", "head"]
+          env:
+            # Alembic uses the sync (psycopg) URL. Sourced from the
+            # k8s Secret synced by External Secrets Operator from
+            # Secret Manager (Phase B5).
+            - name: DATABASE_SYNC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: database-sync-url
+            # JWT_SECRET is required even though Alembic never uses it:
+            # ``alembic/env.py`` imports ``app.core.config.settings``
+            # (for the model metadata), which instantiates
+            # ``Settings()`` — and ``jwt_secret`` is a required field
+            # with no default, so the import crashes before any
+            # migration runs. Mount it from the same Secret as a
+            # cheap fix; a cleaner refactor (decouple env.py from
+            # the full Settings class) is a separate follow-up.
+            # Codex P1 on M5.
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: jwt-secret
+          resources:
+            # Conservative — Alembic itself is light; the work is
+            # all in Postgres. Bumped only if a future migration
+            # does an in-Python data backfill.
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

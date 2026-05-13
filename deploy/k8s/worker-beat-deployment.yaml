@@ -1,0 +1,167 @@
+# =====================================================================
+# Celery worker + beat scheduler Deployment (docs/GCP_MIGRATION.md §M6).
+#
+# Why a SEPARATE single-replica Deployment from ``worker-deployment.yaml``:
+#   - Celery's ``--beat`` runs an embedded scheduler in the worker
+#     process. Run N copies and the daily retention sweep fires N
+#     times — exactly the bug M6 solves.
+#   - The fix (Option A) is structural: one Deployment scales to N
+#     for task execution (no ``--beat``), one Deployment is pinned
+#     to replicas=1 for scheduling (with ``--beat``).
+#   - Both Deployments share the same image and ServiceAccount; the
+#     only material difference is the CMD override (``--beat``) and
+#     the replicas / strategy constraints below.
+#
+# This pod ALSO executes tasks (it's a worker + beat in one process),
+# so the cleanup task dispatched by beat runs locally in the same
+# process — no extra hop. That's fine; it's a single sweep per day.
+#
+# ⚠️ Do not scale ``replicas`` past 1 and do not switch ``strategy``
+# off ``Recreate``. Both would re-introduce the double-firing bug
+# M6 exists to solve. If horizontal scheduling is ever needed,
+# the spec's Option B (celery-redbeat with a Redis-backed lock) is
+# the right shape — not bumping replicas here.
+# =====================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codescan-worker-beat
+  labels:
+    app.kubernetes.io/name: codescan-worker-beat
+    app.kubernetes.io/component: worker-beat
+    app.kubernetes.io/part-of: codescan
+spec:
+  # HARD-CODED 1. Bumping this re-introduces duplicate-beat-firing
+  # (see file header). Helm values in B7 must NOT expose this as a
+  # tunable.
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codescan-worker-beat
+      app.kubernetes.io/component: worker-beat
+  strategy:
+    # ``Recreate`` — kill the old pod fully before starting the new
+    # one. A RollingUpdate window (default) would briefly run TWO
+    # beat processes (old + new), firing each scheduled task twice
+    # during the rollout. ``Recreate`` accepts a short scheduling
+    # gap (sub-minute) in exchange for never-double-fired.
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codescan-worker-beat
+        app.kubernetes.io/component: worker-beat
+        app.kubernetes.io/part-of: codescan
+    spec:
+      # Same SA as ``codescan-worker`` — identical DB / Redis / GCS
+      # access (this pod is also a task executor).
+      serviceAccountName: codescan-worker
+      # See ``worker-deployment.yaml`` for the rationale: warm-shutdown
+      # drain window for in-flight multi-file scans. Same 10 min cap
+      # here — this pod also executes tasks (worker + beat in one
+      # process). Codex P2 on M6.
+      terminationGracePeriodSeconds: 600
+      containers:
+        - name: worker-beat
+          # Same image as the plain worker — templated by the deploy
+          # pipeline (Phase B7). MUST match the worker Deployment's
+          # tag in the same release so schedule definitions can't drift.
+          image: REGION-docker.pkg.dev/PROJECT_ID/codescan/codescan-worker:TAG
+          imagePullPolicy: IfNotPresent
+          # Override the Dockerfile CMD to add ``--beat`` AND pin
+          # ``--concurrency=2`` (Celery defaults to node CPU count
+          # rather than the pod's cgroup limit — see
+          # ``worker-deployment.yaml`` for the full rationale, same
+          # numbers apply here since this pod also executes tasks).
+          # Codex P2 on M6.
+          command:
+            - uv
+            - run
+            - celery
+            - -A
+            - worker.celery_app
+            - worker
+            - --beat
+            - --concurrency=2
+          env:
+            # Same env wiring as ``worker-deployment.yaml`` —
+            # duplicated rather than DRY'd because Phase B7 will
+            # fold both into a chart with a shared values block.
+            - name: DATABASE_SYNC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: database-sync-url
+            - name: CELERY_BROKER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: celery-broker-url
+            - name: CELERY_RESULT_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: celery-result-backend
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: llm-api-key
+                  optional: true
+            - name: STORAGE_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: storage-backend
+            - name: STORAGE_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: storage-bucket
+            - name: DATA_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: data-dir
+            - name: LLM_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: llm-base-url
+            - name: GEMMA_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: gemma-model
+            - name: RETENTION_DAYS
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: retention-days
+                  optional: true
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: log-level
+          # Same shape as ``worker-deployment.yaml`` — see that file
+          # for the rationale on ``--timeout=5`` (Codex P2 on M6:
+          # celery inspect ping's 1s default would false-positive
+          # on a brief broker latency hiccup).
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'uv run celery -A worker.celery_app inspect ping -d celery@$HOSTNAME --timeout=5'
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
