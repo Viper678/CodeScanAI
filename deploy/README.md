@@ -37,9 +37,12 @@ The CI/CD pipeline (B7) runs roughly:
    ```sh
    JOB=$(kubectl create -f deploy/k8s/migrate-job.yaml -o name)
    ```
-3. Wait for completion:
+3. Wait for completion. The timeout MUST be strictly longer than the
+   Job's `activeDeadlineSeconds` (currently 10 min) so kubectl observes
+   a deadline-killed Job's `Failed` status instead of giving up while
+   it's still running:
    ```sh
-   kubectl wait --for=condition=complete --timeout=10m "$JOB"
+   kubectl wait --for=condition=complete --timeout=12m "$JOB"
    ```
 4. **Only on success**: roll the api / worker / worker-beat / web
    Deployments to the new tag.
