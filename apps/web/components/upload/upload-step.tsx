@@ -10,6 +10,7 @@ import {
 } from '@/lib/api/uploads/use-upload';
 import type { Upload } from '@/lib/api/uploads/types';
 import { Dropzone } from '@/components/upload/dropzone';
+import { ExistingUploadsList } from '@/components/upload/existing-uploads-list';
 import { Button } from '@/components/ui/button';
 import {
   Card,
@@ -23,6 +24,8 @@ import { StatusPill } from '@/components/status-pill';
 import { formatBytes } from '@/lib/format';
 import { cn } from '@/lib/utils';
 
+type Mode = 'new' | 'existing';
+
 type UploadStepProps = {
   /** Fires once the upload row reaches `status='ready'`. */
   onReady: (upload: Upload) => void;
@@ -30,8 +33,23 @@ type UploadStepProps = {
 
 type Phase = 'idle' | 'uploading' | 'extracting' | 'failed';
 
-/** Step 1 of the upload wizard. */
+/** Step 1 of the upload wizard. Two modes:
+ *
+ *  - ``new`` (default): drop a fresh zip / loose files. ``UploadMutation``
+ *    posts to ``POST /uploads``; polling watches the row until
+ *    ``status='ready'`` and ``onReady`` fires.
+ *  - ``existing``: pick a previously-uploaded archive that's already
+ *    extracted. The backend accepts any owned ``upload_id`` on
+ *    ``POST /scans``, so re-using an upload is "free" — no re-extract,
+ *    no GCS round-trips. Useful for trying different scan-type
+ *    combinations against the same code.
+ *
+ *  The toggle is intentionally local state (resets on remount). The
+ *  wizard parent only sees the eventual ``onReady(upload)`` call and
+ *  doesn't care which branch produced it.
+ */
 export function UploadStep({ onReady }: Readonly<UploadStepProps>) {
+  const [mode, setMode] = useState<Mode>('new');
   const [file, setFile] = useState<File | null>(null);
   const [phase, setPhase] = useState<Phase>('idle');
   const [progress, setProgress] = useState<number | null>(0);
@@ -160,101 +178,197 @@ export function UploadStep({ onReady }: Readonly<UploadStepProps>) {
       <CardHeader>
         <CardTitle className="text-base font-medium">Step 1 — Upload</CardTitle>
         <CardDescription>
-          Drop a zip archive of the repo you want to scan. Extraction starts
-          automatically once the upload completes.
+          {mode === 'new'
+            ? 'Drop a zip archive of the repo you want to scan. Extraction starts automatically once the upload completes.'
+            : 'Pick a previously-uploaded archive to skip re-uploading. The same files can power multiple scans.'}
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-6">
-        <Dropzone
-          accept=".zip,application/zip"
-          disabled={dropzoneDisabled}
-          onFileSelected={startUpload}
+        <ModeToggle
+          mode={mode}
+          onChange={setMode}
+          // Switching modes mid-upload would discard the in-flight state
+          // without cancelling the request; lock the toggle until the
+          // current attempt finishes or is cancelled.
+          disabled={phase === 'uploading' || phase === 'extracting'}
         />
 
-        {file ? (
-          <div
-            data-testid="upload-detail"
-            className="space-y-4 rounded-2xl border border-border/80 bg-card/60 p-4"
-          >
-            <div className="flex items-start justify-between gap-4">
-              <div className="flex min-w-0 items-start gap-3">
-                <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
-                  <FileArchive className="size-4" aria-hidden="true" />
-                </span>
-                <div className="min-w-0">
-                  <p
-                    className="truncate text-sm font-medium text-foreground"
-                    title={file.name}
-                  >
-                    {file.name}
-                  </p>
-                  <p className="text-xs text-muted-foreground">
-                    {formatBytes(file.size)}
-                  </p>
-                </div>
-              </div>
-              <div className="flex items-center gap-2">
-                <StatusPill status={statusPillStatus} />
-                {phase === 'uploading' || phase === 'extracting' ? (
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={reset}
-                  >
-                    <X className="size-3.5" aria-hidden="true" />
-                    Cancel
-                  </Button>
-                ) : null}
-              </div>
-            </div>
+        {mode === 'existing' ? (
+          <ExistingUploadsList onSelect={onReady} />
+        ) : (
+          <>
+            <Dropzone
+              accept=".zip,application/zip"
+              disabled={dropzoneDisabled}
+              onFileSelected={startUpload}
+            />
 
-            {phase === 'uploading' ? (
-              <div className="space-y-2">
-                <Progress value={progress} />
-                <p className="text-xs text-muted-foreground">{statusLabel}</p>
-              </div>
-            ) : null}
-
-            {phase === 'extracting' ? (
-              <div className="flex items-center gap-2 text-xs text-muted-foreground">
-                <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
-                <span>Extracting and indexing files…</span>
-              </div>
-            ) : null}
-
-            {phase === 'failed' ? (
+            {file ? (
               <div
-                role="alert"
-                className={cn(
-                  'flex items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3',
-                  'text-red-600 dark:text-red-300',
-                )}
+                data-testid="upload-detail"
+                className="space-y-4 rounded-2xl border border-border/80 bg-card/60 p-4"
               >
-                <AlertTriangle
-                  className="mt-0.5 size-4 shrink-0"
-                  aria-hidden="true"
-                />
-                <div className="flex min-w-0 flex-1 flex-col gap-2">
-                  <p className="text-sm font-medium">
-                    {errorMessage ?? 'Upload failed.'}
-                  </p>
-                  <div>
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={reset}
-                    >
-                      Try again
-                    </Button>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex min-w-0 items-start gap-3">
+                    <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                      <FileArchive className="size-4" aria-hidden="true" />
+                    </span>
+                    <div className="min-w-0">
+                      <p
+                        className="truncate text-sm font-medium text-foreground"
+                        title={file.name}
+                      >
+                        {file.name}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {formatBytes(file.size)}
+                      </p>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <StatusPill status={statusPillStatus} />
+                    {phase === 'uploading' || phase === 'extracting' ? (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        onClick={reset}
+                      >
+                        <X className="size-3.5" aria-hidden="true" />
+                        Cancel
+                      </Button>
+                    ) : null}
                   </div>
                 </div>
+
+                {phase === 'uploading' ? (
+                  <div className="space-y-2">
+                    <Progress value={progress} />
+                    <p className="text-xs text-muted-foreground">
+                      {statusLabel}
+                    </p>
+                  </div>
+                ) : null}
+
+                {phase === 'extracting' ? (
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Loader2
+                      className="size-3.5 animate-spin"
+                      aria-hidden="true"
+                    />
+                    <span>Extracting and indexing files…</span>
+                  </div>
+                ) : null}
+
+                {phase === 'failed' ? (
+                  <div
+                    role="alert"
+                    className={cn(
+                      'flex items-start gap-3 rounded-xl border border-red-500/30 bg-red-500/10 p-3',
+                      'text-red-600 dark:text-red-300',
+                    )}
+                  >
+                    <AlertTriangle
+                      className="mt-0.5 size-4 shrink-0"
+                      aria-hidden="true"
+                    />
+                    <div className="flex min-w-0 flex-1 flex-col gap-2">
+                      <p className="text-sm font-medium">
+                        {errorMessage ?? 'Upload failed.'}
+                      </p>
+                      <div>
+                        <Button
+                          type="button"
+                          variant="outline"
+                          size="sm"
+                          onClick={reset}
+                        >
+                          Try again
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
               </div>
             ) : null}
-          </div>
-        ) : null}
+          </>
+        )}
       </CardContent>
     </Card>
+  );
+}
+
+/** Two-button segmented toggle for Step 1's mode picker.
+ *
+ *  Rolled inline (no shadcn ``Tabs`` primitive) because this is the only
+ *  segmented control in the app today; the primitive's variants don't
+ *  pay for themselves at n=1.
+ */
+function ModeToggle({
+  mode,
+  onChange,
+  disabled,
+}: Readonly<{
+  mode: Mode;
+  onChange: (next: Mode) => void;
+  disabled: boolean;
+}>) {
+  return (
+    <div
+      role="tablist"
+      aria-label="Upload source"
+      className="inline-flex gap-1 rounded-xl border border-border/80 bg-card/40 p-1"
+    >
+      <ToggleButton
+        active={mode === 'new'}
+        disabled={disabled}
+        onClick={() => onChange('new')}
+        testId="upload-mode-new"
+      >
+        Upload new
+      </ToggleButton>
+      <ToggleButton
+        active={mode === 'existing'}
+        disabled={disabled}
+        onClick={() => onChange('existing')}
+        testId="upload-mode-existing"
+      >
+        Use existing
+      </ToggleButton>
+    </div>
+  );
+}
+
+function ToggleButton({
+  active,
+  disabled,
+  onClick,
+  children,
+  testId,
+}: Readonly<{
+  active: boolean;
+  disabled: boolean;
+  onClick: () => void;
+  children: React.ReactNode;
+  testId: string;
+}>) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      disabled={disabled}
+      onClick={onClick}
+      data-testid={testId}
+      className={cn(
+        'rounded-lg px-3 py-1.5 text-sm font-medium transition-colors',
+        'disabled:cursor-not-allowed disabled:opacity-50',
+        active
+          ? 'bg-background text-foreground shadow-sm'
+          : 'text-muted-foreground hover:text-foreground',
+      )}
+    >
+      {children}
+    </button>
   );
 }
