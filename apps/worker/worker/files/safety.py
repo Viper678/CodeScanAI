@@ -62,6 +62,17 @@ class CorruptArchiveError(SafetyError):
     """The archive could not be parsed by ``zipfile``."""
 
 
+class FileDirectoryCollision(SafetyError):
+    """A zip entry path is both a file and a directory prefix of another entry.
+
+    LocalStorage's filesystem semantics reject this implicitly (can't have a
+    file and a directory at the same path), but GCS treats paths as opaque
+    keys and would happily store both. The frontend then renders one as a
+    directory marker and the file disappears. Reject pre-flight so behavior
+    is consistent across backends. Codex P2 on M2.
+    """
+
+
 # ---- Result types -----------------------------------------------------------
 
 
@@ -170,6 +181,14 @@ def inspect_archive(
     file_count = 0
     dir_count = 0
     total = 0
+    # Tracks for the file-vs-directory collision check (Codex P2 on M2):
+    # ``file_paths`` is every entry that's a file; ``dir_paths`` is every
+    # explicit dir entry PLUS the parent-dir chain of every file entry.
+    # An entry rejected here would silently corrupt the tree on GCS
+    # (which doesn't enforce filesystem semantics) — LocalStorage would
+    # already reject at write time.
+    file_paths: set[str] = set()
+    dir_paths: set[str] = set()
     try:
         for info in archive.infolist():
             # Path safety: reject before counting so we fail fast on malicious
@@ -182,10 +201,32 @@ def inspect_archive(
                     f"exceeds cap of {max_nesting_depth}"
                 )
             if info.is_dir():
+                if normalized in file_paths:
+                    raise FileDirectoryCollision(
+                        f"directory entry {info.filename!r} conflicts with prior file at same path"
+                    )
+                dir_paths.add(normalized)
                 dir_count += 1
                 if dir_count > max_dirs:
                     raise TooManyEntries(f"archive has more than {max_dirs} directory entries")
                 continue
+
+            # File entry — check collision against directory set + walk
+            # parent chain for files-acting-as-dirs.
+            if normalized in dir_paths:
+                raise FileDirectoryCollision(
+                    f"file entry {info.filename!r} conflicts with directory at same path"
+                )
+            parent = normalized
+            while "/" in parent:
+                parent = parent.rsplit("/", 1)[0]
+                if parent in file_paths:
+                    raise FileDirectoryCollision(
+                        f"file entry {info.filename!r} requires directory at "
+                        f"{parent!r} which is already a file"
+                    )
+                dir_paths.add(parent)
+            file_paths.add(normalized)
 
             file_count += 1
             if file_count > max_files:

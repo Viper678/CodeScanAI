@@ -8,6 +8,7 @@ import pytest
 
 from tests._zip_helpers import write_zip
 from worker.files.safety import (
+    FileDirectoryCollision,
     PathTraversalError,
     inspect_archive,
     normalize_entry_path,
@@ -83,3 +84,62 @@ def test_inspect_rejects_backslash_entry(tmp_path: Path) -> None:
 
     with pytest.raises(PathTraversalError):
         inspect_archive(path, **CAPS)
+
+
+# ---- File-vs-directory collision (Codex P2 on M2, round 5) -----------------
+
+
+def test_inspect_rejects_file_then_directory_at_same_path(tmp_path: Path) -> None:
+    """``a`` as a file and ``a/b.py`` as a file means ``a`` is both a file
+    AND a required parent directory. LocalStorage rejects implicitly;
+    GCS would store both, and the frontend would render ``a`` as a dir
+    marker, hiding the file. Pre-flight must reject."""
+
+    path = tmp_path / "collide_file_then_dir.zip"
+    write_zip(path, {"a": "first\n", "a/b.py": "print(1)\n"})
+
+    with pytest.raises(FileDirectoryCollision):
+        inspect_archive(path, **CAPS)
+
+
+def test_inspect_rejects_directory_then_file_at_same_path(tmp_path: Path) -> None:
+    """Inverse ordering — ``a/b.py`` first puts ``a`` in the directory set,
+    then ``a`` as a file entry must be rejected."""
+
+    path = tmp_path / "collide_dir_then_file.zip"
+    write_zip(path, {"a/b.py": "print(1)\n", "a": "second\n"})
+
+    with pytest.raises(FileDirectoryCollision):
+        inspect_archive(path, **CAPS)
+
+
+def test_inspect_rejects_explicit_dir_entry_at_existing_file_path(
+    tmp_path: Path,
+) -> None:
+    """An explicit ``a/`` directory entry after ``a`` as a file is a
+    collision too."""
+
+    path = tmp_path / "collide_explicit_dir.zip"
+    write_zip(path, {"a": "file\n", "a/": ""})
+
+    with pytest.raises(FileDirectoryCollision):
+        inspect_archive(path, **CAPS)
+
+
+def test_inspect_accepts_normal_nested_tree(tmp_path: Path) -> None:
+    """Sanity: a well-formed tree (``src/main.py``, ``src/utils/helper.py``)
+    must NOT trip the collision check — only conflicts where a path is
+    both a file and a directory should fail."""
+
+    path = tmp_path / "normal.zip"
+    write_zip(
+        path,
+        {
+            "src/main.py": "print(1)\n",
+            "src/utils/helper.py": "def f(): pass\n",
+            "README.md": "hello\n",
+        },
+    )
+
+    result = inspect_archive(path, **CAPS)
+    assert result.file_count == 3

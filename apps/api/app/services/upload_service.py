@@ -18,10 +18,11 @@ import contextlib
 import logging
 import os
 import shutil
+import tempfile
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol, cast
+from typing import BinaryIO, Protocol, cast
 from uuid import UUID
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +62,11 @@ logger = logging.getLogger(__name__)
 CHUNK_SIZE = 1024 * 1024  # 1 MiB stream window
 ZIP_MAGIC = b"PK\x03\x04"
 ZIP_EMPTY_MAGIC = b"PK\x05\x06"
+# Threshold past which ``SpooledTemporaryFile`` spills the in-memory buffer
+# to a real on-disk temp file. 4 MiB keeps small uploads (most config /
+# loose-file payloads) entirely in RAM while bounding peak RSS for any
+# upload up to ``max_upload_size_mb`` (default 100 MiB).
+_UPLOAD_SPOOL_THRESHOLD = 4 * 1024 * 1024
 
 
 class UploadFileLike(Protocol):
@@ -395,31 +401,34 @@ async def _stream_to_storage(
 ) -> _StoredFile:
     """Stream ``upload_file`` to ``storage[key]`` aborting after ``max_bytes``.
 
-    Bytes are buffered in memory (bounded by ``max_bytes``) and flushed via
-    a single ``put_bytes`` call once the full payload has been received.
-    Why in-memory: every upload is already bounded by ``max_upload_size_mb``
-    (default 100 MiB), and the GCS impl needs a complete byte buffer to
-    produce a single atomic blob — incremental writes aren't supported on
-    the GCS object model. The local-storage put_bytes is equally atomic
-    (write-tmp + rename) so the behavior is consistent across backends.
+    Bytes are spooled to a ``SpooledTemporaryFile`` (in-memory for small
+    uploads, on-disk past ``_UPLOAD_SPOOL_THRESHOLD``) and shipped to
+    storage via a single ``put_stream`` call. Pre-M2 the upload service
+    streamed chunk-by-chunk straight to disk via ``os.open``; post-M2 we
+    keep the bounded peak-RSS guarantee by spooling rather than building
+    a Python list of chunks + ``b"".join`` (which would peak at ~2x
+    payload size and risk OOM under concurrent 100 MiB uploads). The GCS
+    impl reads the spool to ship the blob; LocalStorage just copies the
+    bytes through. Codex P2 on M2.
 
     On size violation no bytes land in storage — we abort before the
-    put_bytes call.
+    put_stream call.
     """
 
-    chunks: list[bytes] = []
     written = 0
-    try:
-        async for chunk in _read_chunks(upload_file):
-            written += len(chunk)
-            if written > max_bytes:
-                raise PayloadTooLarge(
-                    f"{original_name} exceeds the maximum size of {max_bytes} bytes"
-                )
-            chunks.append(chunk)
-    finally:
-        await upload_file.close()
-    storage.put_bytes(key, b"".join(chunks))
+    with tempfile.SpooledTemporaryFile(max_size=_UPLOAD_SPOOL_THRESHOLD, mode="w+b") as spool:
+        try:
+            async for chunk in _read_chunks(upload_file):
+                written += len(chunk)
+                if written > max_bytes:
+                    raise PayloadTooLarge(
+                        f"{original_name} exceeds the maximum size of {max_bytes} bytes"
+                    )
+                spool.write(chunk)
+        finally:
+            await upload_file.close()
+        spool.seek(0)
+        storage.put_stream(key, cast(BinaryIO, spool))
     return _StoredFile(original_name=original_name, size_bytes=written)
 
 
