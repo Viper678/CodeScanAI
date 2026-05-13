@@ -1,6 +1,5 @@
 'use client';
 
-import { useMemo } from 'react';
 import { AlertTriangle, FileArchive, FolderUp, Loader2 } from 'lucide-react';
 
 import { ApiError } from '@/lib/api/client';
@@ -27,18 +26,17 @@ type ExistingUploadsListProps = {
 export function ExistingUploadsList({
   onSelect,
 }: Readonly<ExistingUploadsListProps>) {
-  // Default page size mirrors the /uploads index — same hook, same scope.
-  // Pagination is a follow-up: the hook itself notes paging is out of
-  // scope for this iteration.
-  const query = useUploadsQuery({ limit: 50 });
+  // Server-side filter to ``status === 'ready'`` (Codex P2 follow-up). The
+  // backend returns uploads newest-first, so a client-side filter against
+  // the first 50 rows would mis-render the empty state if the latest 50
+  // were all extracting/failed but an older ready upload existed.
+  // ``limit: 100`` matches the api's hard cap and covers any realistic
+  // ready-upload backlog at this iteration; true pagination (load more,
+  // cursors) is a follow-up once the underlying ``useUploadsQuery`` hook
+  // gains paging.
+  const query = useUploadsQuery({ limit: 100, status: 'ready' });
 
-  const { ready, total } = useMemo(() => {
-    const items = query.data?.items ?? [];
-    return {
-      total: items.length,
-      ready: items.filter((u) => u.status === 'ready'),
-    };
-  }, [query.data]);
+  const ready: Upload[] = query.data?.items ?? [];
 
   if (query.isPending) {
     return (
@@ -72,7 +70,7 @@ export function ExistingUploadsList({
     );
   }
 
-  if (total === 0) {
+  if (ready.length === 0) {
     return (
       <div
         data-testid="existing-uploads-empty"
@@ -80,25 +78,10 @@ export function ExistingUploadsList({
       >
         <FolderUp className="size-8 text-muted-foreground" aria-hidden="true" />
         <p className="text-sm text-muted-foreground">
-          You haven&apos;t uploaded anything yet. Switch to{' '}
+          No ready uploads to choose from. Switch to{' '}
           <span className="font-medium text-foreground">Upload new</span> to
-          send your first archive.
-        </p>
-      </div>
-    );
-  }
-
-  if (ready.length === 0) {
-    return (
-      <div
-        data-testid="existing-uploads-no-ready"
-        className="flex flex-col items-center gap-2 rounded-2xl border border-dashed border-border/80 bg-card/40 p-6 text-center"
-      >
-        <FolderUp className="size-8 text-muted-foreground" aria-hidden="true" />
-        <p className="text-sm text-muted-foreground">
-          You have uploads, but none of them are ready to scan yet. Wait for
-          extraction to finish — or switch to{' '}
-          <span className="font-medium text-foreground">Upload new</span>.
+          send an archive — once extraction finishes it&apos;ll appear here for
+          re-use.
         </p>
       </div>
     );

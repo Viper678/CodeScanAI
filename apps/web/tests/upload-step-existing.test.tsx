@@ -88,62 +88,12 @@ describe('UploadStep — existing-upload mode', () => {
     expect(screen.getByText('other.zip')).toBeInTheDocument();
   });
 
-  it('hides non-ready rows even when the API returns them', () => {
-    useUploadsQueryMock.mockReturnValue({
-      data: {
-        items: [
-          makeUpload({
-            id: 'ready-1',
-            original_name: 'good.zip',
-            status: 'ready',
-          }),
-          makeUpload({
-            id: 'extracting-1',
-            original_name: 'still-going.zip',
-            status: 'extracting',
-          }),
-          makeUpload({
-            id: 'failed-1',
-            original_name: 'broken.zip',
-            status: 'failed',
-          }),
-        ],
-        next_cursor: null,
-        total: 3,
-      } as UploadListResponse,
-      error: null,
-      isError: false,
-      isPending: false,
-    });
-
-    render(<UploadStep onReady={vi.fn()} />);
-    fireEvent.click(screen.getByTestId('upload-mode-existing'));
-
-    expect(screen.getByText('good.zip')).toBeInTheDocument();
-    expect(screen.queryByText('still-going.zip')).toBeNull();
-    expect(screen.queryByText('broken.zip')).toBeNull();
-  });
-
-  it('shows the empty-but-have-uploads state when nothing is ready', () => {
-    useUploadsQueryMock.mockReturnValue({
-      data: {
-        items: [makeUpload({ status: 'extracting' })],
-        next_cursor: null,
-        total: 1,
-      } as UploadListResponse,
-      error: null,
-      isError: false,
-      isPending: false,
-    });
-
-    render(<UploadStep onReady={vi.fn()} />);
-    fireEvent.click(screen.getByTestId('upload-mode-existing'));
-
-    expect(screen.getByTestId('existing-uploads-no-ready')).toBeInTheDocument();
-    expect(screen.queryByTestId('existing-uploads-list')).toBeNull();
-  });
-
-  it('shows the totally-empty state when the user has zero uploads', () => {
+  it('shows the empty state when no ready uploads are returned', () => {
+    // After Codex P2 follow-up: the hook requests ``status=ready`` on the
+    // server, so the API only ever returns ready rows here. A single
+    // ``existing-uploads-empty`` state covers both "no uploads at all"
+    // and "all uploads are still extracting/failed" — the wizard can't
+    // distinguish, and the user-facing copy doesn't need to.
     useUploadsQueryMock.mockReturnValue({
       data: { items: [], next_cursor: null, total: 0 } as UploadListResponse,
       error: null,
@@ -155,6 +105,7 @@ describe('UploadStep — existing-upload mode', () => {
     fireEvent.click(screen.getByTestId('upload-mode-existing'));
 
     expect(screen.getByTestId('existing-uploads-empty')).toBeInTheDocument();
+    expect(screen.queryByTestId('existing-uploads-list')).toBeNull();
   });
 
   it('clicking "Use" invokes onReady with the picked upload', () => {
