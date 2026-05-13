@@ -39,10 +39,15 @@ describe('fetchFindings', () => {
       severity: ['high', 'critical'],
     });
 
+    // Post-M7 ``apiFetch`` issues same-origin relative URLs (the web
+    // container's Next.js ``rewrites()`` proxies ``/api/v1/*`` to the api
+    // service server-side). Resolve against a synthetic base so ``new URL``
+    // parses successfully — the path / query are what we actually assert on.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const firstCall = fetchMock.mock.calls[0]!;
     const url = firstCall[0] as string;
-    const search = new URL(url).searchParams;
+    expect(url.startsWith('/api/v1/')).toBe(true);
+    const search = new URL(url, 'http://test.local').searchParams;
     expect(search.get('severity')).toBe('high,critical');
     expect(search.get('scan_type')).toBe('security,bugs');
     expect(search.get('file_id')).toBe('file-9');
@@ -67,7 +72,9 @@ describe('fetchFindings', () => {
     });
 
     const call = fetchMock.mock.calls[0]!;
-    const search = new URL(call[0] as string).searchParams;
+    const url = call[0] as string;
+    expect(url.startsWith('/api/v1/')).toBe(true);
+    const search = new URL(url, 'http://test.local').searchParams;
     expect(search.has('severity')).toBe(false);
     expect(search.has('scan_type')).toBe(false);
     expect(search.has('file_id')).toBe(false);
@@ -77,13 +84,21 @@ describe('fetchFindings', () => {
 });
 
 describe('getExportUrl', () => {
-  it('builds an absolute URL with fmt + active filters', () => {
+  // Post-M7 the export URL is same-origin / relative — the browser resolves
+  // it against the document origin and Next.js ``rewrites()`` proxies it to
+  // the api server-side. Resolve against a synthetic base just to parse the
+  // path + query in tests; the actual return value is intentionally relative
+  // (no scheme / host) so a single web image works across all envs.
+  const TEST_ORIGIN = 'http://test.local';
+
+  it('builds a same-origin path with fmt + active filters', () => {
     const url = getExportUrl('scan-1', 'csv', {
       file_id: null,
       scan_type: ['security'],
       severity: ['critical'],
     });
-    const parsed = new URL(url);
+    expect(url.startsWith('/api/v1/')).toBe(true);
+    const parsed = new URL(url, TEST_ORIGIN);
     expect(parsed.pathname).toBe('/api/v1/scans/scan-1/export');
     expect(parsed.searchParams.get('fmt')).toBe('csv');
     expect(parsed.searchParams.get('severity')).toBe('critical');
@@ -96,7 +111,8 @@ describe('getExportUrl', () => {
       scan_type: [],
       severity: [],
     });
-    const parsed = new URL(url);
+    expect(url.startsWith('/api/v1/')).toBe(true);
+    const parsed = new URL(url, TEST_ORIGIN);
     expect([...parsed.searchParams.keys()]).toEqual(['fmt']);
     expect(parsed.searchParams.get('fmt')).toBe('json');
   });

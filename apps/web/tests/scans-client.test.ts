@@ -35,9 +35,14 @@ describe('fetchScans', () => {
       upload_id: 'upload-9',
     });
 
+    // Post-M7 ``apiFetch`` issues same-origin relative URLs (the web
+    // container's Next.js ``rewrites()`` proxies ``/api/v1/*`` to the api
+    // service server-side). Resolve against a synthetic base so ``new URL``
+    // parses successfully — only the path / query is asserted on.
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const url = fetchMock.mock.calls[0]![0] as string;
-    const search = new URL(url).searchParams;
+    expect(url.startsWith('/api/v1/')).toBe(true);
+    const search = new URL(url, 'http://test.local').searchParams;
     expect(search.get('status')).toBe('running,completed');
     expect(search.get('upload_id')).toBe('upload-9');
     expect(search.get('limit')).toBe('10');
@@ -53,7 +58,8 @@ describe('fetchScans', () => {
     await fetchScans({ status: [] });
 
     const url = fetchMock.mock.calls[0]![0] as string;
-    const search = new URL(url).searchParams;
+    expect(url.startsWith('/api/v1/')).toBe(true);
+    const search = new URL(url, 'http://test.local').searchParams;
     expect(search.has('status')).toBe(false);
     expect(search.has('upload_id')).toBe(false);
     // Limit / offset still present with their defaults so the server doesn't
@@ -71,7 +77,10 @@ describe('fetchScans', () => {
     await fetchScans({ limit: 9_999 });
 
     const url = fetchMock.mock.calls[0]![0] as string;
-    expect(new URL(url).searchParams.get('limit')).toBe('100');
+    expect(url.startsWith('/api/v1/')).toBe(true);
+    expect(new URL(url, 'http://test.local').searchParams.get('limit')).toBe(
+      '100',
+    );
   });
 });
 

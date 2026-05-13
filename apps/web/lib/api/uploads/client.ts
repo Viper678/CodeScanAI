@@ -1,9 +1,9 @@
 import {
+  API_BASE_PATH,
   ApiError,
   apiFetch,
   CSRF_HEADER,
   CSRF_VALUE,
-  getApiBaseUrl,
 } from '@/lib/api/client';
 import type { ApiErrorBody } from '@/lib/api/auth/types';
 import type {
@@ -79,7 +79,7 @@ export function uploadFile({
     }
 
     const xhr = new XMLHttpRequest();
-    xhr.open('POST', `${getApiBaseUrl()}/uploads`);
+    xhr.open('POST', `${API_BASE_PATH}/uploads`);
     xhr.withCredentials = true;
     xhr.setRequestHeader(CSRF_HEADER, CSRF_VALUE);
     xhr.setRequestHeader('Accept', 'application/json');

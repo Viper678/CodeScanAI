@@ -5,23 +5,32 @@
 # images without live-reload mounts. The mock LLM transport is wired in via
 # ``LLM_MOCK_MODE=true`` on the worker — no outbound Gemma traffic.
 #
-# Why alt host ports (web 3010, api 8010): both stacks bind localhost on
-# default ports; running e2e on 3000/8000 either collides with a dev stack
-# running in the same checkout or — worse — silently hits it. The latter
-# happens if a dev runs ``make e2e`` while ``docker compose up -d`` is
-# already on 3000: Playwright connects to the dev stack with the real
-# Gemma key, the canned-finding assertions fail with non-deterministic
-# real-LLM output, and CI passes while local fails. Postgres / Redis don't
-# need port overrides — the base file doesn't expose them, and the e2e
-# overlay deliberately omits the dev override that does.
+# Why an alt web port (3010): the dev stack binds ``3000`` on the host;
+# running e2e on 3000 either collides with a dev stack running in the same
+# checkout or — worse — silently hits it. The latter happens if a dev runs
+# ``make e2e`` while ``docker compose up -d`` is already on 3000:
+# Playwright connects to the dev stack with the real Gemma key, the
+# canned-finding assertions fail with non-deterministic real-LLM output,
+# and CI passes while local fails. Postgres / Redis don't need port
+# overrides — the base file doesn't expose them, and the e2e overlay
+# deliberately omits the dev override that does.
+#
+# Post-M7: the browser only talks to web (same-origin) and web's Next.js
+# ``rewrites()`` proxy ``/api/v1/*`` to the api service over the internal
+# compose network. The api container therefore doesn't need an alt host
+# port — Playwright never dials api directly. ``INTERNAL_API_URL``
+# inherits the base file's default (``http://api:8000/api/v1``).
 #
 # Invocation (handled by ``make e2e-up``):
 #   docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml up -d --build
 services:
   api:
     environment:
-      # The browser fetches api from ``http://localhost:3010`` (web's
-      # alt port) so CORS must allow that exact origin.
+      # Same-origin rewrites mean the browser → web → api flow never
+      # triggers CORS, but we keep this list set for defense-in-depth
+      # (per docs/GCP_MIGRATION.md §M8) and for direct api consumers
+      # (curl / scripts) that the e2e suite may grow over time. The
+      # value reflects the web alt port (3010) the e2e stack pins.
       #
       # JSON-encoded list rather than the comma-separated form the
       # ``split_cors_origins`` validator handles: pydantic-settings
@@ -31,24 +40,19 @@ services:
       # honored if the field carries a ``NoDecode`` annotation (latent
       # config bug, separate fix). JSON form sidesteps the parser.
       CORS_ALLOW_ORIGINS: '["http://localhost:3010"]'
-    # ``!override`` replaces the base file's ``ports`` rather than
-    # merging with it (compose's default for sequence fields is append).
-    # Without this, the e2e container would bind ``3000:3000`` AND
-    # ``3010:3000`` simultaneously, defeating the isolation: a dev stack
-    # already on 3000 would block the e2e stack from starting.
-    ports: !override
-      - "8010:8000"
+    # api no longer needs a host port — Playwright reaches the api only
+    # through web's same-origin rewrites over the internal compose
+    # network. ``!override`` replaces the base file's ``ports`` rather
+    # than merging with it (compose's default for sequence fields is
+    # append) — without it, the e2e container would re-publish 8000:8000
+    # and collide with a dev stack already on 8000.
+    ports: !override []
 
   web:
-    environment:
-      # Client-side fetches use this URL — it's read at Next.js dev-server
-      # startup and inlined into bundles. The ``apps/web/Dockerfile`` runs
-      # ``pnpm dev``, so a runtime override here is honored (a ``pnpm
-      # build`` image would have inlined the value at build time and
-      # ignored runtime overrides).
-      NEXT_PUBLIC_API_BASE_URL: "http://localhost:8010/api/v1"
     # See api ports comment — ``!override`` replaces 3000:3000 with the
-    # e2e-only 3010:3000 binding.
+    # e2e-only 3010:3000 binding. The browser hits ``http://localhost:3010``
+    # and Next.js's ``rewrites()`` (apps/web/next.config.mjs) proxies
+    # ``/api/v1/*`` to ``http://api:8000/api/v1/*`` server-side.
     ports: !override
       - "3010:3000"
 

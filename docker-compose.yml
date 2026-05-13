@@ -3,14 +3,22 @@ services:
     build:
       context: ./apps/web
     environment:
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
-      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-CodeScan}
+      # Read at request time by ``apps/web/next.config.mjs``'s ``rewrites()``
+      # — server-side proxy for ``/api/v1/*`` to the api service. Runtime
+      # env var (NOT a build-arg) so one image deploys to UAT / prod /
+      # future staging — see docs/GCP_MIGRATION.md §D4 + §M7.
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8000/api/v1}
     ports:
       - "3000:3000"
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
+      # ``/scans`` is a real authenticated route — Next.js prod server
+      # returns 200 with the login redirect HTML (no auth needed for the
+      # response itself, just for the underlying data). Works against
+      # both the standalone prod image (this file) and the dev override
+      # (``pnpm dev``), so the same probe survives the dev/prod swap.
       test:
         [
           "CMD-SHELL",

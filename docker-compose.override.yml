@@ -1,12 +1,27 @@
 services:
   web:
+    # Post-M7 the production image is a multi-stage build whose final
+    # ``runner`` stage is a minimal Next.js standalone server (no pnpm,
+    # no source, no corepack). For ``pnpm dev`` hot-reload we want the
+    # builder stage instead — it has source + node_modules + corepack.
+    build:
+      context: ./apps/web
+      target: builder
     command: pnpm dev
+    # Mounting host source over /app shadows the builder layer's snapshot;
+    # ``web_node_modules`` keeps the in-container ``node_modules`` (which
+    # builder populated via pnpm install) so a developer who ``rm -rf``s
+    # host node_modules doesn't break the container. ``web_next`` keeps
+    # ``.next`` off the host bind so file-watcher events stay sane and
+    # macOS doesn't choke on the build cache size.
     volumes:
       - ./apps/web:/app
       - web_node_modules:/app/node_modules
       - web_next:/app/.next
     environment:
       WATCHPACK_POLLING: "true"
+      # Dev mode still uses the same-origin rewrite — ``INTERNAL_API_URL``
+      # inherits the base file's default (``http://api:8000/api/v1``).
 
   api:
     command: >

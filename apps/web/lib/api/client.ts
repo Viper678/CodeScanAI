@@ -4,16 +4,15 @@ import { ApiError, apiErrorFromResponse } from '@/lib/api/auth/errors';
 export const CSRF_HEADER = 'X-Requested-With';
 export const CSRF_VALUE = 'codescan';
 
-const DEFAULT_BASE_URL = 'http://localhost:8000/api/v1';
-
-export function getApiBaseUrl(): string {
-  // process.env access is hard-coded so Next.js can inline it at build time.
-  const fromEnv = process.env.NEXT_PUBLIC_API_BASE_URL;
-  if (fromEnv && fromEnv.length > 0) {
-    return fromEnv.replace(/\/$/, '');
-  }
-  return DEFAULT_BASE_URL;
-}
+/**
+ * All browser-side API requests use a same-origin relative path. The web
+ * container's Next.js ``rewrites()`` (apps/web/next.config.mjs) proxies
+ * ``/api/v1/*`` to ``${INTERNAL_API_URL}/*`` server-side, so the runtime
+ * api host is never embedded in client bundles. Post-M7 this means one
+ * web image deploys to UAT / prod / future staging — only the runtime
+ * env var differs. See docs/GCP_MIGRATION.md §M7 + §D4.
+ */
+export const API_BASE_PATH = '/api/v1';
 
 type RequestOptions = {
   /** Whether to include the CSRF header. Required for POST/DELETE. */
@@ -47,7 +46,7 @@ export async function apiFetch<T>(
   }
   headers.set('Accept', 'application/json');
 
-  const response = await fetch(`${getApiBaseUrl()}${path}`, {
+  const response = await fetch(`${API_BASE_PATH}${path}`, {
     body: json === undefined ? undefined : JSON.stringify(json),
     credentials: 'include',
     headers,

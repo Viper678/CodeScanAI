@@ -1,4 +1,4 @@
-import { apiFetch, getApiBaseUrl } from '@/lib/api/client';
+import { API_BASE_PATH, apiFetch } from '@/lib/api/client';
 import type {
   ExportFormat,
   FindingsFilters,
@@ -57,12 +57,14 @@ export async function fetchFindings(
 }
 
 /**
- * Build a fully-qualified URL for `GET /scans/{scanId}/export?fmt=`.
+ * Build a same-origin URL for `GET /scans/{scanId}/export?fmt=`.
  *
  * The export endpoint streams the response with a `Content-Disposition`
  * header — the natural way to trigger a download is an `<a download href>`.
  * Cookie-based auth means the browser sends the session cookie automatically
- * when the user clicks the link; no JS fetch needed.
+ * when the user clicks the link; no JS fetch needed. Returning a relative
+ * path is fine — browsers resolve it against the document origin, and
+ * Next.js's ``rewrites()`` proxies it to the api service server-side.
  */
 export function getExportUrl(
   scanId: string,
@@ -71,5 +73,5 @@ export function getExportUrl(
 ): string {
   const search = buildFilterParams(filters);
   search.set('fmt', fmt);
-  return `${getApiBaseUrl()}/scans/${scanId}/export?${search.toString()}`;
+  return `${API_BASE_PATH}/scans/${scanId}/export?${search.toString()}`;
 }
