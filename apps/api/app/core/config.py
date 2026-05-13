@@ -46,14 +46,19 @@ class Settings(BaseSettings):
     max_loose_file_size_mb: int = 50
 
     # ---- Redis (app-level) ----
-    # Used for the rate limiter (T5.1). Db 0 is reserved for the API; Celery
-    # owns 1 (broker) and 2 (result backend). Default mirrors docker-compose.
+    # Used for the rate limiter (T5.1). Post-M3 the rate limiter, the Celery
+    # broker and the Celery result backend all share db 0 — Celery scopes its
+    # keys via ``global_keyprefix`` (see ``worker.celery_app``) so they cannot
+    # collide with rate-limit keys (which live under ``rl:``). The single-db
+    # shape matches the prod target (legacy Memorystore for Redis, Standard
+    # Tier, 5 GB — see docs/GCP_MIGRATION.md §D1).
     redis_url: str = "redis://redis:6379/0"
 
     # ---- Celery ----
     # The API only enqueues; consumption lives in apps/worker. Default mirrors
-    # docker-compose so local dev "just works".
-    celery_broker_url: str = "redis://redis:6379/1"
+    # docker-compose so local dev "just works". Shares db 0 with the rate
+    # limiter and the result backend (see redis_url comment above).
+    celery_broker_url: str = "redis://redis:6379/0"
 
     # ---- Rate limits (T5.1, sourced from docs/API.md §"Rate limits") ----
     # Sliding-window counts are evaluated lazily per request, so changes to

@@ -38,9 +38,12 @@ class Settings(BaseSettings):
     # Storage root shared with the api service via a docker volume.
     data_dir: Path = Path("/data")
 
-    # Celery
-    celery_broker_url: str = "redis://redis:6379/1"
-    celery_result_backend: str = "redis://redis:6379/2"
+    # Celery — broker + result backend share db 0 with the API's rate limiter
+    # post-M3 (single Memorystore in prod, per docs/GCP_MIGRATION.md §D1).
+    # ``worker.celery_app`` sets ``global_keyprefix`` on both transports so
+    # broker / result keys never collide with rate-limit keys.
+    celery_broker_url: str = "redis://redis:6379/0"
+    celery_result_backend: str = "redis://redis:6379/0"
 
     # File-handling caps from docs/FILE_HANDLING.md §"Upload limits".
     max_uncompressed_total_mb: int = 500

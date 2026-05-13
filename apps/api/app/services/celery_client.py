@@ -29,7 +29,19 @@ def _celery_app() -> Celery:
     poking at this app.
     """
 
-    return Celery("codescan-api-enqueue", broker=settings.celery_broker_url)
+    app = Celery("codescan-api-enqueue", broker=settings.celery_broker_url)
+    # Producer-side mirror of the worker's broker keyprefix (see
+    # ``apps/worker/worker/celery_app.py``). Producer and consumer MUST set
+    # the same ``global_keyprefix``: without this, the api would enqueue to
+    # the unprefixed ``codescan`` queue while the worker subscribes to
+    # ``celery-broker:codescan`` — tasks silently disappear because the
+    # underlying Redis keys never overlap. Keep this string in sync with the
+    # worker's celery_app definition (no shared module yet; the api can't
+    # import from ``apps/worker``).
+    app.conf.update(
+        broker_transport_options={"global_keyprefix": "celery-broker:"},
+    )
+    return app
 
 
 def enqueue_prepare_upload(upload_id: UUID) -> None:

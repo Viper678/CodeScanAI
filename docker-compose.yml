@@ -33,7 +33,7 @@ services:
       COOKIE_SECURE: ${COOKIE_SECURE:-false}
       COOKIE_SAMESITE: ${COOKIE_SAMESITE:-lax}
       REDIS_URL: ${REDIS_URL:-redis://redis:6379/0}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
       DATA_DIR: ${DATA_DIR:-/data}
       MAX_UPLOAD_SIZE_MB: ${MAX_UPLOAD_SIZE_MB:-100}
       MAX_LOOSE_FILES: ${MAX_LOOSE_FILES:-50}
@@ -69,8 +69,8 @@ services:
       context: ./apps/worker
     environment:
       DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
-      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/1}
-      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/2}
+      CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
+      CELERY_RESULT_BACKEND: ${CELERY_RESULT_BACKEND:-redis://redis:6379/0}
       DATA_DIR: ${DATA_DIR:-/data}
       LLM_BASE_URL: ${LLM_BASE_URL:-http://vllm.llm.svc.cluster.local:8000/v1}
       LLM_API_KEY: ${LLM_API_KEY:-}
