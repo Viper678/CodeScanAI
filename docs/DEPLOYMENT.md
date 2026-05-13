@@ -97,7 +97,7 @@ See `.env.example` for the complete list. Categories:
 - **Auth:** `JWT_SECRET`, `JWT_ACCESS_TTL_MIN`, `JWT_REFRESH_TTL_DAYS`
 - **DB:** `DATABASE_URL`, `POSTGRES_USER/PASSWORD/DB`
 - **Redis:** `REDIS_URL`
-- **Storage:** `DATA_DIR` (default `/data`)
+- **Storage:** `STORAGE_BACKEND` (`local` default, `gcs` for production), `STORAGE_BUCKET` (required when `STORAGE_BACKEND=gcs`), `DATA_DIR` (default `/data`; used only when `STORAGE_BACKEND=local`)
 - **LLM:** `LLM_BASE_URL`, `LLM_API_KEY` (optional), `GEMMA_MODEL` (`gemma-4-31b-it`), `LLM_PARALLELISM`, `LLM_MAX_TOKENS_INPUT`
 - **Limits:** `MAX_UPLOAD_SIZE_MB`, `MAX_LOOSE_FILES`, `MAX_FILES_PER_SCAN`, `MAX_SCAN_FILE_SIZE_MB`
 - **Retention:** `RETENTION_DAYS` (positive integer; **disabled when unset / empty**; daily cleanup beat task in the worker — see `docs/FILE_HANDLING.md` §"Garbage collection")
