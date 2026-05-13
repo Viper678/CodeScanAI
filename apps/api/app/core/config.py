@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import SecretStr, field_validator
+from pydantic import SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 
@@ -38,8 +38,17 @@ class Settings(BaseSettings):
 
     # ---- Storage ----
     # Default mirrors docker-compose's mounted /data volume so the API and
-    # worker can read/write the same artifacts.
+    # worker can read/write the same artifacts. Only consulted when
+    # ``storage_backend == 'local'``.
     data_dir: Path = Path("/data")
+    # Backend selector — see docs/GCP_MIGRATION.md §D2 for the resolved
+    # decision. ``local`` keeps the existing filesystem behavior (default;
+    # dev/CI/docker-compose). ``gcs`` routes the same operations through
+    # Google Cloud Storage, requiring ``storage_bucket`` to be set.
+    storage_backend: Literal["local", "gcs"] = "local"
+    # GCS bucket name when ``storage_backend == 'gcs'``. Required in that
+    # mode (validated below); ignored when local.
+    storage_bucket: str | None = None
     # Limits sourced from docs/FILE_HANDLING.md §"Upload limits".
     max_upload_size_mb: int = 100
     max_loose_files: int = 50
@@ -138,6 +147,15 @@ class Settings(BaseSettings):
             msg = "jwt_secret must be at least 32 bytes"
             raise ValueError(msg)
         return value
+
+    @model_validator(mode="after")
+    def _validate_storage_backend(self) -> "Settings":
+        # Fail fast at startup so a misconfigured prod deploy doesn't get
+        # 500s on the first upload. Mirrored in the worker config.
+        if self.storage_backend == "gcs" and not self.storage_bucket:
+            msg = "storage_bucket must be set when storage_backend='gcs'"
+            raise ValueError(msg)
+        return self
 
 
 settings = Settings()  # type: ignore[call-arg]  # jwt_secret is required from environment
