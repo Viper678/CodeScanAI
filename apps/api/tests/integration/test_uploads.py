@@ -20,6 +20,7 @@ from app.models.scan import Scan
 from app.models.scan_file import ScanFile
 from app.models.scan_finding import ScanFinding
 from app.models.upload import Upload
+from app.storage import reset_storage_cache
 
 CSRF_HEADERS = {"X-Requested-With": "codescan"}
 
@@ -36,11 +37,19 @@ def _zip_bytes(entries: dict[str, str] | None = None) -> bytes:
 
 
 @pytest.fixture
-def upload_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """Redirect storage to a temp dir for the duration of the test."""
+def upload_data_dir(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
+    """Redirect storage to a temp dir for the duration of the test.
+
+    Post-M2 the LocalStorage impl is cached by the storage factory; the
+    cache is invalidated before AND after each test so the test sees a
+    fresh storage rooted at its ``tmp_path`` and doesn't leak that root
+    to the next test.
+    """
 
     monkeypatch.setattr(settings, "data_dir", tmp_path)
-    return tmp_path
+    reset_storage_cache()
+    yield tmp_path
+    reset_storage_cache()
 
 
 @pytest.fixture
@@ -77,7 +86,11 @@ async def test_post_zip_upload_happy_path(
     assert payload["original_name"] == "repo.zip"
     assert payload["size_bytes"] == len(body)
 
-    stored = upload_data_dir / "uploads" / str(upload_id) / "repo.zip"
+    # Post-M2: the api writes the raw zip to the canonical
+    # ``uploads/<id>/raw.zip`` storage key (not the user-supplied
+    # filename). On the LocalStorage backend that's
+    # ``<data_dir>/uploads/<id>/raw.zip``.
+    stored = upload_data_dir / "uploads" / str(upload_id) / "raw.zip"
     assert stored.exists()
     assert stored.read_bytes() == body
 
@@ -86,7 +99,7 @@ async def test_post_zip_upload_happy_path(
     assert row.status == "received"
     assert row.kind == "zip"
     assert row.size_bytes == len(body)
-    assert row.storage_path == str(stored)
+    assert row.storage_path == f"uploads/{upload_id}/raw.zip"
 
     mock_enqueue.assert_called_once_with(upload_id)
 
@@ -121,7 +134,10 @@ async def test_post_loose_upload_with_single_py_file(
     row = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
     assert row is not None
     assert row.kind == "loose"
-    assert row.storage_path.endswith(str(upload_id))
+    # Post-M2: storage_path is the upload-level prefix
+    # (``uploads/<id>``, no trailing slash) — the worker walks it for
+    # loose-file uploads.
+    assert row.storage_path == f"uploads/{upload_id}"
     mock_enqueue.assert_called_once_with(upload_id)
 
 
@@ -524,7 +540,6 @@ async def test_delete_upload_cascades_to_files_scans_and_findings(
     db_session: AsyncSession,
     upload_data_dir: Path,
     mock_enqueue: MagicMock,
-    tmp_path: Path,
 ) -> None:
     """Deleting an upload must leave no row referencing it.
 
@@ -539,10 +554,14 @@ async def test_delete_upload_cascades_to_files_scans_and_findings(
     upload = await db_session.scalar(select(Upload).where(Upload.id == upload_id))
     assert upload is not None
 
-    extract_dir = tmp_path / "extracts" / str(upload_id)
+    # Post-M2: extracted files live under the upload's storage prefix
+    # (``uploads/<id>/extracted/...``). The DELETE wipes that entire
+    # prefix in one shot, so we plant a representative artifact under
+    # the LocalStorage root to assert it disappears.
+    extract_dir = upload_data_dir / "uploads" / str(upload_id) / "extracted"
     extract_dir.mkdir(parents=True)
     (extract_dir / "main.py").write_text("print('hi')\n")
-    upload.extract_path = str(extract_dir)
+    upload.extract_path = f"uploads/{upload_id}/extracted"
     upload.status = "ready"
 
     file_row = File(
