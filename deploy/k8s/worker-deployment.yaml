@@ -1,0 +1,142 @@
+# =====================================================================
+# Celery worker Deployment (docs/GCP_MIGRATION.md §M6 — Option A split).
+#
+# This Deployment runs Celery workers WITHOUT ``--beat`` — pure task
+# executors that scale horizontally. The scheduler runs in a separate
+# single-replica Deployment (``worker-beat-deployment.yaml``); see that
+# file's header for the why-split rationale.
+#
+# Container CMD: defaults to the worker image's Dockerfile CMD
+# (``uv run celery -A worker.celery_app worker --loglevel=info``).
+# We intentionally do NOT override ``command:`` here so a future
+# Dockerfile flag change (e.g. ``--concurrency``) flows through
+# without a manifest edit.
+#
+# Phase B7 wraps this in a Helm chart; replicas / resources / image
+# tag become values.
+# =====================================================================
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: codescan-worker
+  labels:
+    app.kubernetes.io/name: codescan-worker
+    app.kubernetes.io/component: worker
+    app.kubernetes.io/part-of: codescan
+spec:
+  # Horizontal scaling unit. ``3`` is a placeholder; the Phase B10
+  # HPA will scale on Celery queue depth (custom metric). Bumping
+  # this is safe — beat is in its own Deployment so duplicating
+  # the scheduler is structurally impossible from this manifest.
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: codescan-worker
+      app.kubernetes.io/component: worker
+  strategy:
+    # Default RollingUpdate is fine — multiple worker replicas can
+    # coexist (idempotent task handlers; T4.7 dispatch lock prevents
+    # double-dispatch).
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1
+      maxUnavailable: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: codescan-worker
+        app.kubernetes.io/component: worker
+        app.kubernetes.io/part-of: codescan
+    spec:
+      # Workload Identity (Phase B3): same GSA as the api — needs
+      # Cloud SQL client + GCS object admin (storage backend) +
+      # Secret Manager accessor. Shared with ``codescan-worker-beat``.
+      serviceAccountName: codescan-worker
+      containers:
+        - name: worker
+          # Templated by the deploy pipeline (Phase B7).
+          image: REGION-docker.pkg.dev/PROJECT_ID/codescan/codescan-worker:TAG
+          imagePullPolicy: IfNotPresent
+          # No ``command:`` override — use the Dockerfile's CMD,
+          # which is ``celery worker --loglevel=info`` (no ``--beat``).
+          env:
+            # Secrets from ESO-synced k8s Secret (Phase B5).
+            - name: DATABASE_SYNC_URL
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: database-sync-url
+            - name: CELERY_BROKER_URL
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: celery-broker-url
+            - name: CELERY_RESULT_BACKEND
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: celery-result-backend
+            - name: LLM_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: llm-api-key
+                  optional: true
+            # Non-secret config from ConfigMap (Phase B7 owns its
+            # contents; placeholder name here).
+            - name: STORAGE_BACKEND
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: storage-backend
+            - name: STORAGE_BUCKET
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: storage-bucket
+            - name: DATA_DIR
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: data-dir
+            - name: LLM_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: llm-base-url
+            - name: GEMMA_MODEL
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: gemma-model
+            - name: RETENTION_DAYS
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: retention-days
+                  optional: true
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: codescan-config
+                  key: log-level
+          # Liveness probe uses Celery's own ``inspect ping`` — same
+          # check shape as docker-compose. ``initialDelaySeconds``
+          # leaves headroom for first-time DB pool warmup.
+          livenessProbe:
+            exec:
+              command:
+                - sh
+                - -c
+                - 'uv run celery -A worker.celery_app inspect ping -d celery@$HOSTNAME'
+            initialDelaySeconds: 30
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 3
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+            limits:
+              cpu: "2"
+              memory: "2Gi"
