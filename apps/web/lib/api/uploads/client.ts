@@ -11,6 +11,7 @@ import type {
   Upload,
   UploadKind,
   UploadListResponse,
+  UploadStatus,
 } from '@/lib/api/uploads/types';
 
 /**
@@ -156,6 +157,8 @@ export async function fetchUpload(
 type FetchUploadsParams = {
   limit?: number;
   offset?: number;
+  /** Optional server-side status filter — see ``useUploadsQuery``. */
+  status?: UploadStatus;
 };
 
 /**
@@ -165,15 +168,20 @@ type FetchUploadsParams = {
  * sensibly here too.
  */
 export async function fetchUploads(
-  { limit = 20, offset = 0 }: FetchUploadsParams = {},
+  { limit = 20, offset = 0, status }: FetchUploadsParams = {},
   signal?: AbortSignal,
 ): Promise<UploadListResponse> {
   const safeLimit = Math.min(100, Math.max(1, Math.trunc(limit)));
   const safeOffset = Math.max(0, Math.trunc(offset));
-  return apiFetch<UploadListResponse>(
-    `/uploads?limit=${safeLimit}&offset=${safeOffset}`,
-    { method: 'GET', signal },
-  );
+  const params = new URLSearchParams({
+    limit: String(safeLimit),
+    offset: String(safeOffset),
+  });
+  if (status) params.set('status', status);
+  return apiFetch<UploadListResponse>(`/uploads?${params.toString()}`, {
+    method: 'GET',
+    signal,
+  });
 }
 
 /**

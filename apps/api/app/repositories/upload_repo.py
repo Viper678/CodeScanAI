@@ -29,20 +29,41 @@ class UploadRepo(BaseRepo[Upload]):
         user_id: UUID,
         limit: int = 20,
         offset: int = 0,
+        status: str | None = None,
     ) -> list[Upload]:
+        """Return uploads owned by ``user_id``, newest first.
+
+        Optional ``status`` filter (e.g. ``"ready"``) is applied in SQL so
+        the caller doesn't have to fetch+drop rows in the wrong state.
+        The new-scan wizard's "Use existing" picker uses this to get just
+        the rows it can act on without scanning the whole table client-side.
+        """
+
+        query = select(Upload).where(Upload.user_id == user_id)
+        if status is not None:
+            query = query.where(Upload.status == status)
         result = await self.session.execute(
-            select(Upload)
-            .where(Upload.user_id == user_id)
-            .order_by(Upload.created_at.desc(), Upload.id.desc())
-            .limit(limit)
-            .offset(offset)
+            query.order_by(Upload.created_at.desc(), Upload.id.desc()).limit(limit).offset(offset)
         )
         return list(result.scalars().all())
 
-    async def count_for_user(self, *, user_id: UUID) -> int:
-        result = await self.session.execute(
-            select(func.count()).select_from(Upload).where(Upload.user_id == user_id)
-        )
+    async def count_for_user(
+        self,
+        *,
+        user_id: UUID,
+        status: str | None = None,
+    ) -> int:
+        """Count uploads owned by ``user_id``, optionally filtered by status.
+
+        Mirrors ``list_for_user``'s ``status`` arg so ``UploadListResponse.
+        total`` matches the filtered page when a filter is applied — the
+        UI's "X of Y" affordances would otherwise drift.
+        """
+
+        query = select(func.count()).select_from(Upload).where(Upload.user_id == user_id)
+        if status is not None:
+            query = query.where(Upload.status == status)
+        result = await self.session.execute(query)
         total = result.scalar_one()
         return int(total)
 

@@ -8,7 +8,7 @@ The router stays intentionally thin — validation and persistence live in
 
 from __future__ import annotations
 
-from typing import Annotated, cast
+from typing import Annotated, Final, cast
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, File, Form, Response, UploadFile, status
@@ -107,20 +107,37 @@ async def create_upload(
     return _create_response(upload)
 
 
+_ALLOWED_STATUS_FILTERS: Final = frozenset({"received", "extracting", "ready", "failed"})
+
+
 @router.get("", response_model=UploadListResponse)
 async def list_uploads(
     current_user: Annotated[User, Depends(get_current_user)],
     session: Annotated[AsyncSession, Depends(get_session)],
     limit: int = 20,
     offset: int = 0,
+    status: str | None = None,
 ) -> UploadListResponse:
+    """List the caller's uploads.
+
+    ``status`` filter (optional, e.g. ``?status=ready``) is applied in SQL so
+    the "Use existing" picker in the new-scan wizard can request just the
+    rows it can act on — paginating client-side over a mixed-status feed
+    would mis-render the empty state if the latest N rows all happen to be
+    extracting/failed but an older ready row exists. Codex P2 on PR #66.
+    """
+
     if limit < 1 or limit > 100:
         raise InvalidUploadRequest("limit must be between 1 and 100")
     if offset < 0:
         raise InvalidUploadRequest("offset must be >= 0")
+    if status is not None and status not in _ALLOWED_STATUS_FILTERS:
+        raise InvalidUploadRequest(f"status must be one of {sorted(_ALLOWED_STATUS_FILTERS)}")
     repo = UploadRepo(session)
-    rows = await repo.list_for_user(user_id=current_user.id, limit=limit, offset=offset)
-    total = await repo.count_for_user(user_id=current_user.id)
+    rows = await repo.list_for_user(
+        user_id=current_user.id, limit=limit, offset=offset, status=status
+    )
+    total = await repo.count_for_user(user_id=current_user.id, status=status)
     return UploadListResponse(
         items=[_detail_response(upload) for upload in rows],
         next_cursor=None,

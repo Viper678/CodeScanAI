@@ -97,9 +97,20 @@ export function useUploadPolling(
   return query;
 }
 
+import type { UploadStatus } from '@/lib/api/uploads/types';
+
 type UseUploadsQueryParams = {
   limit?: number;
   offset?: number;
+  /** Optional server-side status filter (``?status=ready``).
+   *
+   *  Without this, the new-scan wizard's "Use existing" picker would
+   *  client-side filter the first ``limit`` rows — which mis-renders the
+   *  "no ready uploads" empty state if the latest N happen to be
+   *  extracting/failed but an older ready upload exists. Filter in SQL
+   *  to keep the empty state honest. Codex P2 on PR #66.
+   */
+  status?: UploadStatus;
 };
 
 /**
@@ -111,10 +122,11 @@ type UseUploadsQueryParams = {
 export function useUploadsQuery({
   limit = 20,
   offset = 0,
+  status,
 }: UseUploadsQueryParams = {}) {
   return useQuery<UploadListResponse, ApiError>({
-    queryFn: ({ signal }) => fetchUploads({ limit, offset }, signal),
-    queryKey: [UPLOADS_LIST_QUERY_KEY, limit, offset],
+    queryFn: ({ signal }) => fetchUploads({ limit, offset, status }, signal),
+    queryKey: [UPLOADS_LIST_QUERY_KEY, limit, offset, status],
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 0,

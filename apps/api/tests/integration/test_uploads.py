@@ -417,6 +417,90 @@ async def test_list_uploads_returns_only_current_user_uploads(
     assert body["items"][0]["id"] == own_id
 
 
+async def test_list_uploads_filters_by_status(
+    client: httpx.AsyncClient,
+    db_session: AsyncSession,
+    upload_data_dir: Path,
+    mock_enqueue: MagicMock,
+) -> None:
+    """``GET /uploads?status=ready`` returns only ready rows.
+
+    Without this, the new-scan wizard's "Use existing" picker would
+    client-side filter the first page — which mis-renders the empty
+    state if the latest N rows are all extracting/failed but an older
+    ready row exists (newest-first ordering). Codex P2 on PR #66.
+    """
+    del mock_enqueue
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": "carol@example.com", "password": "correct-horse"},
+    )
+    # Three uploads created via POST land in ``received``. Mutate two to
+    # ``ready`` and ``extracting`` directly so the filter has variance to
+    # discriminate on.
+    ids = []
+    for name in ("a.zip", "b.zip", "c.zip"):
+        r = await client.post(
+            "/api/v1/uploads",
+            headers=CSRF_HEADERS,
+            files={"file": (name, _zip_bytes(), "application/zip")},
+            data={"kind": "zip"},
+        )
+        assert r.status_code == 202
+        ids.append(r.json()["id"])
+    rows = (
+        (await db_session.execute(select(Upload).where(Upload.id.in_([UUID(x) for x in ids]))))
+        .scalars()
+        .all()
+    )
+    by_id = {str(u.id): u for u in rows}
+    by_id[ids[0]].status = "ready"
+    by_id[ids[1]].status = "extracting"
+    # ids[2] stays ``received``
+    await db_session.commit()
+
+    # ?status=ready → 1 row
+    response = await client.get("/api/v1/uploads?status=ready")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert [item["id"] for item in body["items"]] == [ids[0]]
+
+    # ?status=extracting → 1 row
+    response = await client.get("/api/v1/uploads?status=extracting")
+    assert response.status_code == 200
+    assert [item["id"] for item in response.json()["items"]] == [ids[1]]
+
+    # ?status=failed → 0 rows (the filter doesn't crash on no matches)
+    response = await client.get("/api/v1/uploads?status=failed")
+    assert response.status_code == 200
+    assert response.json()["items"] == []
+    assert response.json()["total"] == 0
+
+    # No filter → all 3
+    response = await client.get("/api/v1/uploads")
+    assert response.json()["total"] == 3
+
+
+async def test_list_uploads_rejects_unknown_status(
+    client: httpx.AsyncClient,
+    upload_data_dir: Path,
+) -> None:
+    """An unknown ``status`` value must be a 422, not silently ignored.
+    Silently dropping the filter would mask typos and surface a confusing
+    superset of rows. Codex P2 follow-up on PR #66. The 422 + ``validation_error``
+    shape matches the rest of the upload-router rejections (see
+    ``InvalidUploadRequest`` in ``app/core/exceptions.py``)."""
+
+    await client.post(
+        "/api/v1/auth/register",
+        json={"email": "carol2@example.com", "password": "correct-horse"},
+    )
+    response = await client.get("/api/v1/uploads?status=somethingweird")
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "validation_error"
+
+
 async def test_list_uploads_unauthenticated_returns_401(
     client: httpx.AsyncClient,
     upload_data_dir: Path,
