@@ -7,11 +7,10 @@ ambient gcloud) — no app-level secret handling.
 
 from __future__ import annotations
 
-import io
 import logging
 from collections.abc import Iterable, Iterator
 from contextlib import AbstractContextManager, contextmanager
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 from worker.storage.base import StorageKeyError
 
@@ -61,14 +60,13 @@ class GcsStorage:
             raise
 
     def open_stream(self, key: str) -> AbstractContextManager[BinaryIO]:
+        # True streaming via ``blob.open("rb")``: the GCS SDK fetches in
+        # chunks under the hood instead of materializing the full object
+        # in memory the way ``download_as_bytes`` would. Callers that
+        # pipe through ``shutil.copyfileobj`` get bounded RSS even on
+        # 100 MiB archives. Codex P2 on M2.
         blob = self._bucket.blob(key)
-        try:
-            data = bytes(blob.download_as_bytes())
-        except Exception as exc:
-            if _is_not_found(exc):
-                raise StorageKeyError(key) from exc
-            raise
-        return _bytes_context(data)
+        return _gcs_stream_context(blob, key)
 
     # ---- metadata ----
 
@@ -127,9 +125,30 @@ def _is_not_found(exc: BaseException) -> bool:
 
 
 @contextmanager
-def _bytes_context(data: bytes) -> Iterator[BinaryIO]:
-    buf = io.BytesIO(data)
+def _gcs_stream_context(blob: Any, key: str) -> Iterator[BinaryIO]:
+    """Open a GCS blob for true streaming reads.
+
+    ``blob.open("rb")`` returns a file-like object that fetches in
+    chunks; this lets callers pipe through ``shutil.copyfileobj``
+    without materializing the whole object in memory.
+
+    NotFound is normalized to ``StorageKeyError`` to match the
+    abstraction's contract. Other SDK exceptions (auth, transport)
+    propagate unchanged — callers see a typed GCS error and decide
+    whether to retry.
+    """
     try:
-        yield buf
+        fh = blob.open(mode="rb")
+    except Exception as exc:
+        if _is_not_found(exc):
+            raise StorageKeyError(key) from exc
+        raise
+    try:
+        yield cast(BinaryIO, fh)
+    except Exception as exc:
+        # Reads can lazily 404 — normalize that path too.
+        if _is_not_found(exc):
+            raise StorageKeyError(key) from exc
+        raise
     finally:
-        buf.close()
+        fh.close()

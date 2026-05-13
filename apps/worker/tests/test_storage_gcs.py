@@ -58,6 +58,18 @@ class _FakeBlob:
             raise _FakeNotFound(f"blob {self.name!r} not found")
         return self._payload or b""
 
+    def open(self, mode: str = "rb") -> io.BytesIO:
+        """Stub the real ``blob.open("rb")`` streaming surface.
+
+        The real SDK returns a chunked-download file-like object; the
+        fake returns a BytesIO over the stored payload. Both satisfy
+        the ``BinaryIO`` protocol GcsStorage.open_stream yields.
+        """
+        del mode
+        if not self._exists:
+            raise _FakeNotFound(f"blob {self.name!r} not found")
+        return io.BytesIO(self._payload or b"")
+
     def exists(self) -> bool:
         return self._exists
 

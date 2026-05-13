@@ -21,6 +21,7 @@ in-place at ``uploads/<id>/loose/...``.
 from __future__ import annotations
 
 import logging
+import shutil
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -311,8 +312,13 @@ def _local_zip_path(storage: Storage, storage_key: str) -> Iterator[Path]:
         yield storage.root / storage_key
         return
 
-    data = storage.get_bytes(storage_key)
+    # Stream the blob into the temp file via ``shutil.copyfileobj`` so
+    # the GCS SDK's chunked download keeps RSS bounded; pre-fix this
+    # materialized the whole archive (up to 100 MiB) in Python heap
+    # before flushing to disk, which doesn't compose with concurrent
+    # prepare tasks. Codex P2 on M2.
     with tempfile.NamedTemporaryFile(suffix=".zip", delete=True) as tmp:
-        tmp.write(data)
+        with storage.open_stream(storage_key) as src:
+            shutil.copyfileobj(src, tmp, length=1024 * 1024)
         tmp.flush()
         yield Path(tmp.name)

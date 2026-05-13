@@ -86,10 +86,18 @@ class UploadFileLike(Protocol):
 
 @dataclass(frozen=True)
 class _StoredFile:
-    """Result of streaming one part to disk."""
+    """Result of streaming one part to storage.
+
+    ``header_bytes`` is the first up-to-4 bytes captured during the
+    streaming write — used by the zip-magic check at ``create_zip_upload``
+    so we don't re-read the whole stored object just to inspect the
+    leading magic word (which on GCS would mean a full second download).
+    Codex P2 on M2.
+    """
 
     original_name: str
     size_bytes: int
+    header_bytes: bytes
 
 
 class UploadEnqueuer(Protocol):
@@ -176,7 +184,7 @@ class UploadService:
             self._storage.delete_prefix(upload_prefix(upload_id))
             raise
 
-        if not _has_zip_magic_in_storage(self._storage, storage_path):
+        if stored.header_bytes not in {ZIP_MAGIC, ZIP_EMPTY_MAGIC}:
             self._storage.delete_prefix(upload_prefix(upload_id))
             raise UnsupportedFileType("File is not a valid .zip archive")
 
@@ -416,6 +424,7 @@ async def _stream_to_storage(
     """
 
     written = 0
+    header_bytes = b""
     with tempfile.SpooledTemporaryFile(max_size=_UPLOAD_SPOOL_THRESHOLD, mode="w+b") as spool:
         try:
             async for chunk in _read_chunks(upload_file):
@@ -425,11 +434,21 @@ async def _stream_to_storage(
                         f"{original_name} exceeds the maximum size of {max_bytes} bytes"
                     )
                 spool.write(chunk)
+                # Capture up to 4 bytes of leading data for the zip-magic
+                # check at ``create_zip_upload``. Doing it here means we
+                # never re-download the stored object (which on GCS would
+                # be a full 100 MiB round trip per upload). Codex P2 on M2.
+                if len(header_bytes) < 4:
+                    header_bytes = (header_bytes + chunk)[:4]
         finally:
             await upload_file.close()
         spool.seek(0)
         storage.put_stream(key, cast(BinaryIO, spool))
-    return _StoredFile(original_name=original_name, size_bytes=written)
+    return _StoredFile(
+        original_name=original_name,
+        size_bytes=written,
+        header_bytes=header_bytes,
+    )
 
 
 def _wipe_legacy_storage_path(storage_path: str | None) -> None:
@@ -483,16 +502,3 @@ def _wipe_legacy_extract_path(extract_path: str | None) -> None:
     # propagated so the caller's transaction unwinds.
     with contextlib.suppress(FileNotFoundError):
         shutil.rmtree(extract_path)
-
-
-def _has_zip_magic_in_storage(storage: Storage, key: str) -> bool:
-    """Return True iff the first bytes of ``storage[key]`` look like a zip."""
-
-    # Read the full object — it's already bounded by the upload size cap,
-    # and a 4-byte range request is more complex than warranted here.
-    # Storage backends differ on partial-read support; reading the whole
-    # blob keeps the abstraction thin. The cap above guarantees this is
-    # safe.
-    data = storage.get_bytes(key)
-    header = data[:4]
-    return header in {ZIP_MAGIC, ZIP_EMPTY_MAGIC}

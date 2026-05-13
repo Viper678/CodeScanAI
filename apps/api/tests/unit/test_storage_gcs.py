@@ -81,6 +81,13 @@ class _FakeBlob:
             raise _FakeNotFound(f"blob {self.name!r} not found")
         return self._payload or b""
 
+    def open(self, mode: str = "rb") -> io.BytesIO:
+        """Stub the real ``blob.open("rb")`` streaming surface."""
+        del mode
+        if not self._exists:
+            raise _FakeNotFound(f"blob {self.name!r} not found")
+        return io.BytesIO(self._payload or b"")
+
     def exists(self) -> bool:
         return self._exists
 
