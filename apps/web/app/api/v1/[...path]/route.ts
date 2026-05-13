@@ -2,24 +2,37 @@
  * Runtime API proxy (M7).
  *
  * Forwards every same-origin ``/api/v1/<path>`` request to the api service
- * at ``${INTERNAL_API_URL}/<path>``. This was originally implemented as a
- * Next.js ``rewrites()`` entry in ``next.config.mjs``, but Codex flagged
- * that ``rewrites()`` evaluates ``process.env`` at BUILD time and bakes
- * the destination string into ``.next/routes-manifest.json`` — defeating
- * the "one image, runtime-configurable" promise from
- * docs/GCP_MIGRATION.md §D4. App Router route handlers run in the Node.js
- * runtime per request, so ``INTERNAL_API_URL`` is read fresh each time
- * and the same image deploys to UAT / prod / future staging unchanged.
+ * at ``${INTERNAL_API_URL}/<path>``. Originally implemented as a Next.js
+ * ``rewrites()`` entry in ``next.config.mjs``, but Codex flagged that
+ * ``rewrites()`` evaluates ``process.env`` at BUILD time and bakes the
+ * destination string into ``.next/routes-manifest.json`` — defeating the
+ * "one image, runtime-configurable" promise from docs/GCP_MIGRATION.md
+ * §D4. App Router route handlers run in the Node.js runtime per request,
+ * so ``INTERNAL_API_URL`` is read fresh each time and the same image
+ * deploys to UAT / prod / future staging unchanged.
  *
  * The handler is intentionally minimal: forward method, headers, query,
- * and body; stream the response body straight back to the browser
- * (preserves the file-viewer endpoint's streaming response). The api
- * stays the single source of truth for auth, CSRF, rate limits, errors.
+ * and body (as a stream — see ``init.body = req.body``); stream the
+ * response body straight back to the browser. The api stays the single
+ * source of truth for auth, CSRF, rate limits, errors.
  *
- * Codex P2 follow-up: ``X-Forwarded-For`` is set so the api's
- * ``_client_ip()`` helper + rate limiter see the real browser IP rather
- * than the web pod's IP. The api side enables uvicorn's ``--proxy-headers``
- * flag to actually trust this header (see ``docker-compose.yml``).
+ * SECURITY — client-IP forwarding (Codex P1 round 2 on M7):
+ * Inbound ``X-Forwarded-For`` / ``X-Real-IP`` / ``Forwarded`` headers are
+ * always stripped before forwarding upstream. We deliberately do NOT
+ * inject our own ``X-Forwarded-For`` from ``NextRequest.ip`` because
+ * Next.js derives ``.ip`` from the same client-supplied headers we just
+ * stripped, so trusting it would let an attacker spoof their IP for the
+ * api's per-IP rate limit on /auth/login + /auth/register.
+ *
+ * Known consequence: under the current shape (no trusted LB in front of
+ * web), the api's ``request.client.host`` reflects the web pod's IP
+ * rather than the real browser's. The auth IP rate limiter therefore
+ * rate-limits per web pod, not per browser. This is a regression vs the
+ * pre-M7 direct-browser-to-api shape but the SAFE failure mode (no
+ * spoofing) — proper per-client rate limiting needs an upstream LB
+ * (Cloud Armor in prod) that strips inbound forwarded headers and sets
+ * a trusted one, and a corresponding api-side opt-in. Tracked separately
+ * (likely §M8 / Phase B); explicitly out of scope for M7.
  */
 
 import { type NextRequest } from 'next/server';
@@ -45,6 +58,20 @@ const HOP_BY_HOP_HEADERS = new Set([
   'content-length',
 ]);
 
+/** Inbound forwarded-IP headers that we always strip — see the SECURITY
+ * note in the module docstring. Never trust client-supplied values for
+ * these; Next.js's ``NextRequest.ip`` is itself derived from these so
+ * we don't reuse it either. */
+const FORWARDED_REQUEST_HEADERS = new Set([
+  'x-forwarded-for',
+  'x-real-ip',
+  'forwarded',
+  // The "client hint" cousins — strip too in case anything downstream
+  // ever tries to honor them as a substitute.
+  'x-forwarded-host',
+  'x-forwarded-proto',
+]);
+
 function buildTargetUrl(req: NextRequest, pathSegments: string[]): URL {
   const base = (
     process.env.INTERNAL_API_URL ?? DEFAULT_INTERNAL_API_URL
@@ -57,24 +84,14 @@ function buildTargetUrl(req: NextRequest, pathSegments: string[]): URL {
 function forwardHeaders(req: NextRequest): Headers {
   const out = new Headers();
   req.headers.forEach((value, key) => {
-    if (HOP_BY_HOP_HEADERS.has(key.toLowerCase())) return;
+    const lower = key.toLowerCase();
+    if (HOP_BY_HOP_HEADERS.has(lower)) return;
+    // Always strip — see SECURITY note above. We do NOT re-inject an
+    // own value because the only source we have (``NextRequest.ip``)
+    // is itself derived from these client-controlled headers.
+    if (FORWARDED_REQUEST_HEADERS.has(lower)) return;
     out.set(key, value);
   });
-  // Preserve the real client IP for the api's rate limiter + auth audit.
-  // ``x-forwarded-for`` may already contain a chain from an upstream LB;
-  // append the immediate peer if the request didn't originate inside the
-  // pod. ``NextRequest.ip`` is populated by Next.js from the trusted
-  // proxy headers in deployment environments (Vercel / nginx / etc.); in
-  // docker-compose it's typically undefined, but the api defaults to
-  // ``request.client.host`` when the header is absent so the behavior
-  // degrades gracefully.
-  const existing = req.headers.get('x-forwarded-for');
-  const peer = req.ip;
-  if (peer) {
-    out.set('x-forwarded-for', existing ? `${existing}, ${peer}` : peer);
-  } else if (existing) {
-    out.set('x-forwarded-for', existing);
-  }
   return out;
 }
 
@@ -102,15 +119,25 @@ async function proxy(
   const target = buildTargetUrl(req, context.params.path);
   const headers = forwardHeaders(req);
 
-  const init: RequestInit = {
+  // ``duplex: 'half'`` is required by the WHATWG fetch spec when the body
+  // is a stream (vs a Buffer / string). Node's ``fetch`` throws otherwise.
+  // Codex P2 round 2 on M7: previous shape ``await req.arrayBuffer()``
+  // buffered the entire upload (100 MiB cap) inside the web process before
+  // forwarding — concurrent uploads would exhaust the 512 MiB pod budget
+  // before FastAPI's spool got a chance to run. Streaming ``req.body``
+  // straight through keeps web's RSS bounded regardless of payload size;
+  // backpressure flows end-to-end from the api spool back to the browser.
+  const init: RequestInit & { duplex?: 'half' } = {
     method: req.method,
     headers,
     redirect: 'manual',
   };
-  // GET / HEAD requests don't carry a body; setting body would throw.
-  // ``DELETE`` may or may not — pass the body through if present.
-  if (req.method !== 'GET' && req.method !== 'HEAD') {
-    init.body = await req.arrayBuffer();
+  // GET / HEAD requests don't carry a body. Streaming is required for
+  // everything else so use ``req.body`` (a ReadableStream) rather than
+  // materializing ``arrayBuffer()``.
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.body) {
+    init.body = req.body;
+    init.duplex = 'half';
   }
 
   const upstream = await fetch(target.toString(), init);
