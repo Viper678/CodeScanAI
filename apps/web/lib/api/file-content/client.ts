@@ -1,5 +1,5 @@
 import { ApiError, apiErrorFromResponse } from '@/lib/api/auth/errors';
-import { getApiBaseUrl } from '@/lib/api/client';
+import { API_BASE_PATH } from '@/lib/api/client';
 
 /**
  * Fetch the raw text content of an uploaded file via
@@ -17,7 +17,7 @@ export async function fetchFileContent(
   signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetch(
-    `${getApiBaseUrl()}/uploads/${uploadId}/files/${fileId}/content`,
+    `${API_BASE_PATH}/uploads/${uploadId}/files/${fileId}/content`,
     {
       credentials: 'include',
       headers: { Accept: 'text/plain' },

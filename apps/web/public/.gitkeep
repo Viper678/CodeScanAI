@@ -1,0 +1,5 @@
+# Placeholder so apps/web/public always exists in git. Next.js standalone's
+# multi-stage Docker build copies this directory unconditionally
+# (apps/web/Dockerfile) — without this file the dir would be missing and
+# the ``COPY ... ./public`` step would fail. Add static assets here when
+# we have any.

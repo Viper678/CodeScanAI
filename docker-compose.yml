@@ -3,14 +3,22 @@ services:
     build:
       context: ./apps/web
     environment:
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000/api/v1}
-      NEXT_PUBLIC_APP_NAME: ${NEXT_PUBLIC_APP_NAME:-CodeScan}
+      # Read at request time by ``apps/web/next.config.mjs``'s ``rewrites()``
+      # — server-side proxy for ``/api/v1/*`` to the api service. Runtime
+      # env var (NOT a build-arg) so one image deploys to UAT / prod /
+      # future staging — see docs/GCP_MIGRATION.md §D4 + §M7.
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8000/api/v1}
     ports:
       - "3000:3000"
     depends_on:
       api:
         condition: service_healthy
     healthcheck:
+      # ``/scans`` is a real authenticated route — Next.js prod server
+      # returns 200 with the login redirect HTML (no auth needed for the
+      # response itself, just for the underlying data). Works against
+      # both the standalone prod image (this file) and the dev override
+      # (``pnpm dev``), so the same probe survives the dev/prod swap.
       test:
         [
           "CMD-SHELL",
@@ -42,9 +50,20 @@ services:
       MAX_LOOSE_FILE_SIZE_MB: ${MAX_LOOSE_FILE_SIZE_MB:-50}
       API_WORKERS: ${API_WORKERS:-2}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+    # Post-M7 the web proxy route handler strips inbound forwarded-IP
+    # headers (X-Forwarded-For / X-Real-IP / Forwarded) and deliberately
+    # does NOT inject its own. ``--proxy-headers`` is therefore unsafe
+    # to enable here — it would trust whatever an adversary supplies
+    # via X-Forwarded-For. The api falls back to ``request.client.host``
+    # (the immediate TCP peer = web pod) for ``_client_ip()`` and the
+    # auth rate limiter. That's a known regression vs the pre-M7 direct-
+    # browser-to-api shape (rate-limit-per-pod, not per-browser); the
+    # proper fix needs a trusted LB upstream of web that strips and re-
+    # sets forwarded headers — tracked for §M8 / Phase B.
     command: >
       sh -c "uv run alembic upgrade head &&
-             uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --workers ${API_WORKERS:-2}"
+             uv run uvicorn app.main:app --host 0.0.0.0 --port 8000
+             --workers ${API_WORKERS:-2}"
     ports:
       - "8000:8000"
     volumes:

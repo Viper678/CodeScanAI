@@ -13,12 +13,14 @@ We use one `docker-compose.yml` with environment-specific overrides:
 
 | Service   | Image / build context           | Ports (local)  | Depends on        |
 | --------- | ------------------------------- | -------------- | ----------------- |
-| `web`     | build `apps/web`                | `3000:3000`    | `api`             |
+| `web`     | build `apps/web` (multi-stage; Next.js standalone output) | `3000:3000` | `api` |
 | `api`     | build `apps/api`                | `8000:8000`    | `postgres`, `redis` |
 | `worker`  | build `apps/worker`             | —              | `postgres`, `redis` |
 | `postgres`| `postgres:16-alpine`            | `127.0.0.1:5432:5432` (dev only) | — |
 | `redis`   | `redis:7-alpine`                | `127.0.0.1:6379:6379` (dev only) | — |
 | `proxy`   | `caddy:2-alpine` (prod)         | `80:80, 443:443` | `web`, `api`    |
+
+The `web` image is a single artifact promoted UAT → prod unchanged. Browser API calls go same-origin to `/api/v1/*`; Next.js `rewrites()` proxy them server-side to `${INTERNAL_API_URL}/*` (read at request time, not bake time). Only the `INTERNAL_API_URL` env value differs per environment. See `docs/GCP_MIGRATION.md` §D4 + §M7.
 
 In **prod**: `postgres` and `redis` ports are NOT exposed to the host — only on the internal docker network. `proxy` terminates TLS and routes `/` to web, `/api` to api.
 
@@ -103,7 +105,7 @@ See `.env.example` for the complete list. Categories:
 - **Retention:** `RETENTION_DAYS` (positive integer; **disabled when unset / empty**; daily cleanup beat task in the worker — see `docs/FILE_HANDLING.md` §"Garbage collection")
 - **Rate limits:** `RATE_LIMIT_LOGIN_PER_MINUTE`, `RATE_LIMIT_REGISTER_PER_MINUTE`, `RATE_LIMIT_UPLOAD_PER_HOUR`, `RATE_LIMIT_SCAN_PER_HOUR` (sliding-window; defaults match `docs/API.md` §"Rate limits")
 - **CORS / hosts:** `CORS_ALLOW_ORIGINS` (comma-separated, e.g. `https://app.example.com,https://staging.example.com`), `TRUSTED_HOSTS`
-- **Web:** `NEXT_PUBLIC_API_BASE_URL`
+- **Web:** `INTERNAL_API_URL` (runtime — read at request time by Next.js `rewrites()`; one image, env-driven proxy)
 
 JWT_SECRET in prod must come from a secrets manager, not the `.env` file. The compose stack reads it from env directly so the deployment platform (e.g. ECS / Cloud Run / k8s) can inject it.
 
