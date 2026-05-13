@@ -13,10 +13,14 @@
 #
 # Deployment ordering (CI/CD pipeline — Phase B7):
 #   1. Build + push api/worker/web images to Artifact Registry.
-#   2. Apply this Job with the new image tag.
-#   3. Wait for the Job to reach ``status.conditions[type=Complete]``
-#      (``kubectl wait --for=condition=complete --timeout=10m
-#       job/codescan-migrate-<release>``).
+#   2. Create this Job and capture the generated name:
+#        JOB=$(kubectl create -f migrate-job.yaml -o name)
+#      ``kubectl create`` (not ``apply``) is required because
+#      ``metadata.generateName`` produces a fresh, random-suffixed
+#      name on every invocation — ``apply`` can't track an object
+#      that has no stable name.
+#   3. Wait for the Job to reach ``status.conditions[type=Complete]``:
+#        kubectl wait --for=condition=complete --timeout=10m "$JOB"
 #   4. Only then roll the api / worker / worker-beat Deployments.
 #   5. If the Job fails, abort the rollout — Deployments still on the
 #      previous image keep serving traffic on the previous schema.
@@ -25,10 +29,16 @@
 # api command at compose time (see ``docker-compose.yml`` /
 # ``docker-compose.override.yml``) — that's the dev shape, unchanged.
 #
-# Phase B7 will wrap this manifest into a Helm chart + ``helm hook``
-# (``post-install,post-upgrade`` weight=-5) so ``helm upgrade`` runs
-# the Job automatically before rolling Deployments; this plain YAML
-# is the starter artifact that B7 templates around.
+# Phase B7 will wrap this manifest into a Helm chart + ``helm hook``:
+#   helm.sh/hook: pre-install,pre-upgrade
+#   helm.sh/hook-weight: "-5"
+#   helm.sh/hook-delete-policy: before-hook-creation,hook-succeeded
+# Note ``pre-install,pre-upgrade`` (not ``post-...``) — Helm's
+# pre-* hooks run BEFORE the chart's normal resources are applied,
+# so the migrate Job completes before any api/worker Deployment is
+# rolled. ``post-*`` hooks fire AFTER Deployments roll, which would
+# break the gating contract. This plain YAML is the starter artifact
+# that B7 templates around.
 # =====================================================================
 apiVersion: batch/v1
 kind: Job

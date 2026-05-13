@@ -52,6 +52,15 @@ spec:
       # Cloud SQL client + GCS object admin (storage backend) +
       # Secret Manager accessor. Shared with ``codescan-worker-beat``.
       serviceAccountName: codescan-worker
+      # Default k8s SIGTERM grace is 30s — Celery workers respond to
+      # SIGTERM by entering "warm shutdown" (finish in-flight tasks,
+      # don't accept new ones, exit when idle). Multi-file LLM scans
+      # can run several minutes, and the Celery app uses default
+      # early-ack semantics — a SIGKILL'd in-flight task is lost and
+      # leaves the scan stuck in ``running``. Bump grace to 10 min so
+      # warm shutdown can drain. The pod exits as soon as the worker
+      # process does, so this is a CAP not a fixed wait. Codex P2 on M6.
+      terminationGracePeriodSeconds: 600
       containers:
         - name: worker
           # Templated by the deploy pipeline (Phase B7).

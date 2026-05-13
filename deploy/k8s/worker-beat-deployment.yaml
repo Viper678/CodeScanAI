@@ -56,6 +56,11 @@ spec:
       # Same SA as ``codescan-worker`` — identical DB / Redis / GCS
       # access (this pod is also a task executor).
       serviceAccountName: codescan-worker
+      # See ``worker-deployment.yaml`` for the rationale: warm-shutdown
+      # drain window for in-flight multi-file scans. Same 10 min cap
+      # here — this pod also executes tasks (worker + beat in one
+      # process). Codex P2 on M6.
+      terminationGracePeriodSeconds: 600
       containers:
         - name: worker-beat
           # Same image as the plain worker — templated by the deploy

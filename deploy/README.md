@@ -30,12 +30,25 @@ Eventual full shape (other Deployments land with B7 / B8):
 The CI/CD pipeline (B7) runs roughly:
 
 1. Build api / worker / web images, push to Artifact Registry (B4).
-2. Apply `migrate-job.yaml` with the new image tag.
-3. `kubectl wait --for=condition=complete --timeout=10m job/<name>`.
+2. Create the migrate Job and capture its generated name (the manifest
+   uses `metadata.generateName`, so every release gets a unique
+   `codescan-migrate-<random>` — `kubectl apply` doesn't work with
+   `generateName` because there's no stable name to track):
+   ```sh
+   JOB=$(kubectl create -f deploy/k8s/migrate-job.yaml -o name)
+   ```
+3. Wait for completion:
+   ```sh
+   kubectl wait --for=condition=complete --timeout=10m "$JOB"
+   ```
 4. **Only on success**: roll the api / worker / worker-beat / web
    Deployments to the new tag.
 5. On failure: abort. The prior Deployments stay on the prior image
    serving the prior schema — no partial-rollout window.
+
+When B7 wraps this into a Helm chart, the Job moves to a
+`pre-install,pre-upgrade` hook (NOT `post-*` — those fire after
+Deployments, which would defeat the gating).
 
 This is exactly what decoupling migrations from the api entrypoint
 buys: rollouts that fail closed.
