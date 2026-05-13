@@ -175,6 +175,17 @@ def _engine_session(sync_url: str) -> Iterator[Session]:
         engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _reset_storage_cache_per_test() -> Iterator[None]:
+    """Invalidate the cached ``get_storage()`` so each test sees its own tmp_path."""
+
+    from worker.storage import reset_storage_cache
+
+    reset_storage_cache()
+    yield
+    reset_storage_cache()
+
+
 # ---- Helpers ----------------------------------------------------------------
 
 
@@ -218,21 +229,22 @@ def _insert_upload(
     session: Session,
     *,
     user_id: UUID,
-    storage_path: Path,
+    storage_path: str,
     size_bytes: int,
     kind: str,
     original_name: str,
+    upload_id: UUID | None = None,
 ) -> UUID:
     from worker.core.models import UPLOAD_STATUS_RECEIVED, Upload
     from worker.core.uuid7 import uuid7
 
     upload = Upload(
-        id=uuid7(),
+        id=upload_id if upload_id is not None else uuid7(),
         user_id=user_id,
         original_name=original_name,
         kind=kind,
         size_bytes=size_bytes,
-        storage_path=str(storage_path),
+        storage_path=storage_path,
         status=UPLOAD_STATUS_RECEIVED,
         file_count=0,
         scannable_count=0,
@@ -255,6 +267,7 @@ def test_prepare_upload_extracts_zip_end_to_end(
     # Point the worker's settings/sessionmaker at the freshly-built test DB.
     from worker.core import config as cfg
     from worker.core import db as worker_db
+    from worker.core.uuid7 import uuid7
 
     monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
@@ -264,21 +277,26 @@ def test_prepare_upload_extracts_zip_end_to_end(
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    # Build the synthetic upload on disk.
-    upload_dir = tmp_path / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = upload_dir / "demo.zip"
+    # Post-M2: the raw zip lives at the canonical
+    # ``uploads/<id>/raw.zip`` key. For the LocalStorage backend
+    # (driven by ``data_dir=tmp_path`` above) that's
+    # ``<tmp_path>/uploads/<id>/raw.zip`` on disk.
+    upload_id = uuid7()
+    raw_key = f"uploads/{upload_id}/raw.zip"
+    zip_path = tmp_path / raw_key
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
     size = _make_zip(zip_path)
 
     with _engine_session(sync_url) as session:
         user_id = _insert_user(session)
-        upload_id = _insert_upload(
+        _insert_upload(
             session,
             user_id=user_id,
-            storage_path=zip_path,
+            storage_path=raw_key,
             size_bytes=size,
             kind="zip",
             original_name="demo.zip",
+            upload_id=upload_id,
         )
 
     # Run the task synchronously (don't use .delay()).
@@ -299,8 +317,10 @@ def test_prepare_upload_extracts_zip_end_to_end(
         # 3 scannable: src/main.py, src/utils.js, src/lib/helper.py, README.md
         # node_modules/lodash/index.js → vendor_dir, .git/HEAD → vcs_dir
         assert upload.scannable_count == 4
-        assert upload.extract_path is not None
-        assert Path(upload.extract_path).is_dir()
+        # extract_path is the storage prefix (no trailing slash). On the
+        # LocalStorage backend this also exists as an on-disk directory.
+        assert upload.extract_path == f"uploads/{upload_id}/extracted"
+        assert (tmp_path / upload.extract_path).is_dir()
 
         files = list(
             session.scalars(select(File).where(File.upload_id == upload_id).order_by(File.path))
@@ -339,6 +359,7 @@ def test_prepare_upload_loose_kind_walks_loose_subdir(
 
     from worker.core import config as cfg
     from worker.core import db as worker_db
+    from worker.core.uuid7 import uuid7
 
     monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
@@ -347,21 +368,29 @@ def test_prepare_upload_loose_kind_walks_loose_subdir(
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    upload_dir = tmp_path / "uploads" / "loose-upload"
-    loose = upload_dir / "loose"
+    # Post-M2: loose uploads live under ``uploads/<id>/loose/`` per the
+    # M2 key convention. The api would have written these files via the
+    # Storage backend; we simulate that by writing them to the
+    # LocalStorage-rooted ``tmp_path``.
+    upload_id = uuid7()
+    loose = tmp_path / "uploads" / str(upload_id) / "loose"
     loose.mkdir(parents=True, exist_ok=True)
     (loose / "snippet.py").write_text("def f():\n    return 1\n")
     (loose / "notes.md").write_text("# notes\n")
 
     with _engine_session(sync_url) as session:
         user_id = _insert_user(session)
-        upload_id = _insert_upload(
+        _insert_upload(
             session,
             user_id=user_id,
-            storage_path=upload_dir,
+            # The api persists ``uploads/<id>`` (upload-level prefix)
+            # in storage_path for loose uploads — the worker walks
+            # the corresponding ``loose/`` subprefix.
+            storage_path=f"uploads/{upload_id}",
             size_bytes=99,
             kind="loose",
             original_name="loose-bundle",
+            upload_id=upload_id,
         )
 
     from worker.tasks.prepare_upload import prepare_upload
@@ -371,17 +400,18 @@ def test_prepare_upload_loose_kind_walks_loose_subdir(
     assert result["file_count"] == 2
     assert result["scannable_count"] == 2
 
-    # Loose uploads must persist the actual walked root, not the (empty) zip
-    # extract dir, otherwise downstream readers can't resolve files.path.
+    # Loose uploads must persist the loose-prefix in extract_path so
+    # downstream readers can resolve files.path. No zip extract tree
+    # is created — that prefix stays empty.
     with _engine_session(sync_url) as session:
         from worker.core.models import Upload
 
         upload = session.scalar(select(Upload).where(Upload.id == upload_id))
         assert upload is not None
-        assert upload.extract_path == str(loose)
-        assert Path(upload.extract_path).is_dir()
+        assert upload.extract_path == f"uploads/{upload_id}/loose"
+        assert (tmp_path / upload.extract_path).is_dir()
         # And the would-be zip extract dir must NOT have been created.
-        zip_extract_dir = tmp_path / "extracts" / str(upload_id)
+        zip_extract_dir = tmp_path / "uploads" / str(upload_id) / "extracted"
         assert not zip_extract_dir.exists()
 
 
@@ -394,6 +424,7 @@ def test_prepare_upload_marks_failed_on_zip_bomb(
 
     from worker.core import config as cfg
     from worker.core import db as worker_db
+    from worker.core.uuid7 import uuid7
 
     monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
@@ -402,9 +433,10 @@ def test_prepare_upload_marks_failed_on_zip_bomb(
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    upload_dir = tmp_path / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = upload_dir / "bomb.zip"
+    upload_id = uuid7()
+    raw_key = f"uploads/{upload_id}/raw.zip"
+    zip_path = tmp_path / raw_key
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         zf.writestr("zeros.bin", b"\x00" * (1024 * 1024))
@@ -412,13 +444,14 @@ def test_prepare_upload_marks_failed_on_zip_bomb(
 
     with _engine_session(sync_url) as session:
         user_id = _insert_user(session)
-        upload_id = _insert_upload(
+        _insert_upload(
             session,
             user_id=user_id,
-            storage_path=zip_path,
+            storage_path=raw_key,
             size_bytes=zip_path.stat().st_size,
             kind="zip",
             original_name="bomb.zip",
+            upload_id=upload_id,
         )
 
     from worker.files.safety import SafetyError
@@ -437,9 +470,9 @@ def test_prepare_upload_marks_failed_on_zip_bomb(
         # No files persisted.
         files = list(session.scalars(select(File).where(File.upload_id == upload_id)))
         assert files == []
-        # Extract dir cleaned up.
-        extract_root = tmp_path / "extracts" / str(upload_id)
-        assert not extract_root.exists()
+        # Extract prefix cleaned up.
+        extract_dir = tmp_path / "uploads" / str(upload_id) / "extracted"
+        assert not extract_dir.exists() or not any(extract_dir.iterdir())
 
 
 def test_prepare_upload_marks_failed_when_persist_raises(
@@ -457,6 +490,7 @@ def test_prepare_upload_marks_failed_when_persist_raises(
 
     from worker.core import config as cfg
     from worker.core import db as worker_db
+    from worker.core.uuid7 import uuid7
 
     monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
@@ -465,20 +499,22 @@ def test_prepare_upload_marks_failed_when_persist_raises(
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    upload_dir = tmp_path / "uploads"
-    upload_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = upload_dir / "ok.zip"
+    upload_id = uuid7()
+    raw_key = f"uploads/{upload_id}/raw.zip"
+    zip_path = tmp_path / raw_key
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
     _make_zip(zip_path)
 
     with _engine_session(sync_url) as session:
         user_id = _insert_user(session)
-        upload_id = _insert_upload(
+        _insert_upload(
             session,
             user_id=user_id,
-            storage_path=zip_path,
+            storage_path=raw_key,
             size_bytes=zip_path.stat().st_size,
             kind="zip",
             original_name="ok.zip",
+            upload_id=upload_id,
         )
 
     # Force _persist to raise; the wrapper must mark the row failed.

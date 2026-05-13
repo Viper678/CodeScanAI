@@ -27,7 +27,6 @@ from concurrent.futures import Future, ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from decimal import Decimal
-from pathlib import Path
 from typing import Any
 from uuid import UUID
 
@@ -68,6 +67,7 @@ from worker.scanners.base import (
 from worker.scanners.bugs import BugsScanner
 from worker.scanners.keywords import KeywordScanner
 from worker.scanners.security import SecurityScanner
+from worker.storage import Storage, StorageKeyError, get_storage
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +80,36 @@ ScannerRegistryFactory = Callable[[list[str], KeywordsConfig | None], ScannerReg
 
 @dataclass(frozen=True)
 class _FilePlan:
-    """Pre-flight materialization for one scan_file row."""
+    """Pre-flight materialization for one scan_file row.
+
+    Post-M2: holds a storage key rather than a filesystem Path. The
+    backing bytes are read through ``Storage.get_bytes`` (LocalStorage:
+    direct filesystem; GcsStorage: HTTP fetch). The size + binary +
+    language metadata is captured from the ``files`` row up front so the
+    pre-flight skip pass doesn't need to touch storage at all.
+    """
 
     scan_file_id: UUID
     file_id: UUID
     relative_path: str
-    abs_path: Path
+    key: str
     language: str | None
     size_bytes: int
     is_binary: bool
+
+    def read_text(self, storage: Storage, *, encoding: str = "utf-8") -> str:
+        """Read the file's content as ``str`` via the Storage backend.
+
+        Mirrors the pre-M2 ``Path.read_text(encoding=..., errors='replace')``
+        contract: bad UTF-8 is replaced rather than raising, because
+        scanners deal with mojibake gracefully and a per-file decode
+        failure shouldn't fail the whole scan. Bounded by the
+        ``max_scan_file_size_mb`` pre-flight skip, so the in-memory cost
+        is capped at 1 MiB per file by default.
+        """
+
+        data = storage.get_bytes(self.key)
+        return data.decode(encoding, errors="replace")
 
 
 @dataclass
@@ -147,6 +168,7 @@ def _run(
 
     parsed_id = UUID(scan_id)
     maker = session_maker if session_maker is not None else worker_db.SessionMaker
+    storage = get_storage()
 
     with maker() as session:
         scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
@@ -174,15 +196,19 @@ def _run(
             scan.finished_at = datetime.now(UTC)
             session.commit()
             return _result_dict(scan)
-        extract_root = Path(upload.extract_path)
+        # Post-M2: extract_path holds a storage prefix (e.g.
+        # ``uploads/<id>/extracted``) — the worker joins per-file keys
+        # against this string, not a filesystem path. Strip any
+        # trailing slash so the join produces clean keys.
+        extract_prefix = upload.extract_path.rstrip("/")
 
-        plans = _build_plans(session, parsed_id, extract_root)
+        plans = _build_plans(session, parsed_id, extract_prefix)
 
     # Pre-flight skip pass — done in a fresh session so we can stream updates.
     eligible: list[_FilePlan] = []
     with maker() as session:
         for plan in plans:
-            skip_reason = _preflight_skip(plan)
+            skip_reason = _preflight_skip(plan, storage)
             if skip_reason is not None:
                 _mark_skipped(session, plan.scan_file_id, skip_reason)
                 _bump_progress(session, parsed_id)
@@ -217,6 +243,7 @@ def _run(
             keywords_cfg=keywords_cfg,
             registry=registry,
             maker=maker,
+            storage=storage,
         )
 
     # Finalize.
@@ -295,7 +322,7 @@ def _default_scanner_registry(
 # ---- Plan construction ------------------------------------------------------
 
 
-def _build_plans(session: Session, scan_id: UUID, extract_root: Path) -> list[_FilePlan]:
+def _build_plans(session: Session, scan_id: UUID, extract_prefix: str) -> list[_FilePlan]:
     """Load scan_files joined to files and materialize per-file plans.
 
     Only non-terminal rows (``pending`` / ``running``) are returned. On Celery
@@ -303,6 +330,10 @@ def _build_plans(session: Session, scan_id: UUID, extract_root: Path) -> list[_F
     (``done`` / ``skipped`` / ``failed``) keep their findings and stay out of
     the worklist — re-running them would duplicate ``scan_findings`` inserts
     and bump ``scan.progress_done`` past ``progress_total``.
+
+    ``extract_prefix`` is the storage prefix (no trailing slash) that
+    ``files.path`` is relative to. Each plan's storage key is built as
+    ``{extract_prefix}/{file.path}``.
     """
 
     rows = session.execute(
@@ -327,7 +358,7 @@ def _build_plans(session: Session, scan_id: UUID, extract_root: Path) -> list[_F
                 scan_file_id=sf.id,
                 file_id=f.id,
                 relative_path=f.path,
-                abs_path=extract_root / f.path,
+                key=f"{extract_prefix}/{f.path}",
                 language=f.language,
                 size_bytes=f.size_bytes,
                 is_binary=f.is_binary,
@@ -336,7 +367,7 @@ def _build_plans(session: Session, scan_id: UUID, extract_root: Path) -> list[_F
     return plans
 
 
-def _preflight_skip(plan: _FilePlan) -> str | None:
+def _preflight_skip(plan: _FilePlan, storage: Storage) -> str | None:
     """Decide whether ``plan`` should be skipped pre-dispatch. Returns reason or None."""
 
     if plan.is_binary:
@@ -344,11 +375,12 @@ def _preflight_skip(plan: _FilePlan) -> str | None:
     max_bytes = settings.max_scan_file_size_mb * 1024 * 1024
     if plan.size_bytes > max_bytes:
         return "oversize"
-    if not plan.abs_path.is_file():
-        return "missing"
+    # ``storage.size`` doubles as the existence check — a missing key
+    # raises ``StorageKeyError`` which we map to ``missing``. Cheap on
+    # both backends (LocalStorage: stat; GcsStorage: HEAD).
     try:
-        content_len = plan.abs_path.stat().st_size
-    except OSError:
+        content_len = storage.size(plan.key)
+    except StorageKeyError:
         return "missing"
     # Estimate tokens as chars/4 (approximate for code per SCAN_RULES.md
     # §"Token budget & chunking"). Files exceeding the per-call budget are
@@ -368,6 +400,7 @@ def _process_file(
     keywords_cfg: KeywordsConfig | None,
     registry: ScannerRegistry,
     maker: sessionmaker[Session],
+    storage: Storage,
 ) -> _PerFileOutcome:
     """Run all selected scan_types on one file, sequentially, in this thread.
 
@@ -394,6 +427,7 @@ def _process_file(
             scan_types=scan_types,
             keywords_cfg=keywords_cfg,
             registry=registry,
+            storage=storage,
         )
         _persist_outcome(plan, outcome, maker)
         return outcome
@@ -407,13 +441,18 @@ def _process_file_no_db(
     scan_types: list[str],
     keywords_cfg: KeywordsConfig | None,
     registry: ScannerRegistry,
+    storage: Storage,
 ) -> _PerFileOutcome:
     """Pure scanner dispatch for one file — no DB access. Unit-test entry point."""
 
     outcome = _PerFileOutcome(scan_file_id=plan.scan_file_id)
 
     try:
-        content = plan.abs_path.read_text(encoding="utf-8", errors="replace")
+        content = plan.read_text(storage)
+    except StorageKeyError as exc:
+        outcome.final_status = SCAN_FILE_STATUS_FAILED
+        outcome.final_error = f"read_error: {exc}"[:500]
+        return outcome
     except OSError as exc:
         outcome.final_status = SCAN_FILE_STATUS_FAILED
         outcome.final_error = f"read_error: {exc}"[:500]
@@ -504,6 +543,7 @@ def _dispatch(
     keywords_cfg: KeywordsConfig | None,
     registry: ScannerRegistry,
     maker: sessionmaker[Session],
+    storage: Storage,
 ) -> bool:
     """Submit per-file work to a thread pool and watch for cancellation.
 
@@ -533,6 +573,7 @@ def _dispatch(
                 keywords_cfg=keywords_cfg,
                 registry=registry,
                 maker=maker,
+                storage=storage,
             )
             futures[fut] = plan
 

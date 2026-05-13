@@ -10,59 +10,21 @@ from __future__ import annotations
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 from uuid import UUID, uuid4
 
 import pytest
 from freezegun import freeze_time
 
 from worker.core import config as cfg
+from worker.storage.local import LocalStorage
 from worker.tasks import cleanup as cleanup_module
 from worker.tasks.cleanup import (
     CleanupReport,
     _delete_one,
     _Outcome,
-    _wipe_path,
     cleanup_old_uploads,
 )
-
-# ---- _wipe_path -------------------------------------------------------------
-
-
-def test_wipe_path_removes_existing_directory(tmp_path: Path) -> None:
-    target = tmp_path / "extracts" / "abc"
-    (target / "src").mkdir(parents=True)
-    (target / "src" / "f.py").write_text("x = 1\n")
-
-    _wipe_path(target)
-
-    assert not target.exists()
-
-
-def test_wipe_path_is_idempotent_on_missing_directory(tmp_path: Path) -> None:
-    """Concurrent / never-extracted upload — missing path must be a no-op."""
-
-    missing = tmp_path / "uploads" / "never-existed"
-
-    _wipe_path(missing)  # should not raise
-
-
-def test_wipe_path_propagates_oserror_on_permission_failure(tmp_path: Path) -> None:
-    """A real IO failure must escape so the caller can record an error.
-
-    We simulate by patching shutil.rmtree — actually chmod-ing in a tmp_path
-    is racy under different OSes (mac vs linux ACL semantics).
-    """
-
-    target = tmp_path / "uploads" / "exists"
-    target.mkdir(parents=True)
-
-    with (
-        patch("worker.tasks.cleanup.shutil.rmtree", side_effect=PermissionError("nope")),
-        pytest.raises(PermissionError),
-    ):
-        _wipe_path(target)
-
 
 # ---- cleanup_old_uploads disabled-by-default --------------------------------
 
@@ -76,11 +38,14 @@ def test_cleanup_no_op_when_retention_disabled(
 
     fake_session_scope = MagicMock()
     monkeypatch.setattr(cleanup_module, "session_scope", fake_session_scope)
+    fake_get_storage = MagicMock()
+    monkeypatch.setattr(cleanup_module, "get_storage", fake_get_storage)
 
     result = cleanup_old_uploads()
 
     assert result == CleanupReport(swept=0, errors=0)
     fake_session_scope.assert_not_called()
+    fake_get_storage.assert_not_called()
 
 
 # ---- cleanup_old_uploads with stubbed session -------------------------------
@@ -121,6 +86,7 @@ def test_cleanup_returns_zero_when_no_old_uploads(
     fake_session: MagicMock,
 ) -> None:
     monkeypatch.setattr(cfg.settings, "retention_days", 30)
+    monkeypatch.setattr(cleanup_module, "get_storage", lambda: MagicMock())
 
     fake_session.scalars.return_value = []
 
@@ -138,20 +104,20 @@ def test_cleanup_sweeps_old_uploads_with_frozen_clock(
 ) -> None:
     """3 old upload ids are returned; cleanup iterates them and deletes each.
 
-    Disk is set up so each upload has a backing dir, and we confirm the dirs
-    are gone after the sweep.
+    Storage is set up so each upload has backing artifacts, and we
+    confirm they're gone after the sweep.
     """
 
     monkeypatch.setattr(cfg.settings, "retention_days", 30)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
 
+    storage = LocalStorage(tmp_path)
+    monkeypatch.setattr(cleanup_module, "get_storage", lambda: storage)
+
     upload_ids = [uuid4(), uuid4(), uuid4()]
-    extract_root = tmp_path / "extracts"
     for uid in upload_ids:
-        (tmp_path / "uploads" / str(uid)).mkdir(parents=True)
-        (tmp_path / "uploads" / str(uid) / "repo.zip").write_text("z")
-        (extract_root / str(uid)).mkdir(parents=True)
-        (extract_root / str(uid) / "f.py").write_text("x = 1\n")
+        storage.put_bytes(f"uploads/{uid}/raw.zip", b"z")
+        storage.put_bytes(f"uploads/{uid}/extracted/f.py", b"x = 1\n")
 
     fake_session.scalars.return_value = upload_ids
 
@@ -159,7 +125,7 @@ def test_cleanup_sweeps_old_uploads_with_frozen_clock(
     def _get(_model: Any, upload_id: UUID) -> Any:
         return _stub_upload(
             upload_id=upload_id,
-            extract_path=str(extract_root / str(upload_id)),
+            extract_path=f"uploads/{upload_id}/extracted",
         )
 
     fake_session.get.side_effect = _get
@@ -171,44 +137,47 @@ def test_cleanup_sweeps_old_uploads_with_frozen_clock(
     # Per-row commit; one commit per upload.
     assert fake_session.delete.call_count == 3
     assert fake_session.commit.call_count == 3
-    # Disk artifacts are gone.
+    # Storage artifacts are gone.
     for uid in upload_ids:
-        assert not (tmp_path / "uploads" / str(uid)).exists()
-        assert not (extract_root / str(uid)).exists()
+        assert not storage.exists(f"uploads/{uid}/raw.zip")
+        assert not storage.exists(f"uploads/{uid}/extracted/f.py")
 
 
-def test_cleanup_records_disk_failures_per_row(
+def test_cleanup_records_storage_failures_per_row(
     monkeypatch: pytest.MonkeyPatch,
     fake_session: MagicMock,
     tmp_path: Path,
 ) -> None:
-    """If ``_wipe_path`` blows up on one upload, that row stays + sweep continues.
+    """If storage.delete_prefix blows up on one upload, that row stays + sweep continues.
 
-    Two uploads queued; the first one's disk wipe raises; the second
-    succeeds. Result should reflect 1 swept, 1 error, and only the second
-    row should be ``session.delete``-d.
+    Two uploads queued; the first one's wipe raises; the second succeeds.
+    Result should reflect 1 swept, 1 error, and only the second row should
+    be ``session.delete``-d.
     """
 
     monkeypatch.setattr(cfg.settings, "retention_days", 30)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
 
     bad_id, good_id = uuid4(), uuid4()
-    (tmp_path / "uploads" / str(good_id)).mkdir(parents=True)
+    backing = LocalStorage(tmp_path)
+    backing.put_bytes(f"uploads/{good_id}/raw.zip", b"z")
+
+    class _FlakyStorage:
+        """Wraps LocalStorage; raises on the bad-id prefix."""
+
+        def delete_prefix(self, prefix: str) -> int:
+            if str(bad_id) in prefix:
+                raise OSError("simulated storage failure")
+            return backing.delete_prefix(prefix)
+
+    monkeypatch.setattr(cleanup_module, "get_storage", lambda: _FlakyStorage())
+
     fake_session.scalars.return_value = [bad_id, good_id]
 
     def _get(_model: Any, upload_id: UUID) -> Any:
         return _stub_upload(upload_id=upload_id, extract_path=None)
 
     fake_session.get.side_effect = _get
-
-    real_wipe = cleanup_module._wipe_path
-
-    def _flaky_wipe(path: Path) -> None:
-        if str(bad_id) in str(path):
-            raise OSError("simulated disk failure")
-        real_wipe(path)
-
-    monkeypatch.setattr(cleanup_module, "_wipe_path", _flaky_wipe)
 
     result = cleanup_old_uploads()
 
@@ -231,6 +200,7 @@ def test_cleanup_treats_missing_row_as_already_swept(
 
     monkeypatch.setattr(cfg.settings, "retention_days", 30)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
+    monkeypatch.setattr(cleanup_module, "get_storage", lambda: LocalStorage(tmp_path))
 
     fake_session.scalars.return_value = [uuid4()]
     fake_session.get.return_value = None  # row vanished between snapshot and re-fetch
@@ -244,23 +214,24 @@ def test_cleanup_treats_missing_row_as_already_swept(
 # ---- _delete_one direct -----------------------------------------------------
 
 
-def test_delete_one_deletes_disk_then_db(tmp_path: Path) -> None:
-    """Order matters: disk first, DB second. Verify disk is gone before delete."""
+def test_delete_one_deletes_storage_then_db(tmp_path: Path) -> None:
+    """Order matters: storage first, DB second. Verify storage is gone before DB delete."""
 
     upload_id = uuid4()
-    raw = tmp_path / "uploads" / str(upload_id)
-    raw.mkdir(parents=True)
-    extract = tmp_path / "extracts" / str(upload_id)
-    extract.mkdir(parents=True)
+    storage = LocalStorage(tmp_path)
+    storage.put_bytes(f"uploads/{upload_id}/raw.zip", b"z")
+    storage.put_bytes(f"uploads/{upload_id}/extracted/f.py", b"x = 1\n")
 
     session = MagicMock()
-    session.get.return_value = _stub_upload(upload_id=upload_id, extract_path=str(extract))
+    session.get.return_value = _stub_upload(
+        upload_id=upload_id, extract_path=f"uploads/{upload_id}/extracted"
+    )
 
-    outcome = _delete_one(session, upload_id=upload_id, data_dir=tmp_path)
+    outcome = _delete_one(session, upload_id=upload_id, storage=storage)
 
     assert outcome == _Outcome.SWEPT
-    assert not raw.exists()
-    assert not extract.exists()
+    assert not storage.exists(f"uploads/{upload_id}/raw.zip")
+    assert not storage.exists(f"uploads/{upload_id}/extracted/f.py")
     session.delete.assert_called_once()
     session.commit.assert_called_once()
 

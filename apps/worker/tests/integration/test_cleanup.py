@@ -153,12 +153,18 @@ def _engine_session(sync_url: str) -> Iterator[Session]:
 def _seed_upload(
     session: Session,
     *,
-    storage_path: Path,
-    extract_path: Path,
+    storage_path: str,
+    extract_path: str,
     created_at: datetime,
 ) -> UUID:
     """Insert a fully-staged upload (status=ready, with extract_path) at a
-    specific historical ``created_at`` so the cleanup task sees it as old."""
+    specific historical ``created_at`` so the cleanup task sees it as old.
+
+    ``storage_path`` / ``extract_path`` are storage keys (forward-slash,
+    no leading slash) per the post-M2 convention. Callers may pass
+    ``"placeholder"`` and update the columns once they know the upload
+    id (since the canonical keys are id-namespaced).
+    """
 
     from sqlalchemy import text
 
@@ -186,8 +192,8 @@ def _seed_upload(
         {
             "id": upload_id,
             "uid": user_id,
-            "sp": str(storage_path),
-            "ep": str(extract_path),
+            "sp": storage_path,
+            "ep": extract_path,
             "ts": created_at,
         },
     )
@@ -202,58 +208,72 @@ def test_cleanup_old_uploads_end_to_end(
 ) -> None:
     sync_url, _ = test_db
 
-    from sqlalchemy import text as sql_text
-
     from worker.core import config as cfg
     from worker.core import db as worker_db
+    from worker.storage import reset_storage_cache
 
     monkeypatch.setattr(cfg.settings, "database_sync_url", sync_url)
     monkeypatch.setattr(cfg.settings, "data_dir", tmp_path)
     monkeypatch.setattr(cfg.settings, "retention_days", 30)
+    # Fresh storage factory so this test sees its own tmp_path.
+    reset_storage_cache()
 
     new_engine = create_engine(sync_url, poolclass=NullPool, future=True)
     new_maker = sessionmaker(bind=new_engine, future=True, expire_on_commit=False)
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    # Seed two uploads — one well past the cutoff, one fresh.
-    old_raw = tmp_path / "uploads" / "old-upload"
-    old_raw.mkdir(parents=True)
-    (old_raw / "repo.zip").write_text("zip-bytes")
-    old_extract = tmp_path / "extracts" / "old-upload"
-    old_extract.mkdir(parents=True)
-    (old_extract / "main.py").write_text("print('old')\n")
-
-    fresh_raw = tmp_path / "uploads" / "fresh-upload"
-    fresh_raw.mkdir(parents=True)
-    (fresh_raw / "repo.zip").write_text("zip-bytes")
-
+    # Post-M2: raw + extracted artifacts live under
+    # ``uploads/<id>/`` in the configured Storage backend (LocalStorage
+    # rooted at ``tmp_path`` here). ``delete_prefix`` over that prefix
+    # is what cleanup uses to wipe an upload.
     now = datetime.now(tz=UTC)
     with _engine_session(sync_url) as session:
         old_id = _seed_upload(
             session,
-            storage_path=old_raw / "repo.zip",
-            extract_path=old_extract,
+            storage_path="placeholder",
+            extract_path="placeholder",
             created_at=now - timedelta(days=90),
         )
-        # Move the upload's storage to its real id-namespaced dir so the
-        # cleanup task's ``data_dir/uploads/<id>`` lookup finds the bytes.
-        target = tmp_path / "uploads" / str(old_id)
-        old_raw.rename(target)
-
         fresh_id = _seed_upload(
             session,
-            storage_path=fresh_raw / "repo.zip",
-            extract_path=tmp_path / "extracts" / "fresh-upload",
+            storage_path="placeholder",
+            extract_path="placeholder",
             created_at=now - timedelta(days=1),
         )
-        target_fresh = tmp_path / "uploads" / str(fresh_id)
-        fresh_raw.rename(target_fresh)
-        # Update the extract_path on the old row so it points at the
-        # post-rename location too — the seed used the pre-rename literal.
+
+    # Plant artifacts under the canonical M2 prefixes for both uploads.
+    old_raw = tmp_path / "uploads" / str(old_id) / "raw.zip"
+    old_raw.parent.mkdir(parents=True, exist_ok=True)
+    old_raw.write_text("zip-bytes")
+    old_extract = tmp_path / "uploads" / str(old_id) / "extracted" / "main.py"
+    old_extract.parent.mkdir(parents=True, exist_ok=True)
+    old_extract.write_text("print('old')\n")
+
+    fresh_raw = tmp_path / "uploads" / str(fresh_id) / "raw.zip"
+    fresh_raw.parent.mkdir(parents=True, exist_ok=True)
+    fresh_raw.write_text("zip-bytes")
+
+    # Fix up the storage_path / extract_path columns to the canonical
+    # post-M2 storage keys.
+    with _engine_session(sync_url) as session:
+        from sqlalchemy import text as sql_text
+
         session.execute(
-            sql_text("UPDATE uploads SET extract_path = :ep WHERE id = :id"),
-            {"ep": str(old_extract), "id": old_id},
+            sql_text("UPDATE uploads SET storage_path = :sp, extract_path = :ep WHERE id = :id"),
+            {
+                "sp": f"uploads/{old_id}/raw.zip",
+                "ep": f"uploads/{old_id}/extracted",
+                "id": old_id,
+            },
+        )
+        session.execute(
+            sql_text("UPDATE uploads SET storage_path = :sp, extract_path = :ep WHERE id = :id"),
+            {
+                "sp": f"uploads/{fresh_id}/raw.zip",
+                "ep": f"uploads/{fresh_id}/extracted",
+                "id": fresh_id,
+            },
         )
         session.commit()
 
@@ -264,7 +284,7 @@ def test_cleanup_old_uploads_end_to_end(
 
     assert result == {"swept": 1, "errors": 0}
 
-    # Old upload row + disk artifacts gone; fresh one untouched.
+    # Old upload row + storage artifacts gone; fresh one untouched.
     with _engine_session(sync_url) as session:
         from sqlalchemy import text
 
@@ -273,7 +293,8 @@ def test_cleanup_old_uploads_end_to_end(
 
     assert not (tmp_path / "uploads" / str(old_id)).exists()
     assert not old_extract.exists()
-    assert (tmp_path / "uploads" / str(fresh_id)).exists()
+    assert (tmp_path / "uploads" / str(fresh_id) / "raw.zip").exists()
+    reset_storage_cache()
 
 
 def test_cleanup_disabled_runs_no_db_queries(
@@ -299,17 +320,17 @@ def test_cleanup_disabled_runs_no_db_queries(
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
     # Drop a row that *would* be swept if retention were on.
-    raw = tmp_path / "uploads" / "stale"
-    raw.mkdir(parents=True)
     with _engine_session(sync_url) as session:
         upload_id = _seed_upload(
             session,
-            storage_path=raw / "x.zip",
-            extract_path=tmp_path / "extracts" / "stale",
+            storage_path="placeholder",
+            extract_path="placeholder",
             created_at=datetime.now(tz=UTC) - timedelta(days=365),
         )
-        target = tmp_path / "uploads" / str(upload_id)
-        raw.rename(target)
+
+    raw = tmp_path / "uploads" / str(upload_id) / "raw.zip"
+    raw.parent.mkdir(parents=True, exist_ok=True)
+    raw.write_text("z")
 
     from worker.tasks.cleanup import cleanup_old_uploads
 

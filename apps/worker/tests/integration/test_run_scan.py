@@ -223,6 +223,24 @@ def _engine_session(sync_url: str) -> Iterator[Session]:
         engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def _reset_storage_cache_per_test() -> Iterator[None]:
+    """Invalidate the cached ``get_storage()`` so each test sees its own tmp_path.
+
+    ``worker.storage.factory`` caches the resolved Storage by reading
+    ``settings.data_dir`` once at first call; without this reset, the
+    second test's monkeypatched data_dir would be ignored and the test
+    would talk to the first test's tmp_path (which pytest has already
+    cleaned up).
+    """
+
+    from worker.storage import reset_storage_cache
+
+    reset_storage_cache()
+    yield
+    reset_storage_cache()
+
+
 # ---- Seed helpers -----------------------------------------------------------
 
 
@@ -248,16 +266,22 @@ def _insert_upload_and_files(
     session: Session,
     *,
     user_id: UUID,
-    extract_root: Path,
+    data_dir: Path,
 ) -> tuple[UUID, list[UUID]]:
-    """Create an upload + 3 files (py, md, binary) and write them to disk.
+    """Create an upload + 3 files (py, md, binary) and write them to storage.
 
-    Returns (upload_id, [file_id_py, file_id_md, file_id_bin]).
+    Post-M2: writes files under ``<data_dir>/uploads/<id>/extracted/...``
+    so a LocalStorage rooted at ``data_dir`` can read them through the
+    standard ``extracted_key`` convention. Returns
+    (upload_id, [file_id_py, file_id_md, file_id_bin]).
     """
 
     from worker.core.models import UPLOAD_STATUS_READY, File, Upload
     from worker.core.uuid7 import uuid7
 
+    upload_id = uuid7()
+    extract_prefix = f"uploads/{upload_id}/extracted"
+    extract_root = data_dir / extract_prefix
     extract_root.mkdir(parents=True, exist_ok=True)
     py_content = "# TODO: refactor this\nprint('hello')\n"
     md_content = "# Notes\nNothing TODO here.\n"
@@ -268,13 +292,13 @@ def _insert_upload_and_files(
     (extract_root / "blob.bin").write_bytes(bin_content)
 
     upload = Upload(
-        id=uuid7(),
+        id=upload_id,
         user_id=user_id,
         original_name="bundle.zip",
         kind="zip",
         size_bytes=999,
-        storage_path=str(extract_root),
-        extract_path=str(extract_root),
+        storage_path=f"uploads/{upload_id}/raw.zip",
+        extract_path=extract_prefix,
         status=UPLOAD_STATUS_READY,
         file_count=3,
         scannable_count=2,
@@ -435,12 +459,9 @@ def test_run_scan_end_to_end_completes_with_findings_and_usage(
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    extract_root = tmp_path / "uploads" / "extract"
     with _engine_session(sync_url) as session:
         user_id = _insert_user(session)
-        upload_id, file_ids = _insert_upload_and_files(
-            session, user_id=user_id, extract_root=extract_root
-        )
+        upload_id, file_ids = _insert_upload_and_files(session, user_id=user_id, data_dir=tmp_path)
         scan_id = _insert_scan(session, user_id=user_id, upload_id=upload_id, file_ids=file_ids)
 
     from worker.tasks.run_scan import _run
@@ -516,12 +537,9 @@ def test_run_scan_idempotent_when_already_completed(
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    extract_root = tmp_path / "uploads" / "extract"
     with _engine_session(sync_url) as session:
         user_id = _insert_user(session)
-        upload_id, file_ids = _insert_upload_and_files(
-            session, user_id=user_id, extract_root=extract_root
-        )
+        upload_id, file_ids = _insert_upload_and_files(session, user_id=user_id, data_dir=tmp_path)
         scan_id = _insert_scan(session, user_id=user_id, upload_id=upload_id, file_ids=file_ids)
 
     # Pre-mark as completed.
@@ -566,12 +584,9 @@ def test_run_scan_re_entry_skips_already_finalized_scan_files(
     monkeypatch.setattr(worker_db, "engine", new_engine)
     monkeypatch.setattr(worker_db, "SessionMaker", new_maker)
 
-    extract_root = tmp_path / "uploads" / "extract"
     with _engine_session(sync_url) as session:
         user_id = _insert_user(session)
-        upload_id, file_ids = _insert_upload_and_files(
-            session, user_id=user_id, extract_root=extract_root
-        )
+        upload_id, file_ids = _insert_upload_and_files(session, user_id=user_id, data_dir=tmp_path)
         scan_id = _insert_scan(session, user_id=user_id, upload_id=upload_id, file_ids=file_ids)
 
     from datetime import UTC

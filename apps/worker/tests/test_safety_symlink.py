@@ -7,10 +7,13 @@ import logging
 import stat
 import zipfile
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
 from worker.files.safety import is_symlink_entry, safe_extract
+from worker.storage import extracted_key
+from worker.storage.local import LocalStorage
 
 
 def _write_symlink_zip(path: Path, link_name: str, target: str) -> None:
@@ -42,12 +45,13 @@ def test_safe_extract_skips_symlink_entry(
     zip_path = tmp_path / "link.zip"
     _write_symlink_zip(zip_path, "passwd-link", "/etc/passwd")
 
-    extract_root = tmp_path / "out"
+    storage = LocalStorage(tmp_path)
+    upload_id = uuid4()
     caplog.set_level(logging.WARNING)
-    written = safe_extract(zip_path, extract_root)
+    written = safe_extract(zip_path, storage=storage, upload_id=str(upload_id))
 
     assert written == 0
-    # No file was created — nothing pollutes the index, and certainly nothing
-    # follows the link.
-    assert not (extract_root / "passwd-link").exists()
+    # No object was created — nothing pollutes the index, and certainly
+    # nothing follows the link.
+    assert not storage.exists(extracted_key(upload_id, "passwd-link"))
     assert any("symlink" in record.message.lower() for record in caplog.records)

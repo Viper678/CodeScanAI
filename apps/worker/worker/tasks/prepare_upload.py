@@ -8,12 +8,22 @@ rows, and transitions the upload from ``received`` → ``extracting`` →
 The API enqueues this task by name (``worker.tasks.prepare_upload.prepare_upload``);
 keep the ``name=`` kwarg below in lock-step with
 ``apps/api/app/services/celery_client.py``.
+
+Post-M2 the task reads / writes / deletes through the ``Storage``
+abstraction. The raw upload zip lives at ``uploads/<id>/raw.zip``; the
+worker downloads it to a process-local temp file before handing it to
+``zipfile`` (Python's zipfile insists on a seekable file or a real
+path), runs the safety pre-flight, then ``safe_extract`` writes each
+entry into ``uploads/<id>/extracted/<rel>``. Loose uploads are walked
+in-place at ``uploads/<id>/loose/...``.
 """
 
 from __future__ import annotations
 
 import logging
-import shutil
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from uuid import UUID
 
@@ -34,16 +44,21 @@ from worker.core.models import (
     Upload,
 )
 from worker.core.uuid7 import uuid7
-from worker.files.classify import FileMeta, classify
+from worker.files.classify import FileMeta, classify_bytes
 from worker.files.safety import (
     SafetyError,
     inspect_archive,
     safe_extract,
 )
+from worker.storage import (
+    Storage,
+    extracted_prefix,
+    get_storage,
+    loose_prefix,
+)
+from worker.storage.local import LocalStorage
 
 logger = logging.getLogger(__name__)
-
-LOOSE_SUBDIR = "loose"
 
 
 # ---- Public task ------------------------------------------------------------
@@ -71,6 +86,7 @@ def prepare_upload(self: Task, upload_id: str) -> dict[str, int | str]:
 
     del self  # unused; bound only for explicit naming in error traces
     parsed_id = UUID(upload_id)
+    storage = get_storage()
 
     with worker_db.SessionMaker() as session:
         upload = session.scalar(select(Upload).where(Upload.id == parsed_id))
@@ -82,21 +98,27 @@ def prepare_upload(self: Task, upload_id: str) -> dict[str, int | str]:
         upload.error = None
         session.commit()
 
-        extract_root = _extract_root_for(parsed_id)
+        extract_root_key = _extract_root_for(parsed_id)
         # The whole pipeline (materialize → persist → commit) is wrapped so a
         # commit-time error (FK violation, deadlock, retry collision) cannot
         # leave the upload stuck in ``extracting``.
         try:
-            materialized_root, metas = _materialize(upload, extract_root)
-            _persist(session, upload, materialized_root, metas)
+            materialized_path, metas = _materialize(upload, storage)
+            _persist(session, upload, materialized_path, metas)
             session.commit()
         except SafetyError as exc:
-            return _fail(session, upload, extract_root, str(exc))
+            return _fail(session, upload, storage, extract_root_key, str(exc))
         except Exception as exc:
             # justify: any unexpected error must still mark the upload failed
             # rather than leaving it stuck in ``extracting`` forever.
             logger.exception("prepare_upload: unexpected error for %s", upload_id)
-            return _fail(session, upload, extract_root, f"unexpected error: {exc}")
+            return _fail(
+                session,
+                upload,
+                storage,
+                extract_root_key,
+                f"unexpected error: {exc}",
+            )
 
         return {
             "status": upload.status,
@@ -108,71 +130,88 @@ def prepare_upload(self: Task, upload_id: str) -> dict[str, int | str]:
 # ---- Pipeline steps ---------------------------------------------------------
 
 
-def _materialize(upload: Upload, extract_root: Path) -> tuple[Path, list[FileMeta]]:
+def _materialize(upload: Upload, storage: Storage) -> tuple[str, list[FileMeta]]:
     """Run extraction (zip) or walk (loose) and classify the resulting files.
 
     Args:
         upload: The Upload row, already moved to ``extracting``.
-        extract_root: Where extracted files should land for kind=zip; for
-            kind=loose the existing ``loose/`` subdir is walked in place.
+        storage: The configured Storage backend. Raw zip is read from
+            ``upload.storage_path``; extracted files land under
+            ``uploads/<id>/extracted/``; loose files are walked
+            in-place under ``uploads/<id>/loose/``.
 
     Returns:
-        A tuple of ``(root_used, metas)``. The root is the directory the
-        meta paths are relative to — equal to ``extract_root`` for zip,
-        equal to ``<storage_path>/loose`` for loose. Persisting the wrong
-        root would break any downstream reader that joins
+        A tuple of ``(extract_prefix, metas)`` where ``extract_prefix``
+        is the storage prefix (forward-slash, no trailing slash) the meta
+        paths are relative to — ``uploads/<id>/extracted`` for zip,
+        ``uploads/<id>/loose`` for loose. Persisting the wrong prefix
+        would break any downstream reader that joins
         ``upload.extract_path / file.path``.
     """
 
+    upload_id = str(upload.id)
     if upload.kind == UPLOAD_KIND_ZIP:
-        _prepare_extract_dir(extract_root)
-        inspect_archive(
-            Path(upload.storage_path),
-            max_files=settings.max_files_in_archive,
-            max_dirs=settings.max_dirs_in_archive,
-            max_total_uncompressed_bytes=settings.max_uncompressed_total_mb * 1024 * 1024,
-            max_entry_uncompressed_bytes=settings.max_entry_uncompressed_mb * 1024 * 1024,
-            max_compression_ratio=settings.max_compression_ratio,
-            max_nesting_depth=settings.max_nesting_depth,
-        )
-        safe_extract(Path(upload.storage_path), extract_root)
-        return extract_root, _walk_and_classify(extract_root)
+        # Make sure no stale extracted artifacts from a previous failed
+        # attempt linger before re-running.
+        storage.delete_prefix(extracted_prefix(upload_id))
+        with _local_zip_path(storage, upload.storage_path) as zip_path:
+            inspect_archive(
+                zip_path,
+                max_files=settings.max_files_in_archive,
+                max_dirs=settings.max_dirs_in_archive,
+                max_total_uncompressed_bytes=settings.max_uncompressed_total_mb * 1024 * 1024,
+                max_entry_uncompressed_bytes=settings.max_entry_uncompressed_mb * 1024 * 1024,
+                max_compression_ratio=settings.max_compression_ratio,
+                max_nesting_depth=settings.max_nesting_depth,
+            )
+            safe_extract(zip_path, storage=storage, upload_id=upload_id)
+        prefix = extracted_prefix(upload_id).rstrip("/")
+        return prefix, _walk_storage_and_classify(storage, prefix)
 
     if upload.kind == UPLOAD_KIND_LOOSE:
-        loose_dir = Path(upload.storage_path) / LOOSE_SUBDIR
-        if not loose_dir.is_dir():
-            raise SafetyError(f"loose upload missing {LOOSE_SUBDIR!r} directory")
-        return loose_dir, _walk_and_classify(loose_dir)
+        loose_pref = loose_prefix(upload_id).rstrip("/")
+        # Check there's at least one entry — historical contract was
+        # "loose upload missing 'loose' directory" if the api never
+        # wrote anything; keep the same shape so error messages don't
+        # drift.
+        keys = list(storage.iter_prefix(loose_pref + "/"))
+        if not keys:
+            raise SafetyError("loose upload has no files in storage")
+        return loose_pref, _walk_storage_and_classify(storage, loose_pref)
 
     raise SafetyError(f"unknown upload kind: {upload.kind!r}")
 
 
-def _walk_and_classify(root: Path) -> list[FileMeta]:
-    """Walk ``root`` and classify every regular file.
+def _walk_storage_and_classify(storage: Storage, prefix: str) -> list[FileMeta]:
+    """Iterate every key under ``prefix`` and classify it.
 
-    Symlinks are not followed and are not included in the materialized tree.
+    ``classify_bytes`` reads the bytes once into memory; the entry-size
+    cap (``MAX_ENTRY_UNCOMPRESSED_MB``) bounds the per-file memory cost.
+    Keys are sorted so the persisted ``files`` rows are deterministic
+    across runs.
     """
 
     metas: list[FileMeta] = []
-    resolved_root = root.resolve()
-    for path in sorted(root.rglob("*")):
-        if path.is_symlink():
-            logger.warning("skipping symlink under extract root: %s", path)
+    prefix_with_slash = prefix.rstrip("/") + "/"
+    for key in sorted(storage.iter_prefix(prefix_with_slash)):
+        if not key.startswith(prefix_with_slash):
+            # Defensive — list_blobs shouldn't return a key without the
+            # prefix, but we guard so a renamed prefix doesn't smuggle
+            # in unrelated files.
+            logger.warning("skipping key outside extract prefix: %s", key)
             continue
-        if not path.is_file():
+        rel_path = key[len(prefix_with_slash) :]
+        if not rel_path:
             continue
-        # Re-resolve and guard — defense in depth even after extraction.
-        if not path.resolve().is_relative_to(resolved_root):
-            logger.warning("skipping path outside extract root: %s", path)
-            continue
-        metas.append(classify(path, resolved_root))
+        data = storage.get_bytes(key)
+        metas.append(classify_bytes(rel_path, data))
     return metas
 
 
 def _persist(
     session: Session,
     upload: Upload,
-    extract_root: Path,
+    extract_prefix: str,
     metas: list[FileMeta],
 ) -> None:
     """Insert one ``files`` row per meta and finalize the upload row."""
@@ -194,7 +233,7 @@ def _persist(
             )
         )
 
-    upload.extract_path = str(extract_root)
+    upload.extract_path = extract_prefix
     upload.file_count = len(metas)
     upload.scannable_count = sum(1 for m in metas if not m.is_excluded_by_default)
     upload.status = UPLOAD_STATUS_READY
@@ -204,7 +243,8 @@ def _persist(
 def _fail(
     session: Session,
     upload: Upload,
-    extract_root: Path,
+    storage: Storage,
+    extract_prefix: str,
     message: str,
 ) -> dict[str, int | str]:
     """Mark ``upload`` failed, clean up partials, commit, and re-raise."""
@@ -221,33 +261,58 @@ def _fail(
         session.commit()
 
     if upload.kind == UPLOAD_KIND_ZIP:
-        _cleanup_extract_dir(extract_root)
+        # Best-effort: remove any partial extracted artifacts so the next
+        # retry starts clean and so a half-written zip doesn't leave
+        # bytes lingering past the upload's lifecycle.
+        try:
+            storage.delete_prefix(extract_prefix.rstrip("/") + "/")
+        except Exception:
+            logger.exception("failed to clean up extract prefix %s", extract_prefix)
 
     raise SafetyError(message)
 
 
-# ---- Filesystem helpers -----------------------------------------------------
+# ---- Storage helpers --------------------------------------------------------
 
 
-def _extract_root_for(upload_id: UUID) -> Path:
-    return settings.data_dir / "extracts" / str(upload_id)
+def _extract_root_for(upload_id: UUID) -> str:
+    """Return the storage prefix for an upload's extracted tree.
+
+    Post-M2 this is a storage key (no leading slash), not a Path. Kept
+    as a named helper so tests can patch the location without
+    string-formatting inline.
+    """
+
+    return extracted_prefix(upload_id).rstrip("/")
 
 
-def _prepare_extract_dir(path: Path) -> None:
-    """Create a fresh, empty extract dir. Wipes any prior partial."""
+@contextmanager
+def _local_zip_path(storage: Storage, storage_key: str) -> Iterator[Path]:
+    """Yield a local filesystem path to the raw zip at ``storage_key``.
 
-    if path.exists():
-        shutil.rmtree(path)
-    path.mkdir(parents=True, exist_ok=True)
+    For ``LocalStorage`` we hand back the existing on-disk path
+    (``root / key``) — no copy, zero overhead. For any other backend
+    (e.g. GcsStorage) we download to a process-local NamedTemporaryFile
+    and yield that. The file is cleaned up on context exit either way.
 
+    Why this matters: Python's ``zipfile`` insists on a seekable file
+    handle. The GCS SDK returns bytes; wrapping them in a BytesIO works
+    in-memory but ``zipfile`` then keeps the entire archive resident
+    for the duration of extraction. A temp file lets the OS page-cache
+    handle locality and matches the behavior the codebase had on
+    LocalStorage.
+    """
 
-def _cleanup_extract_dir(path: Path) -> None:
-    """Best-effort removal of partial extraction artifacts."""
-
-    if not path.exists():
+    if isinstance(storage, LocalStorage):
+        # LocalStorage is the only backend where we can sidestep the
+        # download. The Path is just ``root / key`` — no abstraction
+        # break (we already imported LocalStorage explicitly to do this
+        # narrowing).
+        yield storage.root / storage_key
         return
-    try:
-        shutil.rmtree(path)
-    except OSError:
-        # justify: cleanup is best-effort; logged so ops can sweep manually.
-        logger.exception("failed to cleanup extract dir %s", path)
+
+    data = storage.get_bytes(storage_key)
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=True) as tmp:
+        tmp.write(data)
+        tmp.flush()
+        yield Path(tmp.name)
