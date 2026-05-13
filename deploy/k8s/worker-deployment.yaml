@@ -66,8 +66,18 @@ spec:
           # Templated by the deploy pipeline (Phase B7).
           image: REGION-docker.pkg.dev/PROJECT_ID/codescan/codescan-worker:TAG
           imagePullPolicy: IfNotPresent
-          # No ``command:`` override — use the Dockerfile's CMD,
-          # which is ``celery worker --loglevel=info`` (no ``--beat``).
+          # Override the Dockerfile CMD to pin ``--concurrency=2`` —
+          # Celery defaults to the NODE's CPU count, not the pod's
+          # cgroup limit. On a 32-CPU GKE node our 2-CPU/2Gi pod would
+          # otherwise spawn 32 prefork children; combined with the
+          # per-scan LLM fan-out (``scan_concurrency=4``) and
+          # ``replicas: 3``, that's up to ~384 in-flight LLM calls —
+          # the pod OOMs and vLLM saturates. ``--concurrency=2``
+          # caps each pod at 2 simultaneous scans × 4 in-flight LLM
+          # calls = 8 calls/pod (24 across the fleet at replicas=3),
+          # well inside vLLM's saturation window (~10-15). Codex P2
+          # on M6.
+          command: ["uv", "run", "celery", "-A", "worker.celery_app", "worker", "--concurrency=2"]
           env:
             # Secrets from ESO-synced k8s Secret (Phase B5).
             - name: DATABASE_SYNC_URL

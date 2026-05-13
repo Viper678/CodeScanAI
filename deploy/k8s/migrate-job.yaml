@@ -57,6 +57,16 @@ spec:
   # a transient Cloud SQL flap; beyond that the migration is the
   # problem and the operator needs to look.
   backoffLimit: 1
+  # ``activeDeadlineSeconds`` bounds the Job's wall-clock run time.
+  # Without this, a migration blocked on a DDL lock or a stuck Cloud
+  # SQL session would keep running past the pipeline's ``kubectl wait
+  # --timeout=10m``; a retry would then ``kubectl create`` a SECOND
+  # ``codescan-migrate-<random>`` Job and run ``alembic upgrade head``
+  # against the same DB twice in parallel. 15 min gives a 5 min buffer
+  # past the operator's wait so a slow-but-legit migration doesn't
+  # trip this; a hung one gets killed before retries can duplicate.
+  # Codex P2 on M5.
+  activeDeadlineSeconds: 900
   # Clean up the completed Job + its pod after an hour so a year of
   # releases doesn't accumulate Job records in the namespace.
   ttlSecondsAfterFinished: 3600

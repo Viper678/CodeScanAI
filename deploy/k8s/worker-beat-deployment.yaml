@@ -68,9 +68,21 @@ spec:
           # tag in the same release so schedule definitions can't drift.
           image: REGION-docker.pkg.dev/PROJECT_ID/codescan/codescan-worker:TAG
           imagePullPolicy: IfNotPresent
-          # Override the Dockerfile CMD to add ``--beat``. This is
-          # the entire functional delta vs ``worker-deployment.yaml``.
-          command: ["uv", "run", "celery", "-A", "worker.celery_app", "worker", "--beat"]
+          # Override the Dockerfile CMD to add ``--beat`` AND pin
+          # ``--concurrency=2`` (Celery defaults to node CPU count
+          # rather than the pod's cgroup limit — see
+          # ``worker-deployment.yaml`` for the full rationale, same
+          # numbers apply here since this pod also executes tasks).
+          # Codex P2 on M6.
+          command:
+            - uv
+            - run
+            - celery
+            - -A
+            - worker.celery_app
+            - worker
+            - --beat
+            - --concurrency=2
           env:
             # Same env wiring as ``worker-deployment.yaml`` —
             # duplicated rather than DRY'd because Phase B7 will
