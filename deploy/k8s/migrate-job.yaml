@@ -83,6 +83,20 @@ spec:
                 secretKeyRef:
                   name: codescan-secrets
                   key: database-sync-url
+            # JWT_SECRET is required even though Alembic never uses it:
+            # ``alembic/env.py`` imports ``app.core.config.settings``
+            # (for the model metadata), which instantiates
+            # ``Settings()`` — and ``jwt_secret`` is a required field
+            # with no default, so the import crashes before any
+            # migration runs. Mount it from the same Secret as a
+            # cheap fix; a cleaner refactor (decouple env.py from
+            # the full Settings class) is a separate follow-up.
+            # Codex P1 on M5.
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: codescan-secrets
+                  key: jwt-secret
           resources:
             # Conservative — Alembic itself is light; the work is
             # all in Postgres. Bumped only if a future migration
