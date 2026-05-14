@@ -22,9 +22,9 @@ services:
     # for macOS / Windows. ``host-gateway`` is the documented portable
     # alias that resolves to the host's default-route IP.
     extra_hosts:
-      - "host.docker.internal:host-gateway"
+      - 'host.docker.internal:host-gateway'
     ports:
-      - "3000:3000"
+      - '3000:3000'
     healthcheck:
       # ``/scans`` is a real authenticated route — Next.js prod server
       # returns 200 with the login redirect HTML (no auth needed for the
@@ -33,7 +33,7 @@ services:
       # (``pnpm dev``), so the same probe survives the dev/prod swap.
       test:
         [
-          "CMD-SHELL",
+          'CMD-SHELL',
           'node -e "fetch(''http://localhost:3000/scans'').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"',
         ]
       interval: 10s

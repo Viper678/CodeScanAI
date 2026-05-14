@@ -11,6 +11,7 @@ back.
 From this directory:
 
 ```bash
+cp .env.example .env   # see "Key environment variables" below
 pnpm install
 pnpm dev
 ```

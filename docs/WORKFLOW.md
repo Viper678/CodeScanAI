@@ -185,7 +185,7 @@ Do not add tests just to inflate coverage. Test **behavior**, not implementation
 ## 10. Secrets, env, and config
 
 - Never commit a real API key. CI fails on secrets via `gitleaks`.
-- All config flows through `app.core.config.Settings` (api) and `worker.core.config.Settings` (worker), backed by env vars. New config = new field on Settings + new line in `.env.example`.
+- All config flows through `app.core.config.Settings` (api) and `worker.core.config.Settings` (worker), backed by env vars. New config = new field on Settings + new line in `codescan-backend/.env.example` (or `codescan-frontend/.env.example` for a web-side var).
 
 ---
 

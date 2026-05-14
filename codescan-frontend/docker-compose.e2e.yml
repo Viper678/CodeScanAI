@@ -12,6 +12,16 @@
 #     up -d --build
 services:
   web:
+    # Compose resolves relative paths (including ``build.context``)
+    # against the FIRST ``-f`` file's directory. The ``make e2e-up``
+    # chain lists ``codescan-backend/docker-compose.yml`` first, so
+    # the base ``codescan-frontend/docker-compose.yml``'s
+    # ``build.context: .`` would resolve to ``codescan-backend/``
+    # (no frontend Dockerfile there) and the build would fail. Pin
+    # the context to the frontend dir so the build picks up the
+    # right Dockerfile regardless of ``-f`` order.
+    build:
+      context: ../codescan-frontend
     # See codescan-backend/docker-compose.e2e.yml's ports comment —
     # ``!override`` replaces the base file's 3000:3000 with the e2e-only
     # 3010:3000 binding. The browser hits ``http://localhost:3010`` and
@@ -19,7 +29,7 @@ services:
     # ``/api/v1/*`` to ``http://api:8000/api/v1/*`` server-side over the
     # shared compose network.
     ports: !override
-      - "3010:3000"
+      - '3010:3000'
     environment:
       # Under the shared ``-p codescan-e2e`` project name the api service
       # name resolves via compose DNS — override the base file's

@@ -19,7 +19,7 @@ services:
       - web_node_modules:/app/node_modules
       - web_next:/app/.next
     environment:
-      WATCHPACK_POLLING: "true"
+      WATCHPACK_POLLING: 'true'
       # Dev mode still uses the same-origin rewrite — ``INTERNAL_API_URL``
       # inherits the base file's default (``http://host.docker.internal:8000/api/v1``).
 

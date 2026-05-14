@@ -108,7 +108,7 @@ For zero-downtime deploys later, split this: a one-shot `migrate` service runs f
 
 ## Environment variables
 
-See `.env.example` for the complete list. Categories:
+See `codescan-backend/.env.example` (api + worker vars) and `codescan-frontend/.env.example` (web-only) for the complete lists. Categories:
 
 - **Auth:** `JWT_SECRET`, `JWT_ACCESS_TTL_MIN`, `JWT_REFRESH_TTL_DAYS`
 - **DB:** `DATABASE_URL`, `POSTGRES_USER/PASSWORD/DB`

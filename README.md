@@ -44,8 +44,8 @@ The model used for analysis is **Gemma 4 31B** (Google AI Studio API, 256K conte
 ```
 codescan/
 ├── README.md                       # this file
-├── .env.example
 ├── codescan-backend/
+│   ├── .env.example                # api + worker config knobs
 │   ├── docker-compose.yml          # api + worker + postgres + redis
 │   ├── docker-compose.override.yml # dev hot-reload
 │   ├── docker-compose.e2e.yml      # Playwright stack (api/worker side)
@@ -69,6 +69,7 @@ codescan/
 │           ├── scanners/           # security, bug, keyword
 │           └── tests/
 ├── codescan-frontend/              # Next.js
+│   ├── .env.example                # web-only config (INTERNAL_API_URL)
 │   ├── docker-compose.yml          # web (prod-style)
 │   ├── docker-compose.override.yml # dev hot-reload
 │   ├── docker-compose.e2e.yml      # Playwright stack (web side)
@@ -97,16 +98,23 @@ codescan/
 
 ## Quick start (local)
 
+Each subdir has its own ``.env.example`` — Docker Compose auto-loads
+``.env`` from the directory containing the compose file, so the env
+values live next to the stack they configure.
+
 ```bash
-cp .env.example .env
-# set LLM_BASE_URL (or use LLM_MOCK_MODE=true for testing without a real LLM)
+cp codescan-backend/.env.example  codescan-backend/.env
+cp codescan-frontend/.env.example codescan-frontend/.env
+# In codescan-backend/.env: set JWT_SECRET and optionally LLM_MOCK_MODE=true
+# (skip a real Gemma endpoint by using the mock transport for local dev).
+
 make dev          # brings up backend (api + worker + postgres + redis) then frontend (web)
 ```
 
 Or, to drive each stack manually:
 
 ```bash
-(cd codescan-backend && docker compose up --build)    # api + worker + postgres + redis
+(cd codescan-backend  && docker compose up --build)   # api + worker + postgres + redis
 (cd codescan-frontend && docker compose up --build)   # web
 ```
 

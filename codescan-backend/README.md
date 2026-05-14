@@ -45,8 +45,15 @@ consistent with `pyproject.toml` between runs.
 
 ## Environment
 
-The canonical list of environment variables (and their defaults) lives in the
-top-level `.env.example`. The most important knob for local development is:
+The canonical list of backend environment variables (and their defaults)
+lives in `codescan-backend/.env.example`. Copy it to `.env` next to the
+compose file:
+
+```bash
+cp codescan-backend/.env.example codescan-backend/.env
+```
+
+The most important knob for local development is:
 
 - `LLM_MOCK_MODE=true` — short-circuits the Gemma client with a deterministic
   in-process transport so security/bugs scans produce canned findings without
