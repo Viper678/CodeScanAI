@@ -1,7 +1,7 @@
 /**
  * Regression: catch-all API proxy rejects path-traversal segments.
  *
- * The runtime proxy at apps/web/app/api/v1/[...path]/route.ts forwards
+ * The runtime proxy at codescan-frontend/app/api/v1/[...path]/route.ts forwards
  * /api/v1/<path> to the api service. Codex flagged that encoded ``..``
  * segments (e.g. ``%2e%2e`` or ``%252e%252e``) would normalize out of the
  * /api/v1 prefix via ``new URL()``'s path resolution — exposing internal

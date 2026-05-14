@@ -46,7 +46,7 @@ codescan/
 ├── README.md                       # this file
 ├── docker-compose.yml              # local + prod
 ├── .env.example
-├── apps/
+├── codescan-backend/
 │   ├── api/                        # FastAPI service
 │   │   ├── pyproject.toml
 │   │   ├── alembic/
@@ -58,20 +58,20 @@ codescan/
 │   │       ├── routers/            # FastAPI routers
 │   │       ├── services/           # business logic
 │   │       └── tests/
-│   ├── worker/                     # Celery app
-│   │   ├── pyproject.toml
-│   │   └── worker/
-│   │       ├── celery_app.py
-│   │       ├── tasks/              # scan tasks
-│   │       ├── llm/                # Gemma client + prompts
-│   │       ├── scanners/           # security, bug, keyword
-│   │       └── tests/
-│   └── web/                        # Next.js
-│       ├── package.json
-│       ├── app/
-│       ├── components/
-│       ├── lib/
-│       └── tests/
+│   └── worker/                     # Celery app
+│       ├── pyproject.toml
+│       └── worker/
+│           ├── celery_app.py
+│           ├── tasks/              # scan tasks
+│           ├── llm/                # Gemma client + prompts
+│           ├── scanners/           # security, bug, keyword
+│           └── tests/
+├── codescan-frontend/              # Next.js
+│   ├── package.json
+│   ├── app/
+│   ├── components/
+│   ├── lib/
+│   └── tests/
 └── docs/
     ├── ARCHITECTURE.md
     ├── SCHEMA.md

@@ -32,7 +32,7 @@ type FetchFindingsParams = FindingsFilters & {
 
 /**
  * GET `/scans/{scanId}/findings` with optional filters + cursor pagination.
- * Server caps `limit` to 1..200 (see apps/api/app/routers/scans.py); we
+ * Server caps `limit` to 1..200 (see codescan-backend/api/app/routers/scans.py); we
  * mirror that cap client-side so a typo can't issue an obviously bad
  * request. The earlier 100 clamp was wrong — it silently truncated
  * `useFindingsForFile`'s single-page sidebar request to half its intended

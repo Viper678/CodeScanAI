@@ -8,13 +8,13 @@ repos:
     rev: 24.10.0
     hooks:
       - id: black
-        files: ^apps/(api|worker)/
+        files: ^codescan-backend/(api|worker)/
   - repo: https://github.com/pre-commit/mirrors-mypy
     rev: v1.13.0
     hooks:
       - id: mypy
         args: [--strict]
-        files: ^apps/(api|worker)/
+        files: ^codescan-backend/(api|worker)/
         additional_dependencies:
           - fastapi==0.115.6
           - celery==5.4.0
@@ -23,14 +23,14 @@ repos:
     rev: v4.0.0-alpha.8
     hooks:
       - id: prettier
-        files: ^apps/web/
+        files: ^codescan-frontend/
   - repo: local
     hooks:
       - id: eslint
         name: eslint
-        entry: pnpm --dir apps/web exec eslint . --max-warnings=0
+        entry: pnpm --dir codescan-frontend exec eslint . --max-warnings=0
         language: system
-        files: ^apps/web/
+        files: ^codescan-frontend/
         pass_filenames: false
   - repo: https://github.com/gitleaks/gitleaks
     rev: v8.21.2

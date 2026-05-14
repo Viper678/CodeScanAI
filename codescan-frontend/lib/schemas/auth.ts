@@ -1,7 +1,7 @@
 import { z } from 'zod';
 
 /**
- * Minimum password length, mirrored from apps/api/app/schemas/auth.py and
+ * Minimum password length, mirrored from codescan-backend/api/app/schemas/auth.py and
  * docs/SECURITY.md §2. Keep this constant in sync if the server ever changes.
  */
 export const PASSWORD_MIN_LENGTH = 12;

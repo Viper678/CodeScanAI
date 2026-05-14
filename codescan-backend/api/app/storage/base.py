@@ -4,9 +4,9 @@ Hides whether artifacts live on the local filesystem (dev / docker-compose)
 or in Google Cloud Storage (prod). All call sites pass forward-slash keys;
 the impl maps them to filesystem paths or GCS objects.
 
-Key conventions (MUST stay in sync with ``apps/worker/worker/storage/base.py``;
+Key conventions (MUST stay in sync with ``codescan-backend/worker/worker/storage/base.py``;
 the api package can't import from the worker package, per the rationale in
-``apps/api/app/services/celery_client.py``, so the convention is duplicated):
+``codescan-backend/api/app/services/celery_client.py``, so the convention is duplicated):
 
 - ``uploads/{upload_id}/raw.zip`` — the raw uploaded zip
   (api writes; worker reads). Zip uploads only.

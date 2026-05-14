@@ -4,7 +4,7 @@ Skipped automatically when no Postgres is reachable. Mirrors
 ``test_prepare_upload.py``'s schema-bootstrap pattern. We apply the
 upload-side DDL only (the cascade through files/scans/findings is
 covered by the api's migration round-trip in
-``apps/api/tests/integration/test_migrations.py``); this test focuses
+``codescan-backend/api/tests/integration/test_migrations.py``); this test focuses
 on the upload row + on-disk artifacts which are what cleanup actually
 manages directly.
 """

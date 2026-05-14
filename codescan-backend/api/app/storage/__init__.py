@@ -3,7 +3,7 @@
 Hides whether artifacts live on the local filesystem or in GCS. See
 ``base.py`` for the protocol + key conventions. The api/worker copies of
 this module must keep their public surface identical — the worker
-mirrors live at ``apps/worker/worker/storage/``.
+mirrors live at ``codescan-backend/worker/worker/storage/``.
 """
 
 from app.storage.base import (

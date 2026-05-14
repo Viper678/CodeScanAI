@@ -1,6 +1,6 @@
 """Storage abstraction for the worker process.
 
-Mirror of ``apps/api/app/storage/``. See ``base.py`` for the protocol +
+Mirror of ``codescan-backend/api/app/storage/``. See ``base.py`` for the protocol +
 key conventions. The api/worker copies of this module MUST keep their
 public surface identical.
 """

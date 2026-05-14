@@ -163,7 +163,7 @@ type FetchUploadsParams = {
 
 /**
  * GET `/uploads?limit=&offset=` — paginated index of the current user's
- * uploads. Mirrors the contract in `apps/api/app/routers/uploads.py`. The
+ * uploads. Mirrors the contract in `codescan-backend/api/app/routers/uploads.py`. The
  * server caps `limit` to 1..100 and rejects negative offsets, so we clamp
  * sensibly here too.
  */

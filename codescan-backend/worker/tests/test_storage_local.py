@@ -1,6 +1,6 @@
 """Unit tests for ``worker.storage.LocalStorage`` (worker mirror).
 
-Identical surface to the api-side test (``apps/api/tests/unit/test_storage_local.py``).
+Identical surface to the api-side test (``codescan-backend/api/tests/unit/test_storage_local.py``).
 The two storage modules MUST stay in lock-step; if these tests diverge,
 producers and consumers will disagree on key shape and the pipeline
 ghosts files.

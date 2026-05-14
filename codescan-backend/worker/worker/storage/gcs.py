@@ -1,6 +1,6 @@
 """Google Cloud Storage-backed ``Storage`` implementation (worker mirror).
 
-Mirror of ``apps/api/app/storage/gcs.py``. Credentials are picked up
+Mirror of ``codescan-backend/api/app/storage/gcs.py``. Credentials are picked up
 from the environment (Workload Identity, ``GOOGLE_APPLICATION_CREDENTIALS``,
 ambient gcloud) — no app-level secret handling.
 """

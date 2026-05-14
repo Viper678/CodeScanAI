@@ -176,7 +176,7 @@ def _delete_one(session: Session, *, upload_id: UUID, storage: Storage) -> str:
 def _wipe_legacy_storage_path(storage_path: str | None) -> None:
     """Remove a pre-M2 absolute-path raw-upload artifact if present.
 
-    Mirrors ``apps/api/app/services/upload_service._wipe_legacy_storage_path``.
+    Mirrors ``codescan-backend/api/app/services/upload_service._wipe_legacy_storage_path``.
     Pre-M2 the raw archive lived at ``/data/uploads/<id>/<filename>`` (file)
     or ``/data/uploads/<id>`` (directory) — outside ``uploads/<id>/`` once
     that became a storage key prefix. Wipe by shape; never walk to a parent.
@@ -195,7 +195,7 @@ def _wipe_legacy_storage_path(storage_path: str | None) -> None:
 def _wipe_legacy_extract_path(extract_path: str | None) -> None:
     """Remove a pre-M2 absolute-path extract tree if present.
 
-    Mirrors the api-side helper in ``apps/api/app/services/upload_service.py``.
+    Mirrors the api-side helper in ``codescan-backend/api/app/services/upload_service.py``.
     Pre-M2 ``prepare_upload`` extracted into ``/data/extracts/<id>/`` (a
     separate tree from the upload's raw zip), and persisted that absolute
     path to ``upload.extract_path``. Post-M2 ``delete_prefix("uploads/<id>/")``

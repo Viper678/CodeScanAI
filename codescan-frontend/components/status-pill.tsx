@@ -2,13 +2,13 @@ import { Badge } from '@/components/ui/badge';
 import { cn } from '@/lib/utils';
 
 export type Status =
-  // Scan lifecycle (apps/api/app/schemas/scan.py)
+  // Scan lifecycle (codescan-backend/api/app/schemas/scan.py)
   | 'pending'
   | 'running'
   | 'completed'
   | 'failed'
   | 'cancelled'
-  // Upload lifecycle (apps/api/app/schemas/upload.py); 'failed' is shared.
+  // Upload lifecycle (codescan-backend/api/app/schemas/upload.py); 'failed' is shared.
   | 'received'
   | 'extracting'
   | 'ready';

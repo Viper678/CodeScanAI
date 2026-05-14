@@ -1,6 +1,6 @@
 /**
  * Scan-related types mirroring the contract in docs/API.md §Scans and the
- * Pydantic schemas in apps/api/app/schemas/scan.py.
+ * Pydantic schemas in codescan-backend/api/app/schemas/scan.py.
  *
  * The frontend never writes these — the API is the source of truth — but we
  * keep the shapes here so callers (components, hooks) can stay typed without
@@ -38,7 +38,7 @@ export type ScanCreateResponse = {
   progress_total: number;
 };
 
-/** Severity literal — mirrors `apps/api/app/schemas/scan.py`. */
+/** Severity literal — mirrors `codescan-backend/api/app/schemas/scan.py`. */
 export type Severity = 'critical' | 'high' | 'medium' | 'low' | 'info';
 
 /** Per-file lifecycle status for the recent-files tail. */

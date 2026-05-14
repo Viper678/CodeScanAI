@@ -22,7 +22,7 @@ If any of these are exceeded the upload moves to `failed` with a clear `error` m
 
 ## Allowed upload types
 
-A whitelist (not blacklist) for `kind=loose`. Source-code-like extensions only. The full list lives in `apps/api/app/core/file_types.py` (one source of truth, also imported by worker).
+A whitelist (not blacklist) for `kind=loose`. Source-code-like extensions only. The full list lives in `codescan-backend/api/app/core/file_types.py` (one source of truth, also imported by worker).
 
 Examples:
 ```

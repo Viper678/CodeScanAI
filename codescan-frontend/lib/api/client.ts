@@ -6,7 +6,7 @@ export const CSRF_VALUE = 'codescan';
 
 /**
  * All browser-side API requests use a same-origin relative path. The web
- * container's Next.js ``rewrites()`` (apps/web/next.config.mjs) proxies
+ * container's Next.js ``rewrites()`` (codescan-frontend/next.config.mjs) proxies
  * ``/api/v1/*`` to ``${INTERNAL_API_URL}/*`` server-side, so the runtime
  * api host is never embedded in client bundles. Post-M7 this means one
  * web image deploys to UAT / prod / future staging — only the runtime

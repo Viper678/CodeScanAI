@@ -1,6 +1,6 @@
 """Storage abstraction — protocol + key conventions.
 
-Mirror of ``apps/api/app/storage/base.py``. The api package cannot import
+Mirror of ``codescan-backend/api/app/storage/base.py``. The api package cannot import
 from the worker package (and vice versa), so the storage abstraction is
 duplicated. The two files MUST stay byte-identical at the public surface
 — if the producer (api) and consumer (worker) disagree on key shape,

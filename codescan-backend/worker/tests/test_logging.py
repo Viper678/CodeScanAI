@@ -1,6 +1,6 @@
 """Unit tests for the worker's structured-logging primitives (T5.4).
 
-Mirrors ``apps/api/tests/unit/test_logging.py`` for parity. The worker
+Mirrors ``codescan-backend/api/tests/unit/test_logging.py`` for parity. The worker
 also exercises Celery signals via ``worker.core.observability``.
 """
 

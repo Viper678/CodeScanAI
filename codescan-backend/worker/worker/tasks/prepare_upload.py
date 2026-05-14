@@ -7,7 +7,7 @@ rows, and transitions the upload from ``received`` → ``extracting`` →
 
 The API enqueues this task by name (``worker.tasks.prepare_upload.prepare_upload``);
 keep the ``name=`` kwarg below in lock-step with
-``apps/api/app/services/celery_client.py``.
+``codescan-backend/api/app/services/celery_client.py``.
 
 Post-M2 the task reads / writes / deletes through the ``Storage``
 abstraction. The raw upload zip lives at ``uploads/<id>/raw.zip``; the

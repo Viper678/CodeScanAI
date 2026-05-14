@@ -15,12 +15,12 @@ Each task has:
 ## Phase 0 — Bootstrap
 
 ### T0.1 — Repo scaffold
-- **Goal:** monorepo with `apps/api`, `apps/worker`, `apps/web`, `docs/`, `docker-compose.yml`, `.env.example`, root `README.md`.
+- **Goal:** monorepo with `codescan-backend/api`, `codescan-backend/worker`, `codescan-frontend`, `docs/`, `docker-compose.yml`, `.env.example`, root `README.md`.
 - **AC:**
   - `docker compose up` brings up empty-but-running api (200 on `/healthz`), worker (idle), postgres, redis, web (renders blank page).
   - Pre-commit hooks installed: `ruff`, `black`, `mypy`, `prettier`, `eslint`.
   - CI workflow runs lint + type-check on every PR.
-- **Touches:** root, all of `apps/*`, `.github/workflows/`.
+- **Touches:** root, all of `codescan-backend/*` + `codescan-frontend/`, `.github/workflows/`.
 
 ### T0.2 — Database baseline & Alembic
 - **Goal:** SQLAlchemy 2 setup, Alembic configured, first migration creates `users` and `refresh_tokens`.
@@ -100,7 +100,7 @@ Each task has:
 - **Depends on:** T3.1.
 
 ### T3.3 — Worker: Gemma client + prompts
-- **Goal:** module wrapping `google-genai`, env-key configured. Loads system prompts from `apps/worker/worker/llm/prompts/v1/{security,bugs}.txt`. Implements structured-JSON call with retry policy in `SCAN_RULES.md`.
+- **Goal:** module wrapping `google-genai`, env-key configured. Loads system prompts from `codescan-backend/worker/worker/llm/prompts/v1/{security,bugs}.txt`. Implements structured-JSON call with retry policy in `SCAN_RULES.md`.
 - **AC:** unit-tested with a fake transport — verifies retry on 429/5xx, invalid-JSON repair attempt, persists `tokens_in/out/latency_ms`. Manual integration test against real Gemma in a separate marker-gated test.
 - **Depends on:** T3.1.
 

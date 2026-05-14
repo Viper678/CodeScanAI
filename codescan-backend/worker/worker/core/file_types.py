@@ -1,15 +1,15 @@
-"""Copy of ``apps/api/app/core/file_types.py``.
+"""Copy of ``codescan-backend/api/app/core/file_types.py``.
 
 The api package is the canonical source of truth (see docs/FILE_HANDLING.md
 "one source of truth, also imported by worker"). The worker keeps a copy
 because:
 
-- the worker Docker image only includes ``apps/worker`` in its build context,
+- the worker Docker image only includes ``codescan-backend/worker`` in its build context,
   so a ``path = "../api"`` editable dep would break the docker build;
 - the worker runs synchronously and shouldn't pull in api's async
   SQLAlchemy / FastAPI machinery just to read a frozen set.
 
-Drift is prevented by ``apps/worker/tests/test_file_types_parity.py`` which
+Drift is prevented by ``codescan-backend/worker/tests/test_file_types_parity.py`` which
 reads both files at runtime and asserts ``frozenset`` equality. If you change
 one, change the other in the same PR.
 """

@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     # ---- Celery ----
-    # The API only enqueues; consumption lives in apps/worker. Default mirrors
+    # The API only enqueues; consumption lives in codescan-backend/worker. Default mirrors
     # docker-compose so local dev "just works". Shares db 0 with the rate
     # limiter and the result backend (see redis_url comment above).
     celery_broker_url: str = "redis://redis:6379/0"

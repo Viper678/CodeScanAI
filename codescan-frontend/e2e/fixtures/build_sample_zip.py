@@ -1,6 +1,6 @@
 """Generate the deterministic sample repo zip used by the Playwright suite.
 
-The zip lands at ``apps/web/e2e/fixtures/tiny_repo.zip`` and is ignored by
+The zip lands at ``codescan-frontend/e2e/fixtures/tiny_repo.zip`` and is ignored by
 git so the literal credential pattern below never enters source control —
 gitleaks runs on diffs, and the in-zip text would otherwise trigger.
 

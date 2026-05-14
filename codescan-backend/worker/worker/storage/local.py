@@ -1,6 +1,6 @@
 """Filesystem-backed ``Storage`` implementation (worker mirror).
 
-Mirror of ``apps/api/app/storage/local.py``. Maps keys to ``root / key``
+Mirror of ``codescan-backend/api/app/storage/local.py``. Maps keys to ``root / key``
 on disk. Preserves the pre-M2 on-disk layout so dev / docker-compose /
 existing worker tests keep working byte-for-byte.
 """

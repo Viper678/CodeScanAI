@@ -6,7 +6,7 @@ against a sync ``Base`` so it can use the regular synchronous ORM in tasks
 without dragging in the api's async engine, FastAPI, etc.
 
 If you change a column on the api side, mirror it here in the same PR. The
-migration round-trip test in ``apps/api/tests/integration/test_migrations.py``
+migration round-trip test in ``codescan-backend/api/tests/integration/test_migrations.py``
 is the regression net for column drift.
 """
 

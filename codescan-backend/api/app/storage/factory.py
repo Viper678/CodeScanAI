@@ -4,7 +4,7 @@
 connection pool on init) isn't reconstructed per call. Tests that need
 to swap impls call ``reset_storage_cache()`` between fixtures, mirroring
 the ``_celery_app.cache_clear()`` pattern in
-``apps/api/app/services/celery_client.py``.
+``codescan-backend/api/app/services/celery_client.py``.
 """
 
 from __future__ import annotations

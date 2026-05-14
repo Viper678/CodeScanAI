@@ -218,7 +218,7 @@ Celery's retry mechanism handles task-level retries; the per-call retries above 
 ## Determinism / reproducibility
 
 - `model`, `model_settings`, `PROMPT_VERSION` are all stored on the `scans` row.
-- The exact prompt text for each version lives in `apps/worker/worker/llm/prompts/v1/`.
+- The exact prompt text for each version lives in `codescan-backend/worker/worker/llm/prompts/v1/`.
 - "Re-run scan" creates a new scan row with the same inputs and current PROMPT_VERSION (not necessarily the original) — UI surfaces this so users know.
 
 ---

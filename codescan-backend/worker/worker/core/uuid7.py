@@ -1,6 +1,6 @@
 """UUIDv7 helper for worker-side row inserts.
 
-Mirrors ``apps/api/app/core/uuid7.py`` so worker-inserted rows share the same
+Mirrors ``codescan-backend/api/app/core/uuid7.py`` so worker-inserted rows share the same
 time-ordered key shape. (Worker doesn't import api code; see file_types.py.)
 """
 

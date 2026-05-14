@@ -38,8 +38,8 @@ coverage/
 data/
 
 # Playwright (T5.5 e2e suite)
-apps/web/playwright-report/
-apps/web/test-results/
+codescan-frontend/playwright-report/
+codescan-frontend/test-results/
 
 # Local-only k8s manifests with environment-specific values (project ids,
 # bucket names, image refs). These are generated on-demand from the

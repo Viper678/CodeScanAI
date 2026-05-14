@@ -1,6 +1,6 @@
 """Structured JSON logging + correlation IDs for the worker (T5.4).
 
-Mirrors ``apps/api/app/core/logging.py``. The two trees don't share code today,
+Mirrors ``codescan-backend/api/app/core/logging.py``. The two trees don't share code today,
 so this is a deliberate copy — kept ~1:1 with the api version so an operator
 sees the same log shape from both processes. If we ever extract a shared
 ``codescan_common`` package, this module collapses with the api one.
@@ -75,7 +75,7 @@ def _install_correlation_record_factory() -> None:
     """Install a global ``LogRecord`` factory that snapshots correlation
     contextvars at record-creation time.
 
-    See ``apps/api/app/core/logging.py`` for the rationale — same trick
+    See ``codescan-backend/api/app/core/logging.py`` for the rationale — same trick
     here: filters mounted on the root logger only run for records that
     originate at root, so we use the factory to fire for every record
     regardless of source logger.
@@ -126,7 +126,7 @@ class JsonFormatter(logging.Formatter):
         # contains an API key would leak the key here even though the
         # filter "ran". Applying the regex to the final rendered string
         # is the only way to catch interpolation-time leaks. Same fix in
-        # the api copy at ``apps/api/app/core/logging.py``.
+        # the api copy at ``codescan-backend/api/app/core/logging.py``.
         rendered_message = _scrub_string(record.getMessage())
 
         payload: dict[str, Any] = {
@@ -262,7 +262,7 @@ def configure_logging(*, level: str | int = "INFO") -> None:
 
     handler = logging.StreamHandler()
     # Set the HANDLER level too — see the api copy's rationale at
-    # ``apps/api/app/core/logging.py``: records propagated up from child
+    # ``codescan-backend/api/app/core/logging.py``: records propagated up from child
     # loggers (celery.app.trace, kombu, sqlalchemy.engine, …) bypass the
     # root logger's level filter and reach this handler regardless if it
     # stays at NOTSET. Setting handler.level honors the LOG_LEVEL contract.

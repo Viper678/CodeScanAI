@@ -176,8 +176,8 @@ Do not add tests just to inflate coverage. Test **behavior**, not implementation
 
 ## 9. Working with the LLM
 
-- All Gemma calls go through `apps/worker/worker/llm/client.py`. Don't import `openai` anywhere else.
-- Prompts live in `apps/worker/worker/llm/prompts/v<N>/` as plain text. Do not template prompt instructions at call sites — only the user-prompt's data slots are templated.
+- All Gemma calls go through `codescan-backend/worker/worker/llm/client.py`. Don't import `openai` anywhere else.
+- Prompts live in `codescan-backend/worker/worker/llm/prompts/v<N>/` as plain text. Do not template prompt instructions at call sites — only the user-prompt's data slots are templated.
 - Bumping a prompt version is a separate PR.
 
 ---

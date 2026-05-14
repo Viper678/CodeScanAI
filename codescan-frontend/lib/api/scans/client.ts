@@ -10,7 +10,7 @@ import type {
 
 /**
  * POST `/scans` — create a new scan against a previously uploaded archive.
- * Mirrors the contract in docs/API.md §Scans / apps/api/app/schemas/scan.py.
+ * Mirrors the contract in docs/API.md §Scans / codescan-backend/api/app/schemas/scan.py.
  *
  * The server enforces the cross-field rules (non-empty `scan_types`, keywords
  * required when `"keywords" in scan_types`, file ownership, etc.). The client

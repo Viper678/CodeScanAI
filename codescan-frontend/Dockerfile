@@ -13,7 +13,7 @@
 #
 # Why same image for dev: the docker-compose dev override
 # (``docker-compose.override.yml``) swaps ``command:`` back to ``pnpm dev``
-# and mounts ``./apps/web`` over ``/app`` so hot-reload works without
+# and mounts ``./codescan-frontend`` over ``/app`` so hot-reload works without
 # rebuilding. The builder stage's source copy is therefore harmless in
 # dev — the bind mount shadows it.
 #

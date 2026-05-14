@@ -1,6 +1,6 @@
 /**
  * Path-segment validation for the runtime API proxy
- * (apps/web/app/api/v1/[...path]/route.ts).
+ * (codescan-frontend/app/api/v1/[...path]/route.ts).
  *
  * Lives outside the route directory because Next.js's App Router enforces
  * that route.ts files only export HTTP method handlers + a fixed set of

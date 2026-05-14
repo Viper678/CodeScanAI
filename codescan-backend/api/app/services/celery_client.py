@@ -1,6 +1,6 @@
 """Thin Celery enqueue helpers used by the API.
 
-The API process must not import anything from ``apps/worker``; it only sends
+The API process must not import anything from ``codescan-backend/worker``; it only sends
 tasks by name on the shared broker. This keeps the API deployable independently
 and prevents accidental coupling to worker-side imports
 (vLLM/OpenAI-compatible client, scanners, etc.).
@@ -31,13 +31,13 @@ def _celery_app() -> Celery:
 
     app = Celery("codescan-api-enqueue", broker=settings.celery_broker_url)
     # Producer-side mirror of the worker's broker keyprefix (see
-    # ``apps/worker/worker/celery_app.py``). Producer and consumer MUST set
+    # ``codescan-backend/worker/worker/celery_app.py``). Producer and consumer MUST set
     # the same ``global_keyprefix``: without this, the api would enqueue to
     # the unprefixed ``codescan`` queue while the worker subscribes to
     # ``celery-broker:codescan`` — tasks silently disappear because the
     # underlying Redis keys never overlap. Keep this string in sync with the
     # worker's celery_app definition (no shared module yet; the api can't
-    # import from ``apps/worker``).
+    # import from ``codescan-backend/worker``).
     app.conf.update(
         broker_transport_options={"global_keyprefix": "celery-broker:"},
     )

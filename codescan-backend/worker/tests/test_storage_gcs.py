@@ -1,6 +1,6 @@
 """Unit tests for ``worker.storage.GcsStorage`` (worker mirror).
 
-Mirror of the api side. See ``apps/api/tests/unit/test_storage_gcs.py``
+Mirror of the api side. See ``codescan-backend/api/tests/unit/test_storage_gcs.py``
 for the reasoning behind the in-process dict-backed fake.
 """
 

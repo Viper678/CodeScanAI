@@ -3,7 +3,7 @@
 Skipped by default. Run with::
 
     RUN_GEMMA_REAL_TESTS=1 LLM_BASE_URL=http://<host>:8000/v1 pytest \
-        apps/worker/tests/integration/test_gemma_real.py
+        codescan-backend/worker/tests/integration/test_gemma_real.py
 """
 
 from __future__ import annotations
