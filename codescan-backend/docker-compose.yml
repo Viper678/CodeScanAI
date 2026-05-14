@@ -2,6 +2,16 @@ services:
   api:
     build:
       context: ./api
+    # ``env_file`` forwards EVERY var in ``.env`` to the container so
+    # pydantic-settings (``app.core.config.Settings``) can read knobs that
+    # aren't named in the ``environment:`` block below — rate limits,
+    # CORS_ALLOW_ORIGINS, retention days, etc. The explicit ``environment:``
+    # block below overrides ``env_file`` for the vars that need
+    # interpolation defaults (e.g. ``${VAR:-default}``) or the
+    # ``:?required`` guard on ``JWT_SECRET``.
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
       DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
@@ -58,6 +68,13 @@ services:
   worker:
     build:
       context: ./worker
+    # See the ``env_file`` comment on the api service. Worker's
+    # pydantic-settings reads SCAN_CONCURRENCY, GEMMA_MAX_INPUT_TOKENS,
+    # MAX_UNCOMPRESSED_TOTAL_MB, MAX_FILES_IN_ARCHIVE, etc. straight from
+    # the container env, none of which are forwarded explicitly below.
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}
