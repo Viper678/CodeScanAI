@@ -1,0 +1,26 @@
+services:
+  api:
+    command: >
+      sh -c "uv run alembic upgrade head &&
+             uv run uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload --reload-exclude .venv"
+    volumes:
+      - ./api:/app
+      - api_venv:/app/.venv
+
+  worker:
+    command: uv run celery -A worker.celery_app worker --loglevel=info
+    volumes:
+      - ./worker:/app
+      - worker_venv:/app/.venv
+
+  postgres:
+    ports:
+      - "127.0.0.1:5432:5432"
+
+  redis:
+    ports:
+      - "127.0.0.1:6379:6379"
+
+volumes:
+  api_venv:
+  worker_venv:
