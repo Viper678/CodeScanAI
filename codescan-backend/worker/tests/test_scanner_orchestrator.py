@@ -8,6 +8,7 @@ aggregation, and the per-file outcome math.
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from uuid import uuid4
 
@@ -28,6 +29,7 @@ from worker.tasks.run_scan import (
     _parse_keywords,
     _preflight_skip,
     _process_file_no_db,
+    run_scan,
 )
 
 # ---- Pre-flight skip --------------------------------------------------------
@@ -281,3 +283,61 @@ def test_default_registry_only_security_constructs_security_only() -> None:
     registry = _default_scanner_registry(["security"], None)
 
     assert set(registry.keys()) == {"security"}
+
+
+# ---- Delete-during-scan race handling ---------------------------------------
+
+
+def test_run_scan_swallows_mid_run_disappearance_and_logs_info(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Benign race: user deleted the upload while the scan was running, the DB
+    cascade dropped the scan row mid-run, and ``_run`` raised the sentinel
+    ``LookupError("scan disappeared mid-run: <id>")``. The task body must
+    catch it, log at INFO with ``scan_id`` in the extras, and return ``None``
+    so Celery doesn't surface a spurious ERROR + traceback for what is
+    user-initiated cleanup.
+    """
+
+    scan_id = str(uuid4())
+
+    def _fake_run(scan_id_arg: str, **_kwargs: object) -> dict[str, object]:
+        raise LookupError(f"scan disappeared mid-run: {scan_id_arg}")
+
+    monkeypatch.setattr("worker.tasks.run_scan._run", _fake_run)
+
+    caplog.set_level(logging.INFO, logger="worker.tasks.run_scan")
+    result = run_scan(scan_id)
+
+    assert result is None
+    matching = [
+        rec
+        for rec in caplog.records
+        if rec.levelno == logging.INFO and rec.message == "scan deleted by user mid-run, no-op"
+    ]
+    assert matching, "expected an INFO log on the benign delete-mid-run race"
+    record = matching[0]
+    assert getattr(record, "scan_id", None) == scan_id
+    assert "scan disappeared mid-run" in getattr(record, "reason", "")
+
+
+def test_run_scan_rethrows_other_lookup_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Discriminator check: only the sentinel mid-run prefix is swallowed.
+
+    ``_run`` also raises ``LookupError("scan not found: <id>")`` when the scan
+    id doesn't resolve at task start — that's a real bug (probably a stale
+    Celery message), so the task body must re-raise so Celery's failure
+    handler logs an ERROR.
+    """
+
+    scan_id = str(uuid4())
+
+    def _fake_run(*_args: object, **_kwargs: object) -> dict[str, object]:
+        raise LookupError(f"scan not found: {scan_id}")
+
+    monkeypatch.setattr("worker.tasks.run_scan._run", _fake_run)
+
+    with pytest.raises(LookupError, match="scan not found"):
+        run_scan(scan_id)
