@@ -1,9 +1,9 @@
 services:
   web:
     build:
-      context: ./apps/web
+      context: ./codescan-frontend
     environment:
-      # Read at request time by ``apps/web/next.config.mjs``'s ``rewrites()``
+      # Read at request time by ``codescan-frontend/next.config.mjs``'s ``rewrites()``
       # — server-side proxy for ``/api/v1/*`` to the api service. Runtime
       # env var (NOT a build-arg) so one image deploys to UAT / prod /
       # future staging — see docs/GCP_MIGRATION.md §D4 + §M7.
@@ -31,7 +31,7 @@ services:
 
   api:
     build:
-      context: ./apps/api
+      context: ./codescan-backend/api
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
       DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
@@ -87,7 +87,7 @@ services:
 
   worker:
     build:
-      context: ./apps/worker
+      context: ./codescan-backend/worker
     environment:
       DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}

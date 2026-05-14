@@ -13,9 +13,9 @@ We use one `docker-compose.yml` with environment-specific overrides:
 
 | Service   | Image / build context           | Ports (local)  | Depends on        |
 | --------- | ------------------------------- | -------------- | ----------------- |
-| `web`     | build `apps/web` (multi-stage; Next.js standalone output) | `3000:3000` | `api` |
-| `api`     | build `apps/api`                | `8000:8000`    | `postgres`, `redis` |
-| `worker`  | build `apps/worker`             | —              | `postgres`, `redis` |
+| `web`     | build `codescan-frontend` (multi-stage; Next.js standalone output) | `3000:3000` | `api` |
+| `api`     | build `codescan-backend/api`    | `8000:8000`    | `postgres`, `redis` |
+| `worker`  | build `codescan-backend/worker` | —              | `postgres`, `redis` |
 | `postgres`| `postgres:16-alpine`            | `127.0.0.1:5432:5432` (dev only) | — |
 | `redis`   | `redis:7-alpine`                | `127.0.0.1:6379:6379` (dev only) | — |
 | `proxy`   | `caddy:2-alpine` (prod)         | `80:80, 443:443` | `web`, `api`    |

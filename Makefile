@@ -26,46 +26,46 @@ E2E_ENV := JWT_SECRET=$${JWT_SECRET:-e2e-jwt-secret-32-bytes-long-padding}
 E2E_WEB_BASE_URL ?= http://localhost:3010
 
 setup:
-	cd apps/api && $(UV) sync --locked
-	cd apps/worker && $(UV) sync --locked
-	pnpm --dir apps/web install
+	cd codescan-backend/api && $(UV) sync --locked
+	cd codescan-backend/worker && $(UV) sync --locked
+	pnpm --dir codescan-frontend install
 	pre-commit install
 
 lint: lint-api lint-worker lint-web
 
 lint-api:
-	cd apps/api && $(UV) sync --locked
-	cd apps/api && .venv/bin/ruff check .
-	cd apps/api && .venv/bin/black --check .
-	cd apps/api && .venv/bin/mypy --strict app tests
+	cd codescan-backend/api && $(UV) sync --locked
+	cd codescan-backend/api && .venv/bin/ruff check .
+	cd codescan-backend/api && .venv/bin/black --check .
+	cd codescan-backend/api && .venv/bin/mypy --strict app tests
 
 lint-worker:
-	cd apps/worker && $(UV) sync --locked
-	cd apps/worker && .venv/bin/ruff check .
-	cd apps/worker && .venv/bin/black --check .
-	cd apps/worker && .venv/bin/mypy --strict worker tests
+	cd codescan-backend/worker && $(UV) sync --locked
+	cd codescan-backend/worker && .venv/bin/ruff check .
+	cd codescan-backend/worker && .venv/bin/black --check .
+	cd codescan-backend/worker && .venv/bin/mypy --strict worker tests
 
 lint-web:
-	pnpm --dir apps/web exec prettier --check .
-	pnpm --dir apps/web exec eslint . --max-warnings=0
-	pnpm --dir apps/web exec tsc --noEmit
+	pnpm --dir codescan-frontend exec prettier --check .
+	pnpm --dir codescan-frontend exec eslint . --max-warnings=0
+	pnpm --dir codescan-frontend exec tsc --noEmit
 
 test: test-api test-worker test-web
 
 test-api:
-	cd apps/api && $(UV) sync --locked
-	cd apps/api && .venv/bin/pytest
+	cd codescan-backend/api && $(UV) sync --locked
+	cd codescan-backend/api && .venv/bin/pytest
 
 test-worker:
-	cd apps/worker && $(UV) sync --locked
-	cd apps/worker && .venv/bin/pytest
+	cd codescan-backend/worker && $(UV) sync --locked
+	cd codescan-backend/worker && .venv/bin/pytest
 
 test-web:
-	pnpm --dir apps/web test
+	pnpm --dir codescan-frontend test
 
 # Build the deterministic sample zip used by the Playwright suite. Idempotent.
 e2e-fixtures:
-	python3 apps/web/e2e/fixtures/build_sample_zip.py
+	python3 codescan-frontend/e2e/fixtures/build_sample_zip.py
 
 # Bring the full e2e stack up (api + worker + web + postgres + redis) with
 # LLM_MOCK_MODE=true. ``--wait`` blocks until every service reports
@@ -85,13 +85,13 @@ e2e-down:
 # would otherwise be empty since the dev override mounts them as a
 # named volume inside the container).
 e2e: e2e-fixtures e2e-up
-	pnpm --dir apps/web install
-	pnpm --dir apps/web exec playwright install --with-deps chromium
-	E2E_WEB_BASE_URL=$(E2E_WEB_BASE_URL) pnpm --dir apps/web exec playwright test
+	pnpm --dir codescan-frontend install
+	pnpm --dir codescan-frontend exec playwright install --with-deps chromium
+	E2E_WEB_BASE_URL=$(E2E_WEB_BASE_URL) pnpm --dir codescan-frontend exec playwright test
 
 # Headed / interactive UI mode for local development. The slowMo configured
 # in playwright.config.ts makes the journey readable in real time.
 e2e-ui: e2e-fixtures e2e-up
-	pnpm --dir apps/web install
-	pnpm --dir apps/web exec playwright install chromium
-	E2E_WEB_BASE_URL=$(E2E_WEB_BASE_URL) pnpm --dir apps/web exec playwright test --ui
+	pnpm --dir codescan-frontend install
+	pnpm --dir codescan-frontend exec playwright install chromium
+	E2E_WEB_BASE_URL=$(E2E_WEB_BASE_URL) pnpm --dir codescan-frontend exec playwright test --ui

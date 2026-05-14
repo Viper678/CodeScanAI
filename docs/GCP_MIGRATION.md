@@ -82,29 +82,29 @@ Roughly 5-7 days of focused work, parallelizable in places.
 ### M1 — Worker LLM client: google-genai → vLLM
 - **Goal:** Worker calls Gemma via vLLM's OpenAI-compatible HTTP API instead of `google-genai` SDK.
 - **AC:**
-  - `apps/worker/worker/llm/client.py::_DefaultGemmaTransport` rewritten to call `${LLM_BASE_URL}/v1/chat/completions`.
+  - `codescan-backend/worker/worker/llm/client.py::_DefaultGemmaTransport` rewritten to call `${LLM_BASE_URL}/v1/chat/completions`.
   - Structured JSON output via vLLM's `guided_json` extra param + existing JSON schema, or `response_format={"type":"json_object"}` + the existing repair loop.
   - New env: `LLM_BASE_URL` (default `http://vllm.llm.svc.cluster.local:8000/v1`); drop `GOOGLE_AI_API_KEY` from worker config and `.env.example`.
   - Retry policy preserved (429, 5xx, invalid JSON repair).
   - `LLM_MOCK_MODE=true` (T5.5) keeps working unchanged.
-  - Prompts (`apps/worker/worker/llm/prompts/v1/{security,bugs}.txt`) reviewed / tweaked for vLLM's chat template if needed; bumped to `v2/` if substantive.
-  - Live-LLM integration test (`apps/worker/tests/integration/test_gemma_real.py`) re-pointed at a vLLM endpoint behind a marker gate.
-- **Touches:** `apps/worker/worker/llm/{client.py, mock_transport.py}`, `apps/worker/worker/core/config.py`, `apps/worker/pyproject.toml` (drop `google-genai`, add `openai` or `httpx`), `.env.example`, `docker-compose.yml`.
+  - Prompts (`codescan-backend/worker/worker/llm/prompts/v1/{security,bugs}.txt`) reviewed / tweaked for vLLM's chat template if needed; bumped to `v2/` if substantive.
+  - Live-LLM integration test (`codescan-backend/worker/tests/integration/test_gemma_real.py`) re-pointed at a vLLM endpoint behind a marker gate.
+- **Touches:** `codescan-backend/worker/worker/llm/{client.py, mock_transport.py}`, `codescan-backend/worker/worker/core/config.py`, `codescan-backend/worker/pyproject.toml` (drop `google-genai`, add `openai` or `httpx`), `.env.example`, `docker-compose.yml`.
 - **Depends on:** D3.
 
 ### M2 — Storage abstraction: /data filesystem → GCS
 - **Goal:** Uploads + extracts live in GCS in prod; local filesystem still works for dev/CI.
 - **AC:**
-  - New `apps/worker/worker/storage/` (or shared) module with a `Storage` interface and two impls: `LocalStorage` (current behavior) and `GcsStorage` (using `google-cloud-storage`).
+  - New `codescan-backend/worker/worker/storage/` (or shared) module with a `Storage` interface and two impls: `LocalStorage` (current behavior) and `GcsStorage` (using `google-cloud-storage`).
   - `STORAGE_BACKEND=local|gcs` env switch; `STORAGE_BUCKET` for GCS.
   - `upload_service.UploadService._raw_upload_path` and `_wipe_upload_artifacts` go through the abstraction.
   - `prepare_upload._extract_root_for` and `safe_extract` write through the abstraction.
   - `run_scan._FilePlan.abs_path` replaced by a storage-relative key + a `read_text()` helper that streams from GCS or local.
   - `cleanup.cleanup_old_uploads` deletes through the abstraction.
-  - File-content endpoint (`apps/api/app/routers/files.py`) streams from the abstraction.
+  - File-content endpoint (`codescan-backend/api/app/routers/files.py`) streams from the abstraction.
   - Existing zip-safety checks (path traversal, symlinks, zip-bomb ratio, nesting depth) still run before uploading to GCS.
   - All existing tests pass against `LocalStorage`; new tests against `GcsStorage` with a fake (e.g. `pytest-gcp-storage` or in-process bucket fake).
-- **Touches:** `apps/api/app/services/upload_service.py`, `apps/api/app/routers/{uploads.py, files.py}`, `apps/worker/worker/files/safety.py`, `apps/worker/worker/tasks/{prepare_upload.py, run_scan.py, cleanup.py}`, new `apps/{api,worker}/{app,worker}/storage/`.
+- **Touches:** `codescan-backend/api/app/services/upload_service.py`, `codescan-backend/api/app/routers/{uploads.py, files.py}`, `codescan-backend/worker/worker/files/safety.py`, `codescan-backend/worker/worker/tasks/{prepare_upload.py, run_scan.py, cleanup.py}`, new `codescan-backend/{api,worker}/{app,worker}/storage/`.
 - **Depends on:** D2.
 
 ### M3 — Redis: rate-limit + Celery broker + result coexist on one Memorystore
@@ -115,7 +115,7 @@ Roughly 5-7 days of focused work, parallelizable in places.
   - Rate-limit namespace already supported via `rate_limit_key_namespace` (T5.1) — set per-env if multi-tenant ever matters.
   - Local docker-compose still works against single redis (it already runs 3 DBs but moving to /0 + prefixes is harmless).
   - Smoke test: rate limit + Celery task enqueue + result retrieval against one redis instance, verify no key collisions via `redis-cli KEYS "*"`.
-- **Touches:** `apps/api/app/core/config.py`, `apps/worker/worker/{core/config.py, celery_app.py}`, `.env.example`.
+- **Touches:** `codescan-backend/api/app/core/config.py`, `codescan-backend/worker/worker/{core/config.py, celery_app.py}`, `.env.example`.
 - **Depends on:** none (D1 resolved).
 
 ### M4 — Cloud SQL connection
@@ -124,17 +124,17 @@ Roughly 5-7 days of focused work, parallelizable in places.
   - Connection string format works with Cloud SQL's private IP (zero code change beyond `DATABASE_URL` env).
   - Cloud SQL Auth Proxy decision: skip (private IP is enough) unless we need IAM auth — defer to a follow-up.
   - Pool sizing reviewed (Cloud SQL has connection caps; tune `pool_size` / `max_overflow`).
-- **Touches:** `apps/api/app/core/db.py` (only if pool tuning), `.env.example` docs.
+- **Touches:** `codescan-backend/api/app/core/db.py` (only if pool tuning), `.env.example` docs.
 - **Depends on:** B2 (VPC peering set up).
 
 ### M5 — Alembic migrations as a Kubernetes Job
 - **Goal:** Migrations run exactly once per release, not per api pod startup.
 - **AC:**
-  - `apps/api/Dockerfile` no longer chains `alembic upgrade head` into the entrypoint.
+  - `codescan-backend/api/Dockerfile` no longer chains `alembic upgrade head` into the entrypoint.
   - New `deploy/k8s/migrate-job.yaml` (or Helm chart equivalent) that runs `alembic upgrade head` against Cloud SQL.
   - GH Actions / Cloud Build deploy step waits for the Job to complete before rolling the api Deployment.
   - Local docker-compose still runs migrations on `api` startup (override file or script wrapper).
-- **Touches:** `apps/api/Dockerfile`, deploy manifests, CI workflow.
+- **Touches:** `codescan-backend/api/Dockerfile`, deploy manifests, CI workflow.
 - **Depends on:** M4 (DB reachable).
 
 ### M6 — Beat task split
@@ -143,19 +143,19 @@ Roughly 5-7 days of focused work, parallelizable in places.
   - **Option A:** Two Deployments — `worker` (replicas=N, command without `--beat`) and `worker-beat` (replicas=1, command with `--beat`).
   - **Option B:** Switch to `celery-redbeat` (Redis-backed lock); single deployment with replicas=N.
   - Smoke test in staging: `progress_total` of the cleanup metric increments exactly once per day with N=2 worker replicas.
-- **Touches:** `apps/worker/Dockerfile` (split CMD), deploy manifests, `apps/worker/pyproject.toml` if redbeat.
+- **Touches:** `codescan-backend/worker/Dockerfile` (split CMD), deploy manifests, `codescan-backend/worker/pyproject.toml` if redbeat.
 - **Depends on:** none.
 
 ### M7 — Web: prod build + same-origin API rewrites (one image, runtime-configurable)
 - **Goal:** Web image runs Next.js standalone build (not `pnpm dev`) and proxies API calls to a runtime-configurable backend so a single image deploys identically to UAT / prod / future staging.
 - **AC:**
-  - `apps/web/Dockerfile` becomes multi-stage: builder runs `pnpm build`, final stage runs `pnpm start` (or the Next.js standalone output server).
+  - `codescan-frontend/Dockerfile` becomes multi-stage: builder runs `pnpm build`, final stage runs `pnpm start` (or the Next.js standalone output server).
   - `next.config.js` adds `rewrites()` mapping `/api/:path*` → `${INTERNAL_API_URL}/:path*`. `INTERNAL_API_URL` is read at runtime (server-side), so changing the env doesn't require a rebuild.
-  - Web client code uses relative `/api/...` URLs (already does in most places — verify `apps/web/lib/api/client.ts`); drop reliance on `NEXT_PUBLIC_API_BASE_URL`.
+  - Web client code uses relative `/api/...` URLs (already does in most places — verify `codescan-frontend/lib/api/client.ts`); drop reliance on `NEXT_PUBLIC_API_BASE_URL`.
   - Healthcheck still works (Next.js prod server responds on `/`).
   - Local `docker compose up` still works (dev override keeps `pnpm dev`; `INTERNAL_API_URL` defaults to `http://api:8000` in the compose env).
   - Single image promoted UAT → prod with no rebuild — only the Helm value of `INTERNAL_API_URL` differs.
-- **Touches:** `apps/web/Dockerfile`, `apps/web/next.config.js`, `apps/web/lib/api/client.ts` (drop `NEXT_PUBLIC_API_BASE_URL` references), `docker-compose.{yml,override.yml}`, deploy manifests.
+- **Touches:** `codescan-frontend/Dockerfile`, `codescan-frontend/next.config.js`, `codescan-frontend/lib/api/client.ts` (drop `NEXT_PUBLIC_API_BASE_URL` references), `docker-compose.{yml,override.yml}`, deploy manifests.
 - **Depends on:** none (D4 resolved — runtime rewrites approach unblocks immediately).
 
 ### M8 — Prod cookie + CORS config
@@ -176,8 +176,8 @@ Roughly 5-7 days of focused work, parallelizable in places.
   - Secrets created in Secret Manager.
   - ESO syncs them to k8s Secrets, mounted as env on the api/worker pods.
   - **No api/worker code changes** — pydantic-settings still reads from env.
-- **AC (if direct SDK integration desired):** small `apps/api/app/core/secrets.py` that fetches at startup and stuffs into env before `Settings()` instantiates. Not recommended for v1.
-- **Touches:** Helm values / k8s manifests; optionally `apps/api/app/core/`.
+- **AC (if direct SDK integration desired):** small `codescan-backend/api/app/core/secrets.py` that fetches at startup and stuffs into env before `Settings()` instantiates. Not recommended for v1.
+- **Touches:** Helm values / k8s manifests; optionally `codescan-backend/api/app/core/`.
 - **Depends on:** D5.
 
 ---

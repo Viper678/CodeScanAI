@@ -28,7 +28,7 @@ jobs:
         with:
           node-version: "20"
           cache: pnpm
-          cache-dependency-path: apps/web/pnpm-lock.yaml
+          cache-dependency-path: codescan-frontend/pnpm-lock.yaml
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -36,18 +36,18 @@ jobs:
           python-version: "3.12"
 
       - name: Install web dependencies
-        run: pnpm --dir apps/web install --frozen-lockfile
+        run: pnpm --dir codescan-frontend install --frozen-lockfile
 
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: playwright-${{ runner.os }}-${{ hashFiles('apps/web/pnpm-lock.yaml') }}
+          key: playwright-${{ runner.os }}-${{ hashFiles('codescan-frontend/pnpm-lock.yaml') }}
           restore-keys: |
             playwright-${{ runner.os }}-
 
       - name: Install Playwright browsers
-        run: pnpm --dir apps/web exec playwright install --with-deps chromium
+        run: pnpm --dir codescan-frontend exec playwright install --with-deps chromium
 
       - name: Build sample-repo fixture
         run: make e2e-fixtures
@@ -80,7 +80,7 @@ jobs:
           CI: "true"
           # Match the alt port pinned in ``docker-compose.e2e.yml``.
           E2E_WEB_BASE_URL: http://localhost:3010
-        run: pnpm --dir apps/web exec playwright test
+        run: pnpm --dir codescan-frontend exec playwright test
 
       - name: Upload Playwright report
         if: always()
@@ -88,8 +88,8 @@ jobs:
         with:
           name: playwright-report
           path: |
-            apps/web/playwright-report
-            apps/web/test-results
+            codescan-frontend/playwright-report
+            codescan-frontend/test-results
           retention-days: 14
           if-no-files-found: ignore
 
@@ -155,19 +155,19 @@ jobs:
         with:
           node-version: "20"
           cache: pnpm
-          cache-dependency-path: apps/web/pnpm-lock.yaml
+          cache-dependency-path: codescan-frontend/pnpm-lock.yaml
 
       - name: Install API dependencies
-        run: uv sync --project apps/api --locked
+        run: uv sync --project codescan-backend/api --locked
 
       - name: Install worker dependencies
-        run: uv sync --project apps/worker --locked
+        run: uv sync --project codescan-backend/worker --locked
 
       - name: Install web dependencies
-        run: pnpm --dir apps/web install --frozen-lockfile
+        run: pnpm --dir codescan-frontend install --frozen-lockfile
 
       - name: Run API migrations
-        run: cd apps/api && uv run alembic upgrade head
+        run: cd codescan-backend/api && uv run alembic upgrade head
 
       - name: Lint
         run: make lint

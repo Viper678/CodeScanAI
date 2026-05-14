@@ -20,7 +20,7 @@ Code conventions for CodeScan. Read once; live them.
 ### Module layout (api)
 
 ```
-apps/api/
+codescan-backend/api/
 ├── alembic/
 ├── app/
 │   ├── main.py                  # FastAPI app factory
@@ -69,7 +69,7 @@ apps/api/
 ### Module layout (worker)
 
 ```
-apps/worker/worker/
+codescan-backend/worker/worker/
 ├── celery_app.py
 ├── core/
 │   ├── config.py

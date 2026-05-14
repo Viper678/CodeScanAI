@@ -16,7 +16,7 @@ Stack: `pytest`, `pytest-asyncio`, `httpx.AsyncClient` for API, `pytest-postgres
 
 Layout:
 ```
-apps/api/tests/
+codescan-backend/api/tests/
 ├── conftest.py               # fixtures: db_session, client, authed_client, sample_user
 ├── unit/
 │   ├── test_password.py
@@ -35,7 +35,7 @@ apps/api/tests/
 ```
 
 ```
-apps/worker/worker/tests/
+codescan-backend/worker/worker/tests/
 ├── unit/
 │   ├── test_exclusion_rules.py
 │   ├── test_zip_safety.py
@@ -81,11 +81,11 @@ What gets unit-tested:
 - Severity sorting / filtering helpers.
 
 What gets e2e-tested:
-- One full-happy-path test (`apps/web/e2e/full-scan.spec.ts`) covering all five legs in a single browser session: register → upload sample repo → run a scan covering all three scan types → assert findings render → export JSON and parse the download. Real Gemma is replaced by a worker-side mock transport (`apps/worker/worker/llm/mock_transport.py`), wired in by `LLM_MOCK_MODE=true` on the e2e compose stack — so the suite is deterministic and offline. The pyramid stays narrow at the top: regressions in form labels, polling, finding rendering, and CSV/JSON export each have unit / integration coverage closer to the source.
+- One full-happy-path test (`codescan-frontend/e2e/full-scan.spec.ts`) covering all five legs in a single browser session: register → upload sample repo → run a scan covering all three scan types → assert findings render → export JSON and parse the download. Real Gemma is replaced by a worker-side mock transport (`codescan-backend/worker/worker/llm/mock_transport.py`), wired in by `LLM_MOCK_MODE=true` on the e2e compose stack — so the suite is deterministic and offline. The pyramid stays narrow at the top: regressions in form labels, polling, finding rendering, and CSV/JSON export each have unit / integration coverage closer to the source.
 
 Layout:
 ```
-apps/web/
+codescan-frontend/
 ├── tests/                          # vitest unit + component tests
 │   ├── auth-redirect.test.ts
 │   ├── findings-table.test.tsx
@@ -111,7 +111,7 @@ make e2e-down       # tear it down + drop the e2e named volumes
 
 `make e2e` and `make e2e-ui` are self-contained: they build the sample-repo zip, bring the compose stack up (`-p codescan-e2e` keeps it isolated from a dev project), wait for healthchecks (`docker compose up --wait`), `pnpm install` on the host so the `playwright` binary resolves, install browser binaries, and run the suite against `http://localhost:3010`.
 
-The Playwright config sets `slowMo: 300ms` so a headed run looks like a real user clicking through (override via `E2E_SLOW_MO_MS=…`). Failures retain a trace artifact in `apps/web/test-results/`; CI uploads `playwright-report/` + `test-results/` as a workflow artifact for post-mortem analysis.
+The Playwright config sets `slowMo: 300ms` so a headed run looks like a real user clicking through (override via `E2E_SLOW_MO_MS=…`). Failures retain a trace artifact in `codescan-frontend/test-results/`; CI uploads `playwright-report/` + `test-results/` as a workflow artifact for post-mortem analysis.
 
 ---
 
