@@ -44,9 +44,11 @@ The model used for analysis is **Gemma 4 31B** (Google AI Studio API, 256K conte
 ```
 codescan/
 ├── README.md                       # this file
-├── docker-compose.yml              # local + prod
 ├── .env.example
 ├── codescan-backend/
+│   ├── docker-compose.yml          # api + worker + postgres + redis
+│   ├── docker-compose.override.yml # dev hot-reload
+│   ├── docker-compose.e2e.yml      # Playwright stack (api/worker side)
 │   ├── api/                        # FastAPI service
 │   │   ├── pyproject.toml
 │   │   ├── alembic/
@@ -67,6 +69,9 @@ codescan/
 │           ├── scanners/           # security, bug, keyword
 │           └── tests/
 ├── codescan-frontend/              # Next.js
+│   ├── docker-compose.yml          # web (prod-style)
+│   ├── docker-compose.override.yml # dev hot-reload
+│   ├── docker-compose.e2e.yml      # Playwright stack (web side)
 │   ├── package.json
 │   ├── app/
 │   ├── components/
@@ -95,8 +100,21 @@ codescan/
 ```bash
 cp .env.example .env
 # set LLM_BASE_URL (or use LLM_MOCK_MODE=true for testing without a real LLM)
-docker compose up --build
+make dev          # brings up backend (api + worker + postgres + redis) then frontend (web)
 ```
+
+Or, to drive each stack manually:
+
+```bash
+(cd codescan-backend && docker compose up --build)    # api + worker + postgres + redis
+(cd codescan-frontend && docker compose up --build)   # web
+```
+
+The two stacks are independent compose projects — `codescan-frontend`'s
+default `INTERNAL_API_URL` reaches the backend via
+`host.docker.internal:8000`, so the frontend container connects to the
+backend stack's published `api` host port (8000) on the loopback. Tear
+down with `make dev-down` (or `docker compose down` inside each subdir).
 
 Then:
 
@@ -110,7 +128,7 @@ Then:
 ```bash
 make lint        # ruff + black + mypy + prettier + eslint + tsc
 make test        # pytest (api + worker) + vitest (web)
-make e2e-up      # bring up docker-compose with mocked Gemma
+make e2e-up      # bring up the e2e compose stack with mocked Gemma
 make e2e         # run the Playwright happy-path suite (headless)
 make e2e-ui      # same suite, headed + Playwright UI mode
 make e2e-down    # tear down the e2e stack and volumes
@@ -155,6 +173,6 @@ Shipped:
 - Retention sweep: daily Celery beat task (`worker.tasks.cleanup.cleanup_old_uploads`, ticks at 03:00 UTC) purges uploads older than `RETENTION_DAYS` plus their on-disk artifacts and cascaded files / scans / scan_files / scan_findings; **disabled by default** (operators set a positive integer to enable), per-row resilience so a single bad disk wipe doesn't abort the sweep
 - Health probes: cheap `GET /healthz` (process-up) plus dependency-aware `GET /readyz` that pings Postgres + Redis in parallel with a 2-second per-check timeout and returns a stable schema (`{"status","db","redis"}`) on both 200 and 503; docker-compose's api healthcheck now gates on `/readyz` so traffic only flows once the dependency pools are warm
 - Structured logging: stdlib `logging` with a JSON formatter on both api and worker; per-request `request_id` (echoed via `X-Request-ID`) + `user_id` correlation on api, `task_id` / `scan_id` / `upload_id` / `file_id` on worker via Celery signals; Google API key scrub at filter + formatter + interpolation layers; `LOG_LEVEL` env-driven and enforced on both root logger and handler so propagated child records actually filter
-- End-to-end suite: Playwright covers the full happy path (register → upload sample repo → run scan → see findings → export JSON) with realistic-pacing slowMo so a headed run looks like a real user; mocks Gemma via a worker-side `LLM_MOCK_MODE=true` switch so CI is deterministic and offline; `make e2e` runs the headless suite against a `docker-compose.e2e.yml` stack (under 10 minutes wall-clock), `make e2e-ui` opens the headed Playwright UI locally; failures upload `playwright-report` + `test-results` (with traces) as a CI artifact
+- End-to-end suite: Playwright covers the full happy path (register → upload sample repo → run scan → see findings → export JSON) with realistic-pacing slowMo so a headed run looks like a real user; mocks Gemma via a worker-side `LLM_MOCK_MODE=true` switch so CI is deterministic and offline; `make e2e` runs the headless suite against the e2e compose stack defined by `codescan-backend/docker-compose.e2e.yml` + `codescan-frontend/docker-compose.e2e.yml` (under 10 minutes wall-clock), `make e2e-ui` opens the headed Playwright UI locally; failures upload `playwright-report` + `test-results` (with traces) as a CI artifact
 
 Next up: Phase 6 backlog — SARIF export, SSE / WebSocket progress, password reset, and the self-hosted Gemma path.

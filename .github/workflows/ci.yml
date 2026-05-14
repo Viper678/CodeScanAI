@@ -72,13 +72,18 @@ jobs:
             sleep 3
           done
           echo "web never came up" >&2
-          docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs web | tail -120
+          docker compose -p codescan-e2e \
+            -f codescan-backend/docker-compose.yml \
+            -f codescan-backend/docker-compose.e2e.yml \
+            -f codescan-frontend/docker-compose.yml \
+            -f codescan-frontend/docker-compose.e2e.yml \
+            logs web | tail -120
           exit 1
 
       - name: Run Playwright suite
         env:
           CI: "true"
-          # Match the alt port pinned in ``docker-compose.e2e.yml``.
+          # Match the alt port pinned in ``codescan-frontend/docker-compose.e2e.yml``.
           E2E_WEB_BASE_URL: http://localhost:3010
         run: pnpm --dir codescan-frontend exec playwright test
 
@@ -95,7 +100,13 @@ jobs:
 
       - name: Dump compose logs on failure
         if: failure()
-        run: docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml logs --no-color | tail -500
+        run: |
+          docker compose -p codescan-e2e \
+            -f codescan-backend/docker-compose.yml \
+            -f codescan-backend/docker-compose.e2e.yml \
+            -f codescan-frontend/docker-compose.yml \
+            -f codescan-frontend/docker-compose.e2e.yml \
+            logs --no-color | tail -500
 
       - name: Tear down compose
         if: always()

@@ -93,7 +93,7 @@ make e2e     # playwright (only if you touched UI flows)
 ```
 
 Plus, manually:
-- Bring up `docker compose up --build` once and click through the flow you changed.
+- Bring up `make dev` once and click through the flow you changed.
 - For DB changes: confirm `alembic upgrade head` and `alembic downgrade -1` both work.
 
 CI runs the same `make lint` and `make test` (and `make e2e` on the `e2e-required` label) on every PR. **PRs cannot be merged with a red CI.**
