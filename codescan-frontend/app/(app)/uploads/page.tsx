@@ -186,7 +186,7 @@ function UploadRow({ upload }: Readonly<UploadRowProps>) {
             description={renderUploadDeleteWarning({
               data: impact.data,
               isError: impact.isError,
-              isLoading: impact.isLoading,
+              isFetching: impact.isFetching,
             })}
             testId={`upload-row-${upload.id}-delete`}
           />

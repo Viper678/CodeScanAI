@@ -110,7 +110,7 @@ export default function TreePreviewPage() {
             description={renderUploadDeleteWarning({
               data: deleteImpact.data,
               isError: deleteImpact.isError,
-              isLoading: deleteImpact.isLoading,
+              isFetching: deleteImpact.isFetching,
             })}
             testId={`upload-${uploadId}-delete`}
           />

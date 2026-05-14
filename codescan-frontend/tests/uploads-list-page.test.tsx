@@ -69,7 +69,7 @@ describe('UploadsPage', () => {
     useUploadDeleteImpactMock.mockReturnValue({
       data: undefined,
       isError: false,
-      isLoading: false,
+      isFetching: false,
     });
     useUploadsQueryMock.mockReset();
   });
@@ -134,9 +134,9 @@ describe('UploadsPage', () => {
       ]),
     );
     useUploadDeleteImpactMock.mockReturnValue({
-      data: { findingCount: 17, scanCount: 3 },
+      data: { complete: true, findingCount: 17, scanCount: 3 },
       isError: false,
-      isLoading: false,
+      isFetching: false,
     });
 
     render(<UploadsPage />);
@@ -155,6 +155,54 @@ describe('UploadsPage', () => {
       /also permanently remove its 3 scans and 17 findings/i,
     );
     expect(description.textContent).toMatch(/cannot be undone/i);
+  });
+
+  it('shows the no-counts fallback when there are more scans than we paged', () => {
+    // The hook caps at limit=100 — when the upload has more rows than that,
+    // ``complete: false`` is the signal to drop exact numbers rather than
+    // *understate* the cascade. The user sees the generic "any scans and
+    // findings" copy instead of a misleading lower-bound.
+    useUploadsQueryMock.mockReturnValue(
+      makeListResult([makeUpload({ id: 'u-1', original_name: 'mega.zip' })]),
+    );
+    useUploadDeleteImpactMock.mockReturnValue({
+      data: { complete: false, findingCount: 250, scanCount: 137 },
+      isError: false,
+      isFetching: false,
+    });
+
+    render(<UploadsPage />);
+    fireEvent.click(screen.getByTestId('upload-row-u-1-delete-trigger'));
+
+    const description = screen.getByTestId('upload-row-u-1-delete-description');
+    expect(description.textContent).toMatch(
+      /any scans and findings associated with it/i,
+    );
+    // Concrete numbers must not leak through when we can't trust them.
+    expect(description.textContent).not.toMatch(/137|250/);
+  });
+
+  it('renders the loading copy while a re-armed fetch is in flight', () => {
+    // After cancelling + re-arming, React Query keeps the previous result in
+    // ``data`` while the refetch is in flight. The helper must use the
+    // ``isFetching`` flag (not the initial-load-only ``isLoading``) so stale
+    // cached numbers can't leak into the warning during that window.
+    useUploadsQueryMock.mockReturnValue(
+      makeListResult([makeUpload({ id: 'u-1', original_name: 'stale.zip' })]),
+    );
+    useUploadDeleteImpactMock.mockReturnValue({
+      data: { complete: true, findingCount: 99, scanCount: 9 },
+      isError: false,
+      isFetching: true,
+    });
+
+    render(<UploadsPage />);
+    fireEvent.click(screen.getByTestId('upload-row-u-1-delete-trigger'));
+
+    const description = screen.getByTestId('upload-row-u-1-delete-description');
+    // Ellipsis stand-ins, not the stale 9/99 from the previous fetch.
+    expect(description.textContent).not.toMatch(/9 scans|99 findings/);
+    expect(description.textContent).toContain('…');
   });
 
   it('surfaces an inline error when the delete mutation rejects', async () => {

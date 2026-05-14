@@ -151,6 +151,10 @@ export function useUploadsQuery({
 export type UploadDeleteImpact = {
   scanCount: number;
   findingCount: number;
+  // false when the upload has more scans than we paged through — the warning
+  // helper falls back to the no-counts copy in that case, so we never
+  // *understate* the finding total to the user (the cascade is irreversible).
+  complete: boolean;
 };
 
 export function useUploadDeleteImpact(
@@ -160,12 +164,6 @@ export function useUploadDeleteImpact(
   return useQuery<UploadDeleteImpact, ApiError>({
     enabled: enabled && !!uploadId,
     queryFn: async ({ signal }) => {
-      // Pull every scan for this upload. The server caps limit at 100 — for
-      // a single upload that's effectively unbounded (the new-scan wizard
-      // doesn't fan out anywhere near that many runs per upload), so a
-      // single page is enough. The "scans index" already shows total above
-      // 100 if there were more, but the warning copy doesn't need to be
-      // exact past a sane upper bound.
       const res: ScanListResponse = await fetchScans(
         { limit: 100, upload_id: uploadId },
         signal,
@@ -176,7 +174,11 @@ export function useUploadDeleteImpact(
           findings += count ?? 0;
         }
       }
-      return { findingCount: findings, scanCount: res.total };
+      return {
+        findingCount: findings,
+        scanCount: res.total,
+        complete: res.total <= res.items.length,
+      };
     },
     queryKey: [UPLOADS_LIST_QUERY_KEY, 'delete-impact', uploadId],
     refetchOnWindowFocus: false,
