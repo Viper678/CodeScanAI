@@ -74,6 +74,12 @@ logger = logging.getLogger(__name__)
 ScannerRegistry = dict[str, Scanner]
 ScannerRegistryFactory = Callable[[list[str], KeywordsConfig | None], ScannerRegistry]
 
+# Sentinel prefix used to discriminate the benign "user deleted upload while
+# scan was running" race from other LookupError causes (e.g. scan id missing
+# at task start). The task entry point swallows + INFO-logs the former; the
+# latter still bubbles up to Celery's failure handler.
+_SCAN_DISAPPEARED_PREFIX = "scan disappeared mid-run:"
+
 
 # ---- Per-file plan ----------------------------------------------------------
 
@@ -133,21 +139,46 @@ class _PerFileOutcome:
     bind=True,
     name="worker.tasks.run_scan.run_scan",
 )
-def run_scan(self: Task, scan_id: str) -> dict[str, object]:
+def run_scan(self: Task, scan_id: str) -> dict[str, object] | None:
     """Run a scan end-to-end. Idempotent on re-delivery (terminal status no-ops).
 
     Args:
         scan_id: String form of the scan's UUID.
 
     Returns:
-        Small dict for the celery result backend with final status + progress.
+        Small dict for the celery result backend with final status + progress,
+        or ``None`` when the scan vanished mid-run because the user deleted
+        the parent upload (the DB cascade dropped the scan row — see
+        ``docs/API.md`` §``DELETE /uploads/{id}``). That race is benign and
+        logged at INFO so the worker doesn't surface a spurious ERROR +
+        traceback for user-initiated cleanup.
 
     Raises:
-        LookupError: scan id does not exist.
+        LookupError: scan id does not exist at task start (NOT the benign
+            mid-run cascade — that path is caught here and returns ``None``).
     """
 
     del self  # unused; bound for explicit naming in error traces
-    return _run(scan_id, scanner_registry_factory=_default_scanner_registry)
+    try:
+        return _run(scan_id, scanner_registry_factory=_default_scanner_registry)
+    except LookupError as exc:
+        # Discriminator: the scan was found at task start (so _run got past
+        # the "scan not found" raise) but disappeared between dispatch and
+        # finalize — that's the user-deleted-upload cascade. Any other
+        # LookupError (e.g. _run's "scan not found: ..." raise from line 177)
+        # bubbles up so Celery's failure handler logs the real bug.
+        if str(exc).startswith(_SCAN_DISAPPEARED_PREFIX):
+            # ``scan_id`` is intentionally NOT in ``extra`` here — the worker's
+            # LogRecord factory (worker.core.logging) already snapshots the
+            # scan_id contextvar onto every record, and Python's logging raises
+            # ``KeyError`` if ``extra`` tries to overwrite an existing record
+            # attribute. Pass only the fields the factory doesn't already cover.
+            logger.info(
+                "scan deleted by user mid-run, no-op",
+                extra={"reason": str(exc)},
+            )
+            return None
+        raise
 
 
 def _run(
@@ -261,7 +292,7 @@ def _run(
     with maker() as session:
         scan = session.scalar(select(Scan).where(Scan.id == parsed_id))
         if scan is None:
-            raise LookupError(f"scan disappeared mid-run: {scan_id}")
+            raise LookupError(f"{_SCAN_DISAPPEARED_PREFIX} {scan_id}")
 
         if cancelled or scan.status == SCAN_STATUS_CANCELLED:
             # Honor the cancellation: don't flip to completed.

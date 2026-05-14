@@ -4,6 +4,8 @@ import { useEffect, useRef } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 
 import { ApiError } from '@/lib/api/client';
+import { fetchScans } from '@/lib/api/scans/client';
+import type { ScanListResponse } from '@/lib/api/scans/types';
 import {
   deleteUpload,
   fetchUpload,
@@ -127,6 +129,58 @@ export function useUploadsQuery({
   return useQuery<UploadListResponse, ApiError>({
     queryFn: ({ signal }) => fetchUploads({ limit, offset, status }, signal),
     queryKey: [UPLOADS_LIST_QUERY_KEY, limit, offset, status],
+    refetchOnWindowFocus: false,
+    retry: false,
+    staleTime: 0,
+  });
+}
+
+/**
+ * Per-upload delete-impact counters used to warn the user that hitting
+ * "Delete" will also cascade through scans + findings (server-side cascade
+ * is in `docs/API.md` §`DELETE /uploads/{id}`). The counters come from
+ * existing endpoints — `GET /scans?upload_id=` for the scan rows plus their
+ * `summary.by_severity` aggregates — so this is a read-only hook that
+ * doesn't need a dedicated backend route.
+ *
+ * The hook is intentionally lazy: pass `enabled=false` while the delete
+ * button is idle so we don't fan out an N+1 of scan queries on every list
+ * render. The caller flips `enabled` true the moment the user arms the
+ * destructive action (i.e. clicks the trash trigger).
+ */
+export type UploadDeleteImpact = {
+  scanCount: number;
+  findingCount: number;
+  // false when the upload has more scans than we paged through — the warning
+  // helper falls back to the no-counts copy in that case, so we never
+  // *understate* the finding total to the user (the cascade is irreversible).
+  complete: boolean;
+};
+
+export function useUploadDeleteImpact(
+  uploadId: string | undefined,
+  { enabled }: { enabled: boolean },
+) {
+  return useQuery<UploadDeleteImpact, ApiError>({
+    enabled: enabled && !!uploadId,
+    queryFn: async ({ signal }) => {
+      const res: ScanListResponse = await fetchScans(
+        { limit: 100, upload_id: uploadId },
+        signal,
+      );
+      let findings = 0;
+      for (const scan of res.items) {
+        for (const count of Object.values(scan.summary.by_severity)) {
+          findings += count ?? 0;
+        }
+      }
+      return {
+        findingCount: findings,
+        scanCount: res.total,
+        complete: res.total <= res.items.length,
+      };
+    },
+    queryKey: [UPLOADS_LIST_QUERY_KEY, 'delete-impact', uploadId],
     refetchOnWindowFocus: false,
     retry: false,
     staleTime: 0,

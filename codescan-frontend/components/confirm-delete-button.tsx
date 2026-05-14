@@ -21,16 +21,27 @@ type ConfirmDeleteButtonProps = {
   disabled?: boolean;
   /** Optional handler invoked when the mutation rejects. */
   onError?: (error: unknown) => void;
-  /** test-id stem; the component appends "-trigger" / "-confirm" / "-cancel". */
+  /** test-id stem; the component appends "-trigger" / "-confirm" / "-cancel"
+   *  (and "-description" when ``description`` is provided). */
   testId?: string;
   /** Trailing className applied to the outer wrapper. */
   className?: string;
   /** Optional extra elements rendered inline after the wrapper — useful for
    *  a sibling error message in a row. */
   children?: ReactNode;
+  /** Optional warning text rendered alongside the Confirm/Cancel pair (i.e.
+   *  only after the user has armed the destructive action). Used by the
+   *  upload-delete callers to surface cascaded scan + finding counts. */
+  description?: ReactNode;
+  /** Optional notifier fired when the inline state machine transitions.
+   *  Upload-delete callers use this to defer fetching the cascaded counts
+   *  until the user actually clicks the trash trigger — keeps the list
+   *  page from fanning out an N+1 of scan queries on every render. */
+  onStateChange?: (state: State) => void;
 };
 
-type State = 'idle' | 'confirming' | 'pending';
+export type ConfirmDeleteButtonState = 'idle' | 'confirming' | 'pending';
+type State = ConfirmDeleteButtonState;
 
 /**
  * Inline confirm-then-delete button. No modal — clicking the trigger flips
@@ -58,12 +69,23 @@ export function ConfirmDeleteButton({
   testId,
   className,
   children,
+  description,
+  onStateChange,
 }: Readonly<ConfirmDeleteButtonProps>) {
-  const [state, setState] = useState<State>('idle');
+  const [state, setStateInternal] = useState<State>('idle');
+  // Mirror the state change to the optional callback in the same tick so
+  // callers can sync external state (e.g. fetching delete-impact counts)
+  // without waiting on an effect. ``setState`` lookups in callbacks read the
+  // closed-over value, which is exactly what we want here.
+  const setState = (next: State) => {
+    setStateInternal(next);
+    onStateChange?.(next);
+  };
 
   const triggerTestId = testId ? `${testId}-trigger` : undefined;
   const confirmTestId = testId ? `${testId}-confirm` : undefined;
   const cancelTestId = testId ? `${testId}-cancel` : undefined;
+  const descriptionTestId = testId ? `${testId}-description` : undefined;
 
   const handleTriggerClick = (event: MouseEvent<HTMLButtonElement>) => {
     event.preventDefault();
@@ -134,11 +156,13 @@ export function ConfirmDeleteButton({
   }
 
   // Confirming or pending — render the same two-button pair so layout doesn't
-  // jump when the spinner replaces the trash icon.
+  // jump when the spinner replaces the trash icon. The optional ``description``
+  // slot stacks above the buttons so callers (e.g. upload deletes) can warn
+  // about cascaded side effects without restructuring the trigger row.
   const isPending = state === 'pending';
-  return (
+  const buttonRow = (
     <span
-      className={cn('inline-flex items-center gap-1.5', className)}
+      className={cn('inline-flex items-center gap-1.5')}
       data-state={state}
       role="group"
       aria-label={`Confirm deleting ${label}`}
@@ -170,6 +194,23 @@ export function ConfirmDeleteButton({
         Cancel
       </Button>
       {children}
+    </span>
+  );
+
+  if (!description) {
+    return <span className={cn(className)}>{buttonRow}</span>;
+  }
+
+  return (
+    <span className={cn('inline-flex flex-col items-end gap-1.5', className)}>
+      <span
+        role="alert"
+        data-testid={descriptionTestId}
+        className="max-w-xs text-right text-xs text-muted-foreground"
+      >
+        {description}
+      </span>
+      {buttonRow}
     </span>
   );
 }
