@@ -10,7 +10,10 @@ import {
   Plus,
 } from 'lucide-react';
 
-import { ConfirmDeleteButton } from '@/components/confirm-delete-button';
+import {
+  ConfirmDeleteButton,
+  type ConfirmDeleteButtonState,
+} from '@/components/confirm-delete-button';
 import { EmptyState } from '@/components/empty-state';
 import { StatusPill } from '@/components/status-pill';
 import { Button, buttonVariants } from '@/components/ui/button';
@@ -18,11 +21,13 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { ApiError } from '@/lib/api/client';
 import {
   useDeleteUploadMutation,
+  useUploadDeleteImpact,
   useUploadsQuery,
 } from '@/lib/api/uploads/use-upload';
 import type { UploadDetail } from '@/lib/api/uploads/types';
 import { formatBytes, formatShortDate } from '@/lib/format';
 import { cn } from '@/lib/utils';
+import { renderUploadDeleteWarning } from '@/components/upload-delete-warning';
 
 const PAGE_LIMIT = 20;
 
@@ -112,11 +117,20 @@ function UploadRow({ upload }: Readonly<UploadRowProps>) {
       : '—';
 
   const [errorText, setErrorText] = useState<string | null>(null);
+  const [armed, setArmed] = useState(false);
   const deleteUpload = useDeleteUploadMutation();
+  // Defer the cascaded-counts fetch until the user actually arms the
+  // destructive action — otherwise a 20-row uploads page would fan out 20
+  // ``GET /scans?upload_id=`` requests on first render.
+  const impact = useUploadDeleteImpact(upload.id, { enabled: armed });
 
   const handleDelete = async () => {
     setErrorText(null);
     await deleteUpload.mutateAsync(upload.id);
+  };
+
+  const handleStateChange = (next: ConfirmDeleteButtonState) => {
+    setArmed(next !== 'idle');
   };
 
   return (
@@ -168,6 +182,12 @@ function UploadRow({ upload }: Readonly<UploadRowProps>) {
                   : 'Could not delete this upload.',
               );
             }}
+            onStateChange={handleStateChange}
+            description={renderUploadDeleteWarning({
+              data: impact.data,
+              isError: impact.isError,
+              isLoading: impact.isLoading,
+            })}
             testId={`upload-row-${upload.id}-delete`}
           />
         </div>

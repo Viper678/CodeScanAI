@@ -6,15 +6,24 @@ import UploadsPage from '@/app/(app)/uploads/page';
 import { ApiError } from '@/lib/api/auth/errors';
 import type { UploadDetail, UploadListResponse } from '@/lib/api/uploads/types';
 
-const { deleteUploadMock, useDeleteUploadMutationMock, useUploadsQueryMock } =
-  vi.hoisted(() => ({
-    deleteUploadMock: vi.fn(),
-    useDeleteUploadMutationMock: vi.fn(),
-    useUploadsQueryMock: vi.fn(),
-  }));
+const {
+  deleteUploadMock,
+  useDeleteUploadMutationMock,
+  useUploadDeleteImpactMock,
+  useUploadsQueryMock,
+} = vi.hoisted(() => ({
+  deleteUploadMock: vi.fn(),
+  useDeleteUploadMutationMock: vi.fn(),
+  useUploadDeleteImpactMock: vi.fn(),
+  useUploadsQueryMock: vi.fn(),
+}));
 
 vi.mock('@/lib/api/uploads/use-upload', () => ({
   useDeleteUploadMutation: () => useDeleteUploadMutationMock(),
+  useUploadDeleteImpact: (
+    uploadId: string | undefined,
+    opts: { enabled: boolean },
+  ) => useUploadDeleteImpactMock(uploadId, opts),
   useUploadsQuery: () => useUploadsQueryMock(),
 }));
 
@@ -55,6 +64,12 @@ describe('UploadsPage', () => {
     useDeleteUploadMutationMock.mockReturnValue({
       isPending: false,
       mutateAsync: deleteUploadMock,
+    });
+    useUploadDeleteImpactMock.mockReset();
+    useUploadDeleteImpactMock.mockReturnValue({
+      data: undefined,
+      isError: false,
+      isLoading: false,
     });
     useUploadsQueryMock.mockReset();
   });
@@ -110,6 +125,36 @@ describe('UploadsPage', () => {
     await waitFor(() => {
       expect(deleteUploadMock).toHaveBeenCalledWith('u-1');
     });
+  });
+
+  it('warns the user that scans and findings cascade when delete is armed', () => {
+    useUploadsQueryMock.mockReturnValue(
+      makeListResult([
+        makeUpload({ id: 'u-1', original_name: 'monorepo.zip' }),
+      ]),
+    );
+    useUploadDeleteImpactMock.mockReturnValue({
+      data: { findingCount: 17, scanCount: 3 },
+      isError: false,
+      isLoading: false,
+    });
+
+    render(<UploadsPage />);
+
+    // Idle: no description rendered yet.
+    expect(
+      screen.queryByTestId('upload-row-u-1-delete-description'),
+    ).toBeNull();
+
+    // Arm the destructive action — flips description on with concrete counts.
+    fireEvent.click(screen.getByTestId('upload-row-u-1-delete-trigger'));
+
+    const description = screen.getByTestId('upload-row-u-1-delete-description');
+    expect(description).toBeInTheDocument();
+    expect(description.textContent).toMatch(
+      /also permanently remove its 3 scans and 17 findings/i,
+    );
+    expect(description.textContent).toMatch(/cannot be undone/i);
   });
 
   it('surfaces an inline error when the delete mutation rejects', async () => {

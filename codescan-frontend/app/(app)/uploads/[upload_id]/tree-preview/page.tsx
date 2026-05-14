@@ -3,12 +3,19 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams, useRouter, useSearchParams } from 'next/navigation';
 
-import { ConfirmDeleteButton } from '@/components/confirm-delete-button';
+import {
+  ConfirmDeleteButton,
+  type ConfirmDeleteButtonState,
+} from '@/components/confirm-delete-button';
 import { FileTree } from '@/components/file-tree/file-tree';
 import type { TreeFile } from '@/components/file-tree/types';
+import { renderUploadDeleteWarning } from '@/components/upload-delete-warning';
 import { ApiError } from '@/lib/api/client';
 import { useUploadTree } from '@/lib/api/uploads/tree';
-import { useDeleteUploadMutation } from '@/lib/api/uploads/use-upload';
+import {
+  useDeleteUploadMutation,
+  useUploadDeleteImpact,
+} from '@/lib/api/uploads/use-upload';
 
 import { generateFixture } from './fixture';
 
@@ -29,6 +36,7 @@ export default function TreePreviewPage() {
   const router = useRouter();
   const deleteUpload = useDeleteUploadMutation();
   const [deleteError, setDeleteError] = useState<string | null>(null);
+  const [deleteArmed, setDeleteArmed] = useState(false);
 
   const fixtureFiles = useMemo<TreeFile[] | null>(() => {
     if (fixture === '10k') return generateFixture(10_000);
@@ -36,6 +44,11 @@ export default function TreePreviewPage() {
     if (fixture === 'small') return generateFixture(50);
     return null;
   }, [fixture]);
+
+  const deleteImpact = useUploadDeleteImpact(
+    fixtureFiles ? undefined : uploadId,
+    { enabled: deleteArmed },
+  );
 
   const { data, isLoading, error } = useUploadTree(
     fixtureFiles ? undefined : uploadId,
@@ -91,6 +104,14 @@ export default function TreePreviewPage() {
             label={`upload ${rootName}`}
             variant="wide"
             onConfirm={handleDeleteUpload}
+            onStateChange={(next: ConfirmDeleteButtonState) =>
+              setDeleteArmed(next !== 'idle')
+            }
+            description={renderUploadDeleteWarning({
+              data: deleteImpact.data,
+              isError: deleteImpact.isError,
+              isLoading: deleteImpact.isLoading,
+            })}
             testId={`upload-${uploadId}-delete`}
           />
         ) : null}
