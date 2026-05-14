@@ -15,6 +15,7 @@ from uuid import uuid4
 import pytest
 
 from worker.core.config import settings
+from worker.core.logging import scan_id_var
 from worker.scanners.base import (
     Finding,
     KeywordsConfig,
@@ -294,9 +295,14 @@ def test_run_scan_swallows_mid_run_disappearance_and_logs_info(
     """Benign race: user deleted the upload while the scan was running, the DB
     cascade dropped the scan row mid-run, and ``_run`` raised the sentinel
     ``LookupError("scan disappeared mid-run: <id>")``. The task body must
-    catch it, log at INFO with ``scan_id`` in the extras, and return ``None``
-    so Celery doesn't surface a spurious ERROR + traceback for what is
-    user-initiated cleanup.
+    catch it, log at INFO, and return ``None`` so Celery doesn't surface a
+    spurious ERROR + traceback for what is user-initiated cleanup.
+
+    The ``scan_id_var`` is seeded explicitly so the worker's LogRecord factory
+    attaches ``scan_id`` to every record — same shape as production. This also
+    pins a real regression: if anyone re-adds ``scan_id`` to the ``extra=``
+    dict, Python's logging raises ``KeyError`` on the overwrite and the
+    swallow-and-return-None path collapses back into a Celery ERROR.
     """
 
     scan_id = str(uuid4())
@@ -306,8 +312,12 @@ def test_run_scan_swallows_mid_run_disappearance_and_logs_info(
 
     monkeypatch.setattr("worker.tasks.run_scan._run", _fake_run)
 
-    caplog.set_level(logging.INFO, logger="worker.tasks.run_scan")
-    result = run_scan(scan_id)
+    token = scan_id_var.set(scan_id)
+    try:
+        caplog.set_level(logging.INFO, logger="worker.tasks.run_scan")
+        result = run_scan(scan_id)
+    finally:
+        scan_id_var.reset(token)
 
     assert result is None
     matching = [
@@ -317,6 +327,8 @@ def test_run_scan_swallows_mid_run_disappearance_and_logs_info(
     ]
     assert matching, "expected an INFO log on the benign delete-mid-run race"
     record = matching[0]
+    # ``scan_id`` is contributed by the LogRecord factory snapshotting
+    # ``scan_id_var``; ``reason`` is the only field this code path adds.
     assert getattr(record, "scan_id", None) == scan_id
     assert "scan disappeared mid-run" in getattr(record, "reason", "")
 

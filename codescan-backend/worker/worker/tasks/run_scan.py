@@ -168,9 +168,14 @@ def run_scan(self: Task, scan_id: str) -> dict[str, object] | None:
         # LookupError (e.g. _run's "scan not found: ..." raise from line 177)
         # bubbles up so Celery's failure handler logs the real bug.
         if str(exc).startswith(_SCAN_DISAPPEARED_PREFIX):
+            # ``scan_id`` is intentionally NOT in ``extra`` here — the worker's
+            # LogRecord factory (worker.core.logging) already snapshots the
+            # scan_id contextvar onto every record, and Python's logging raises
+            # ``KeyError`` if ``extra`` tries to overwrite an existing record
+            # attribute. Pass only the fields the factory doesn't already cover.
             logger.info(
                 "scan deleted by user mid-run, no-op",
-                extra={"scan_id": scan_id, "reason": str(exc)},
+                extra={"reason": str(exc)},
             )
             return None
         raise
