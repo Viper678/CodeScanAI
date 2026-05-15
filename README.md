@@ -1,4 +1,13 @@
-# CodeScan
+# CodeScan (archived monorepo)
+
+> **🗂️ This monorepo has been split into two repositories.** New development happens there:
+>
+> - **Backend** (FastAPI api + Celery worker) → [Viper678/codescan-backend](https://github.com/Viper678/codescan-backend)
+> - **Frontend** (Next.js web app) → [Viper678/codescan-frontend](https://github.com/Viper678/codescan-frontend)
+>
+> This repo is kept as the historical archive — every PR, issue, discussion, and the full pre-split commit history lives here at the URLs they were created at. Browse freely; please do not open new PRs here. The split happened on 2026-05-15 via `git filter-repo`; git history (authors, timestamps, blame) is preserved in both new repos.
+
+---
 
 > **TODO:** rename project. Placeholder: **CodeScan**.
 
