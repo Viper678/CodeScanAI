@@ -1,28 +1,37 @@
 .PHONY: setup lint test lint-api lint-worker lint-web test-api test-worker test-web \
-	e2e e2e-ui e2e-up e2e-down e2e-fixtures
+	e2e e2e-ui e2e-up e2e-down e2e-fixtures dev dev-down
 
 UV ?= uv
 
-# Compose stack used by the e2e suite (T5.5). NOT the dev override — the
+# Compose stack used by the e2e suite (T5.5). NOT the dev overrides — the
 # stock images run without host-volume mounts so Next.js doesn't reload
 # while the spec is exercising the UI. ``-p codescan-e2e`` isolates the
 # containers and named volumes (pgdata, data) from a dev stack running
 # in the same checkout — without it, ``e2e-down -v`` wipes the
 # developer's local DB and uploads.
-E2E_COMPOSE := docker compose -p codescan-e2e -f docker-compose.yml -f docker-compose.e2e.yml
+#
+# Post-split: backend (api + worker + postgres + redis) and frontend
+# (web) live in separate per-repo compose files. Chaining all four under
+# the same ``-p`` project name puts them on a single compose network so
+# the web container resolves ``api`` over compose DNS.
+E2E_COMPOSE := docker compose -p codescan-e2e \
+	-f codescan-backend/docker-compose.yml \
+	-f codescan-backend/docker-compose.e2e.yml \
+	-f codescan-frontend/docker-compose.yml \
+	-f codescan-frontend/docker-compose.e2e.yml
 
 # Compose interpolates required substitutions BEFORE merging override
-# files, so the base ``docker-compose.yml``'s ``JWT_SECRET`` needs a
-# value up front. Without this default, ``make e2e-down`` (and ``ps``
-# and ``logs``) fail for a developer who hasn't exported it. The LLM
-# endpoint vars have ``:-`` defaults in the compose file so no injection
-# is needed for them.
+# files, so the base ``codescan-backend/docker-compose.yml``'s
+# ``JWT_SECRET`` needs a value up front. Without this default,
+# ``make e2e-down`` (and ``ps`` and ``logs``) fail for a developer who
+# hasn't exported it. The LLM endpoint vars have ``:-`` defaults in the
+# compose file so no injection is needed for them.
 E2E_ENV := JWT_SECRET=$${JWT_SECRET:-e2e-jwt-secret-32-bytes-long-padding}
 
 # Web base URL used by the Playwright suite. Matches the alt host port
-# pinned in ``docker-compose.e2e.yml`` so the e2e stack coexists with a
-# dev stack on 3000. Override via ``E2E_WEB_BASE_URL=…`` in the env if
-# you've remapped the port for some reason.
+# pinned in ``codescan-frontend/docker-compose.e2e.yml`` so the e2e
+# stack coexists with a dev stack on 3000. Override via
+# ``E2E_WEB_BASE_URL=…`` in the env if you've remapped the port.
 E2E_WEB_BASE_URL ?= http://localhost:3010
 
 setup:
@@ -30,6 +39,18 @@ setup:
 	cd codescan-backend/worker && $(UV) sync --locked
 	pnpm --dir codescan-frontend install
 	pre-commit install
+
+# Bring up the full local dev stack — backend (api + worker + postgres +
+# redis) first so its api service is healthy before the frontend pings
+# it through ``INTERNAL_API_URL``. Each subdir has its own compose
+# project name so the stacks stay independently teardown-able.
+dev:
+	cd codescan-backend && docker compose up -d --build
+	cd codescan-frontend && docker compose up -d --build
+
+dev-down:
+	cd codescan-frontend && docker compose down
+	cd codescan-backend && docker compose down
 
 lint: lint-api lint-worker lint-web
 

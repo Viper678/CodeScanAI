@@ -93,7 +93,7 @@ make e2e     # playwright (only if you touched UI flows)
 ```
 
 Plus, manually:
-- Bring up `docker compose up --build` once and click through the flow you changed.
+- Bring up `make dev` once and click through the flow you changed.
 - For DB changes: confirm `alembic upgrade head` and `alembic downgrade -1` both work.
 
 CI runs the same `make lint` and `make test` (and `make e2e` on the `e2e-required` label) on every PR. **PRs cannot be merged with a red CI.**
@@ -185,7 +185,7 @@ Do not add tests just to inflate coverage. Test **behavior**, not implementation
 ## 10. Secrets, env, and config
 
 - Never commit a real API key. CI fails on secrets via `gitleaks`.
-- All config flows through `app.core.config.Settings` (api) and `worker.core.config.Settings` (worker), backed by env vars. New config = new field on Settings + new line in `.env.example`.
+- All config flows through `app.core.config.Settings` (api) and `worker.core.config.Settings` (worker), backed by env vars. New config = new field on Settings + new line in `codescan-backend/.env.example` (or `codescan-frontend/.env.example` for a web-side var).
 
 ---
 

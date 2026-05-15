@@ -1,0 +1,42 @@
+services:
+  web:
+    build:
+      context: .
+    environment:
+      # Read at request time by ``next.config.mjs``'s ``rewrites()`` — server-
+      # side proxy for ``/api/v1/*`` to the api service. Runtime env var
+      # (NOT a build-arg) so one image deploys to UAT / prod / future
+      # staging — see docs/GCP_MIGRATION.md §D4 + §M7.
+      #
+      # Default uses ``host.docker.internal`` so when the codescan-backend
+      # compose stack is running on the same host (api published on
+      # ``127.0.0.1:8000`` via codescan-backend/docker-compose.override.yml's
+      # implicit port from the base file), this image's Next.js server can
+      # reach it without sharing a compose network. When both stacks are
+      # brought up under the same ``-p`` project name they DO share a
+      # network and ``api`` resolves over compose DNS — set
+      # ``INTERNAL_API_URL=http://api:8000/api/v1`` in that case.
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://host.docker.internal:8000/api/v1}
+    # Linux-on-Docker compatibility: ``host.docker.internal`` isn't auto-
+    # mapped to the host gateway on Linux the way it is on Docker Desktop
+    # for macOS / Windows. ``host-gateway`` is the documented portable
+    # alias that resolves to the host's default-route IP.
+    extra_hosts:
+      - 'host.docker.internal:host-gateway'
+    ports:
+      - '3000:3000'
+    healthcheck:
+      # ``/scans`` is a real authenticated route — Next.js prod server
+      # returns 200 with the login redirect HTML (no auth needed for the
+      # response itself, just for the underlying data). Works against
+      # both the standalone prod image (this file) and the dev override
+      # (``pnpm dev``), so the same probe survives the dev/prod swap.
+      test:
+        [
+          'CMD-SHELL',
+          'node -e "fetch(''http://localhost:3000/scans'').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"',
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s

@@ -1,11 +1,25 @@
 # Deployment
 
-## Local & prod use the same compose file
+## Local & prod use the same compose files
 
-We use one `docker-compose.yml` with environment-specific overrides:
-- `docker-compose.yml` — base
-- `docker-compose.override.yml` — local dev (auto-loaded)
-- `docker-compose.prod.yml` — production (`docker compose -f docker-compose.yml -f docker-compose.prod.yml up`)
+The compose stacks are split per future repo so each subdirectory is
+self-contained:
+
+- `codescan-backend/docker-compose.yml` — backend base (api + worker + postgres + redis)
+- `codescan-backend/docker-compose.override.yml` — backend local dev (auto-loaded by `docker compose` inside `codescan-backend/`)
+- `codescan-backend/docker-compose.e2e.yml` — backend e2e overlay (used by `make e2e-up`)
+- `codescan-frontend/docker-compose.yml` — frontend base (web)
+- `codescan-frontend/docker-compose.override.yml` — frontend local dev (auto-loaded inside `codescan-frontend/`)
+- `codescan-frontend/docker-compose.e2e.yml` — frontend e2e overlay
+
+`make dev` brings both stacks up sequentially (backend first so the
+frontend's `INTERNAL_API_URL` resolves). `make e2e-up` chains all four
+files under a single `-p codescan-e2e` compose project so the web
+container can reach `api` over the shared internal network.
+
+A `docker-compose.prod.yml` overlay (Caddy proxy, no host port
+publishing for postgres/redis) is the v1 prod story but is not in the
+repo yet — see the deploy/k8s/ manifests for the GKE target.
 
 ---
 
@@ -94,7 +108,7 @@ For zero-downtime deploys later, split this: a one-shot `migrate` service runs f
 
 ## Environment variables
 
-See `.env.example` for the complete list. Categories:
+See `codescan-backend/.env.example` (api + worker vars) and `codescan-frontend/.env.example` (web-only) for the complete lists. Categories:
 
 - **Auth:** `JWT_SECRET`, `JWT_ACCESS_TTL_MIN`, `JWT_REFRESH_TTL_DAYS`
 - **DB:** `DATABASE_URL`, `POSTGRES_USER/PASSWORD/DB`
@@ -144,4 +158,4 @@ JWT_SECRET in prod must come from a secrets manager, not the `.env` file. The co
 - **Cloud Run / ECS Fargate**: api + worker as separate services; Postgres + Redis managed; persistent uploads on a network FS or migrate to object storage first.
 - **Kubernetes**: overkill for v1, but the layout already maps cleanly (Deployment per service, PVC for uploads, CronJob for cleanup).
 
-Pick one based on team competency. None are in `docker-compose.yml` initially.
+Pick one based on team competency. None are in the compose files initially.

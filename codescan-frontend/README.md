@@ -11,6 +11,7 @@ back.
 From this directory:
 
 ```bash
+cp .env.example .env   # see "Key environment variables" below
 pnpm install
 pnpm dev
 ```
@@ -20,22 +21,29 @@ if you're running the backend natively, or `http://api:8000/api/v1` if you're
 running it under docker-compose with the web container attached to the same
 network).
 
-Alternatively, from the monorepo root:
+Alternatively, run the frontend in its own compose stack:
 
 ```bash
+cd codescan-frontend
 docker compose up --build
 ```
 
-That brings up the frontend alongside `api + worker + postgres + redis` and
-wires `INTERNAL_API_URL` through the compose network automatically. The UI is
+That brings up the `web` container alone. The default `INTERNAL_API_URL`
+(`http://host.docker.internal:8000/api/v1`) reaches the backend when the
+sibling `codescan-backend/` compose stack is running on the same host;
+override the env if your backend lives elsewhere. From the monorepo root
+`make dev` chains both stacks (backend then frontend). The UI is
 reachable at <http://localhost:3000>.
 
 ## Key environment variables
 
 - `INTERNAL_API_URL` — backend base URL. Read at **request time** (not at
   build time) so a single compiled image works across dev / UAT / prod
-  without rebuilds. Default: `http://api:8000/api/v1` (the docker-compose
-  service name).
+  without rebuilds. Default in `docker-compose.yml`:
+  `http://host.docker.internal:8000/api/v1` (so the frontend's compose
+  stack reaches the sibling backend's published api port over the host
+  loopback). For the e2e stack the override pins
+  `http://api:8000/api/v1` since both stacks share a compose network.
 
 The browser bundle has no API URL baked in — every backend call goes through
 the Next.js server proxy.

@@ -1,0 +1,38 @@
+# docker-compose override for the Playwright e2e suite (T5.5), web side.
+#
+# Pairs with codescan-backend/docker-compose.e2e.yml — bring both stacks
+# up under the same ``-p codescan-e2e`` project name so ``web`` shares
+# the internal compose network with ``api`` and resolves it over compose
+# DNS as ``http://api:8000``.
+#
+# Invocation (handled by ``make e2e-up``):
+#   docker compose -p codescan-e2e \
+#     -f codescan-backend/docker-compose.yml -f codescan-backend/docker-compose.e2e.yml \
+#     -f codescan-frontend/docker-compose.yml -f codescan-frontend/docker-compose.e2e.yml \
+#     up -d --build
+services:
+  web:
+    # Compose resolves relative paths (including ``build.context``)
+    # against the FIRST ``-f`` file's directory. The ``make e2e-up``
+    # chain lists ``codescan-backend/docker-compose.yml`` first, so
+    # the base ``codescan-frontend/docker-compose.yml``'s
+    # ``build.context: .`` would resolve to ``codescan-backend/``
+    # (no frontend Dockerfile there) and the build would fail. Pin
+    # the context to the frontend dir so the build picks up the
+    # right Dockerfile regardless of ``-f`` order.
+    build:
+      context: ../codescan-frontend
+    # See codescan-backend/docker-compose.e2e.yml's ports comment —
+    # ``!override`` replaces the base file's 3000:3000 with the e2e-only
+    # 3010:3000 binding. The browser hits ``http://localhost:3010`` and
+    # Next.js's ``rewrites()`` (codescan-frontend/next.config.mjs) proxies
+    # ``/api/v1/*`` to ``http://api:8000/api/v1/*`` server-side over the
+    # shared compose network.
+    ports: !override
+      - '3010:3000'
+    environment:
+      # Under the shared ``-p codescan-e2e`` project name the api service
+      # name resolves via compose DNS — override the base file's
+      # ``host.docker.internal`` default so the proxy hits the colocated
+      # api container instead of (potentially missing) host port 8000.
+      INTERNAL_API_URL: http://api:8000/api/v1

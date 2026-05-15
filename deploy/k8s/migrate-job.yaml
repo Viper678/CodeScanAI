@@ -32,8 +32,9 @@
 #      schema.
 #
 # Local docker-compose still chains ``alembic upgrade head`` into the
-# api command at compose time (see ``docker-compose.yml`` /
-# ``docker-compose.override.yml``) — that's the dev shape, unchanged.
+# api command at compose time (see ``codescan-backend/docker-compose.yml`` /
+# ``codescan-backend/docker-compose.override.yml``) — that's the dev
+# shape, unchanged.
 #
 # Phase B7 will wrap this manifest into a Helm chart + ``helm hook``:
 #   helm.sh/hook: pre-install,pre-upgrade

@@ -1,37 +1,17 @@
 services:
-  web:
-    build:
-      context: ./codescan-frontend
-    environment:
-      # Read at request time by ``codescan-frontend/next.config.mjs``'s ``rewrites()``
-      # — server-side proxy for ``/api/v1/*`` to the api service. Runtime
-      # env var (NOT a build-arg) so one image deploys to UAT / prod /
-      # future staging — see docs/GCP_MIGRATION.md §D4 + §M7.
-      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://api:8000/api/v1}
-    ports:
-      - "3000:3000"
-    depends_on:
-      api:
-        condition: service_healthy
-    healthcheck:
-      # ``/scans`` is a real authenticated route — Next.js prod server
-      # returns 200 with the login redirect HTML (no auth needed for the
-      # response itself, just for the underlying data). Works against
-      # both the standalone prod image (this file) and the dev override
-      # (``pnpm dev``), so the same probe survives the dev/prod swap.
-      test:
-        [
-          "CMD-SHELL",
-          "node -e \"fetch('http://localhost:3000/scans').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))\"",
-        ]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
   api:
     build:
-      context: ./codescan-backend/api
+      context: ./api
+    # ``env_file`` forwards EVERY var in ``.env`` to the container so
+    # pydantic-settings (``app.core.config.Settings``) can read knobs that
+    # aren't named in the ``environment:`` block below — rate limits,
+    # CORS_ALLOW_ORIGINS, retention days, etc. The explicit ``environment:``
+    # block below overrides ``env_file`` for the vars that need
+    # interpolation defaults (e.g. ``${VAR:-default}``) or the
+    # ``:?required`` guard on ``JWT_SECRET``.
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
       DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
@@ -87,7 +67,14 @@ services:
 
   worker:
     build:
-      context: ./codescan-backend/worker
+      context: ./worker
+    # See the ``env_file`` comment on the api service. Worker's
+    # pydantic-settings reads SCAN_CONCURRENCY, GEMMA_MAX_INPUT_TOKENS,
+    # MAX_UNCOMPRESSED_TOTAL_MB, MAX_FILES_IN_ARCHIVE, etc. straight from
+    # the container env, none of which are forwarded explicitly below.
+    env_file:
+      - path: .env
+        required: false
     environment:
       DATABASE_SYNC_URL: ${DATABASE_SYNC_URL:-postgresql+psycopg://codescan:codescan-dev-only-change-me@postgres:5432/codescan}
       CELERY_BROKER_URL: ${CELERY_BROKER_URL:-redis://redis:6379/0}

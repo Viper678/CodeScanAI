@@ -146,7 +146,7 @@ codescan-backend/worker/worker/
 - If you change a public API, update `docs/API.md` in the same PR.
 - If you change the DB shape, update `docs/SCHEMA.md` in the same PR.
 - If you add a new scan type, update `docs/SCAN_RULES.md` in the same PR with the prompt and schema.
-- New env vars → `docs/DEPLOYMENT.md` and `.env.example` in the same PR.
+- New env vars → `docs/DEPLOYMENT.md` and the appropriate per-subdir `.env.example` (`codescan-backend/` for api/worker, `codescan-frontend/` for web) in the same PR.
 
 ---
 

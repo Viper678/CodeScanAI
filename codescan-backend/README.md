@@ -16,17 +16,17 @@ the same Redis instance via key-prefix isolation.
 
 ## Quick start (development)
 
-The docker-compose stack currently lives at the monorepo root, so from one
-level up:
+The compose stack for the backend lives here:
 
 ```bash
+cd codescan-backend
 docker compose up --build
 ```
 
-That brings up `api + worker + postgres + redis` (plus the frontend if
-`docker-compose.override.yml` is in play). Once this directory is split out
-into its own repository, the compose file will move to live here at the
-backend root.
+That brings up `api + worker + postgres + redis`. The frontend has its
+own compose stack under `codescan-frontend/`; bring it up separately for
+the full local dev experience (or run `make dev` from the monorepo root
+to chain both).
 
 The API is reachable at <http://localhost:8000> (OpenAPI docs at `/docs`); the
 worker is headless and only emits structured logs.
@@ -45,8 +45,15 @@ consistent with `pyproject.toml` between runs.
 
 ## Environment
 
-The canonical list of environment variables (and their defaults) lives in the
-top-level `.env.example`. The most important knob for local development is:
+The canonical list of backend environment variables (and their defaults)
+lives in `codescan-backend/.env.example`. Copy it to `.env` next to the
+compose file:
+
+```bash
+cp codescan-backend/.env.example codescan-backend/.env
+```
+
+The most important knob for local development is:
 
 - `LLM_MOCK_MODE=true` — short-circuits the Gemma client with a deterministic
   in-process transport so security/bugs scans produce canned findings without

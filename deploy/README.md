@@ -79,7 +79,8 @@ its success.
 
 Local docker-compose unchanged: the compose file still chains
 `alembic upgrade head` into the api `command:` at compose time
-(`docker-compose.yml` + `docker-compose.override.yml`). That's the
+(`codescan-backend/docker-compose.yml` +
+`codescan-backend/docker-compose.override.yml`). That's the
 dev shape and stays — single-replica, no rolling update, no race.
 
 ## Why `worker` vs `worker-beat` are two Deployments (M6)
